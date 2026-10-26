@@ -21,9 +21,8 @@
 # too: a (tick, player) whose log and wire sequences DIFFER in length is
 # a lost/invented action — usually a wrong measured length before it.
 #
-# Server mode only (the host tailer starts with `on_start`/RCON; the log
-# lives on the server host). Client mode has no server log — the plugin
-# stays idle.
+# Server mode (host log via RCON) or client mode with an explicit
+# log_path: pointing at the server's factorio-current.log.
 class ActionValidator
   LOG_RE = /Action performed \[(\d+) (\d+) (\w+)\]/.freeze
 

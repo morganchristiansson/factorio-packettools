@@ -421,8 +421,9 @@ class FactorioPacketTools
       on_start if @rcon
       # The single log-tailer thread (emits :on_log_line to the plugin bus).
       # Started after on_start so consumers are built first; idempotent, revived
-      # on reload. RCON-gated like on_start: the consumers are server-mode features.
-      start_log_watcher if @rcon
+      # on reload. Needs RCON in server mode (host-side log) OR a configured
+      # log_path in client mode (where the player reads the server log).
+      start_log_watcher if @rcon || log_consumers?
       # Memoized: a reload must NOT reopen the capture device. Reusing this
       # handle across reloads is what makes them lossless (and avoids two
       # BPF listeners duplicating every packet).
@@ -492,8 +493,9 @@ class FactorioPacketTools
     hivemind = @plugins[:hivemind]
     hivemind&.plugins&.[](:followups)&.ensure_followup_scheduler
     # Revive the host-owned single log-tailer (idempotent; a live thread is
-    # left alone, a dead one is restarted). Server-mode only.
-    start_log_watcher if @rcon
+    # left alone, a dead one is restarted). Server-mode (RCON) or any
+    # log-line consumer enabled (action_validator, hivemind logwatcher).
+    start_log_watcher if @rcon || log_consumers?
     # Hot reload swaps code under the same hivemind object; re-point
     # the cached attrs/tick provider in case this is the first
     # reload after the agent was constructed (or libs changed
@@ -510,6 +512,11 @@ class FactorioPacketTools
   # reads the file once and emits each new line to the plugin bus (:on_log_line),
   # so action_validator and the agent's logwatcher share ONE reader instead of
   # each tailing the inode. Path: explicit `log_path:` config, else auto-detected
+  def log_consumers?
+    @plugins.enabled?(:action_validator) ||
+      (@plugins.enabled?(:hivemind) && (@plugins[:hivemind].plugins[:logwatcher] rescue nil))
+  end
+
   # from the running factorio process (ServerDetect.log_path). Idempotent —
   # re-called on hot reload to restart a thread that died; a live thread is
   # left alone. The resolved path is cached on the same ivar (survives reload) so
