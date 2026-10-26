@@ -89,14 +89,18 @@ class ActionValidator
   # ── Correlation ──────────────────────────────────────────────────
 
   # Join one wire tick against the log: exact tick first, then the small
-  # lag window. Per (tick, player) with equal sequence lengths, pair
-  # positionally — the offline validator's join, one tick at a time.
+  # lag window (the log can lag 0-2 ticks behind the wire — tools/validate
+  # actions.rb scans ±2 too). Consumes the matched log tick so the NEXT wire
+  # tick cannot re-correlate stale entries (without this, tick+0 log entries
+  # found at offset +1 get re-matched by tick+1, causing false seq_len
+  # mismatches and cross-type MISMATCH reports).
   def correlate(tick)
     log_tick = (0..TICK_TOLERANCE).find { |o| @log.key?(tick + o) && !@log[tick + o].empty? }
     # A wire tick with no log lines yet is the normal idle case (logging
     # off, or pure movement the log's absence also covers) — not an error.
     return unless log_tick
-    lseqs = @log[tick + log_tick]
+    actual_log_tick = tick + log_tick
+    lseqs = @log.delete(actual_log_tick)
     wseqs = @wire.delete(tick)
     # The log's player index is 0-based on stable 2.1.23 (wire game_player 3
     # logs as 2); the 2.0-era log was 1-based. Scan the offset like
@@ -129,7 +133,10 @@ class ActionValidator
     # This wire tick is done: the log entries it consumed (and any older
     # stragglers — a future closure can only need log ticks >= this one)
     # are dead. Clear them instead of waiting for the FIFO cap.
-    @log.keys.each { |t| @log.delete(t) if t <= tick }
+    # The wire tick is fully consumed (wseqs deleted above); evict older log
+    # ticks that no future wire tick will reach (log_tick is within
+    # TICK_TOLERANCE of the wire tick, so anything <= tick is unreachable).
+    @log.keys.each { |t| @log.delete(t) if t < tick - TICK_TOLERANCE }
   end
 
   def record_pair(tick, player, wire_type, log_name)
@@ -165,7 +172,7 @@ class ActionValidator
     puts format('[action-validate] %<ok>d OK, %<mis>d mismatched, %<nit>d not-in-table, ' \
                 '%<seq>d sequence-length mismatches (actions correlated so far)',
                 ok: s[:ok], mis: s[:mismatch], nit: s[:not_in_table], seq: s[:seq_len_mismatch])
-    disagreements = @votes.reject { |id, names| names.key?(table_name(id)) }
+    disagreements = @votes.reject { |id, names| names.any? { |name, _| normalize(name) == normalize(table_name(id)) } }
     disagreements.sort.each do |id, names|
       winner, n = names.max_by { |_, c| c }
       puts format('  candidate: wire %<id>d table=%<tn>s but log says %<wn>s (x%<n>d)',
@@ -197,6 +204,8 @@ class ActionValidator
   # CamelCase (log) vs snake_case (table) — compare normalized. Same
   # shape as tools/validate_actions.rb#normalize.
   def normalize(name)
+    # Normalize: PascalCase → snake_case, so "StopWalking" matches "stop_walking"
+    # (the /toggle-action-logging names use a different casing convention).
     name.to_s.gsub(/([a-z0-9])([A-Z])/, '\1_\2').downcase
   end
 end

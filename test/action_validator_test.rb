@@ -110,6 +110,27 @@ class TestActionValidator < Minitest::Test
     assert_equal({ 'Build' => 2 }, @v.votes[69])
   end
 
+  def test_summary_no_false_candidates_for_case_only_difference
+    # The log uses PascalCase, the table uses snake_case — normalize both,
+    # so "StopWalking" must NOT appear as a candidate "disagreement".
+    log! 1000, 12, 'StopWalking'
+    out, = capture_io { wire! 1000, [[1, 12]] }
+    assert_includes out, '1 OK'
+    refute_includes out, 'candidate: wire 1'
+  end
+
+  def test_log_tick_consumed_after_correlation
+    # Log entry at tick+2 is consumed by wire tick: tick+1 must NOT re-find it.
+    log! 1002, 12, 'Build'
+    capture_io { wire! 1000, [[69, 12]] }  # correlates with log tick 1002
+    assert_equal 1, @v.stats[:ok]
+    assert_empty @v.instance_variable_get(:@log), 'log tick should be consumed'
+    # Re-correlating tick+1 should NOT find stale log entries at tick+2.
+    log! 2002, 12, 'Build'
+    capture_io { wire! 2000, [[69, 12]] }
+    assert_equal 2, @v.stats[:ok]
+  end
+
   def test_summary_lists_table_disagreements
     log! 1000, 12, 'Zorb'         # log name no table entry agrees with
     out, = capture_io { wire! 1000, [[132, 12]] } # the first correlation prints the summary
