@@ -1,39 +1,12 @@
 # frozen_string_literal: true
 
-# ACTIONS_21 — main input-action types for STABLE Factorio 2.1 (the current
-# released build's numbering), [name, C->S payload length] pairs.
-#
-# THE single 2.1 table (no more experimental ACTIONS base + merge chain):
-# generated from the defines dump (external/input_actions_dump.txt) with the
-# measured renumbering the /toggle-action-logging log produced on the
-# 2026-10-26 capture set (captures/server-34197-20261025-*.pcap.gz =
-# captures/factorio-current.log correlations, 44+ sequence-joined anchors):
-#
-#  * current stable numbering = dump numbering +1 from the inserted action's
-#    band: stop_movement_in_the_next_tick was INSERTED at stable id 32
-#    (absent from the 2.0 defines dump — it lived at 2.0 id 82), pushing
-#    every dump id >= 32 up by one. The whole observed range 41..348 holds
-#    dump+1 exactly (32..40 covers the insertion + shifted dumps).
-#  * names the defines dump never carried (internal wire actions) are log-
-#    verified into their slots: acknowledge_technology/53, close_gui/61,
-#    selected_entity_changed/90, update_blueprint_shelf/151,
-#    transfer_blueprint/152, blueprint_transfer_queue_update/227,
-#    display_resolution_changed/244, close_remote_view/262, the
-#    selected_entity_changed_very_close family/266..269,
-#    clear_recipe_notification/315, update_player_settings/341,
-#    player_music_changed/348.
-#  * build keeps its wire-verified stable length 16 (the experimental table
-#    guessed 9). The chat action write_to_console is 107 — segment type 107
-#    carried 40 clean chat payloads in the stable captures.
-#
-# Regenerate with the same sources: dump + log-verified overlay (see
-# scratch/corr/gen_actions21.rb for the procedure; tools/validate_actions.rb
-# re-validates IDs against /toggle-action-logging output on a live server).
-# Lengths: name-inherited from the experimental table (version-stable
-# payload-shape guesses) EXCEPT where the wire decided better — the MEASURED
-# map below folds wire-decided C->S lengths straight in (the separate
-# C2S_LENS_21 file is gone). MEASURED lengths apply to C->S; the S->C echo
-# reuses the table value (no stable S->C corpus exists to verify echoes).
+# ACTIONS_21 — main input-action types for STABLE Factorio 2.1, [name, C->S payload length] pairs.
+# Hand-maintained: corrections come from tools/validate_actions.rb (diff against
+# /toggle-action-logging). Lengths are nil when variable/complex (the parser
+# falls back to name-based structural reads or hits hit_unknown).
+# The 2.0 dump (external/input_actions_dump.txt) is reference only — 2.0 is
+# retired, the stable renumbering is NOT a mechanical +1 shift from it.
+# See docs/protocol-notes.md for the stable numbering rationale.
 
 module FactorioProtocol
 
@@ -69,7 +42,7 @@ ACTIONS_21 = {
     35 => ["toggle_deconstruction_item_tile_filter_mode", 0],
     36 => ["select_next_valid_gun", 0],
     37 => ["toggle_map_editor", 0],
-    38 => ["delete_blueprint_library", 0],
+    38 => ["fast_entity_transfer", 1],
     40 => ["activate_paste", 0],
     41 => ["undo", 0],
     42 => ["redo", 0],
