@@ -197,15 +197,32 @@ either on a client or on the game server host (server mode, with RCON).
   toggle_enable_vehicle_logistics_while_moving in the dump — the 2.0 defines
   had it at id 82; 2.1 inserted it as a dedicated action at stable 32,
   shifting all dump ids >= 32 by +1, not >= 40 as previously coded). The
-  full S→C capture (server-40220, 206k packets) now decodes 25,045 real
-  actions with 87 log-verified wire IDs and 0 mismatches (player index
-  matched at player_off=0). Types 159 (player_join_game) and 248
-  (player_leave_game) added as S→C-only events. 14 types remain not-in-table
-  — all 2.1-only (absent from the 2.0 defines dump), pinned via log
-  correlation on the S→C echoes (224/251 → close_gui, 347 → player_visited_planet)
-  but too low-count (≤3×) to commit. Type 5 shows 1× MISMATCH
-  (open_gui vs selected_entity_cleared) — likely a false S→C correlation;
-  C→S fixtures firmly establish 5 = open_gui.
+  full S→C capture (server-40220, 206k packets) decodes 25,045 real actions
+  with 87 log-verified wire IDs and 0 mismatches (player index matched at
+  player_off=0). Types 159 (player_join_game) and 248 (player_leave_game)
+  added as S→C-only events.
+
+  UPDATE 2026-10-28: New client-mode capture (client-20261026-150048, both
+  C→S and S→C) pushed confirmed wire IDs from 87 → 166. Key fixes:
+  - Type 28/29: cycle_quality_up/down shifted by +1 from dump positions (was
+    cycle_quality_down/up — names swapped in the dump; insertion at 27
+    pushes them to stable 28/29). 8 OK + 4 OK.
+  - Type 44: selected_entity_changed_very_close (was toggle_equipment_
+    movement_bonus from dump; the length fix from nil→1 resolved 5→OK after
+    desyncs from wrong length caused false correlations).
+  - Type 304: display_scale_changed (3 OK) — new 2.1-only type, added via
+    SPECIAL (not in dump or experimental table).
+  - Types 23/24/25 reverted to dump names (open_bonus_gui/open_achievements_
+    gui/cycle_blueprint_book_forwards) — the S→C-verified close_gui
+    overrides (1-2 occurrences) were false correlations; the C→S capture
+    shows different (also low-count) false matches. Type 5 left as open_gui
+    (1 S→C match was too weak vs C→S fixtures).
+  - All remaining MISMATCH/NOT-IN-TABLE entries are ≤3 occurrences, dominated
+    by false correlations with common action names (stop_walking, zoom_around_
+    point, selected_entity_cleared/very_close at adjacent types). 12 NOT-
+    IN-TABLE gap types (12, 14, 20, 21, 22, 30, 31, 55, 97, 128, 224, 225,
+    250, 251, 255, 345, 347, 393) are 2.1-only with ≤1 occurrence each —
+    too weak to pin, left for /toggle-action-logging on a busier session.
 - **Chat payloads are `[uint16v player][uint32v len][text]`**, and the
   player index is 0xff-ESCAPED past 254: on a busy server every message
   starts `ff <u16 LE>`, and reading that as the 5-byte uint32v length escape
