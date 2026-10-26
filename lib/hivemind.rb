@@ -71,11 +71,6 @@ class HivemindAgent
     @plugin_set ||= Plugins::PluginSet.new(own_plugins, nil, dir: __dir__, owner: PLUGIN_OWNER)
   end
   self.plugin_set.mix_modules_into(self)
-  # Identity headers for the OpenCode Go gateway (required, not optional):
-  # a custom User-Agent (never a generic SDK/HTTP-library name) plus a
-  # stable per-conversation session id (x-opencode-session) for routing
-  # and prompt caching. Both are hardcoded/deterministic — no knobs.
-  USER_AGENT = 'factorio-hivemind/1.0'
 
   # No key list and no code defaults: the file must exist (checked once, so
   # "no config at all" is a clear startup error naming the example to copy),
@@ -85,25 +80,6 @@ class HivemindAgent
     raise Errno::ENOENT, "missing #{path}; copy config-hivemind.yaml.example" unless File.file?(path)
 
     YAML.safe_load_file(path) || {}
-  end
-
-  # Responses-API-only hack: the gem chains every request onto the last
-  # reply via previous_response_id, but we resend the full history every
-  # time — and the gateway doesn't retain server-side responses (idle
-  # expiry, restarts), so any chained id fails the ask with "referenced
-  # response not found or expired". The tool-call follow-up INSIDE a
-  # single ask picks up the fresh id from the just-completed reply, so
-  # per-ask nil-ing can't cover it — never chain. Installed here at file
-  # load (NOT from initialize — hot reloads `load` this file without ever
-  # re-running initialize, so install-time gating on @provider leaves
-  # reloaded processes unpatched). Scoping is structural instead: the
-  # prepend targets only the OpenAIResponses class, which the
-  # chat/completions provider never touches.
-  module StatelessResponses
-    def extract_last_response_id(*) = nil
-  end
-  if defined?(RubyLLM::Providers::OpenAIResponses)
-    RubyLLM::Providers::OpenAIResponses.prepend(StatelessResponses) unless RubyLLM::Providers::OpenAIResponses.ancestors.include?(StatelessResponses)
   end
 
   # The agent's OWN name — its replies are queued with this as the player
@@ -256,11 +232,6 @@ class HivemindAgent
   rescue StandardError
     false
   end
-  # Stable OpenCode session id (x-opencode-session), one per conversation.
-  # Reload-safe like the mutexes above: a hot-reloaded agent keeps its
-  # boot-time ivars, so an object built before this field existed mints
-  # its id lazily on first use instead of sending a blank header.
-  def opencode_session_id = (@opencode_session_id ||= SecureRandom.uuid)
 
   # sniffer_plugins: the SNIFFER's list (config.yaml `plugins:`) — the agent
   # consults it for the features it hooks (translation gates the
@@ -414,7 +385,6 @@ class HivemindAgent
       assume_model_exists: true
     )
     @chat.with_instructions(system_prompt_with_memories)
-    apply_request_headers(@chat)
     register_tools
 
     hook_chat_observers if @chat
@@ -622,16 +592,6 @@ class HivemindAgent
 
   # ── LLM plumbing ──────────────────────────────────────────────────
 
-  # Stamp the OpenCode-required request headers onto a chat: the custom
-  # User-Agent plus the stable per-conversation session id. with_headers
-  # REPLACES, so both ride in one call. Applied at creation AND
-  # defensively in ask_with_retry (every ask funnels through it), so even
-  # a hot-reloaded chat that predates this code sends headers.
-  def apply_request_headers(chat)
-    return unless chat
-    chat.with_headers(**{ 'User-Agent': USER_AGENT, 'x-opencode-session': opencode_session_id })
-  end
-
   # Re-register the tool set with FRESH instances before every ask. Tools
   # are registered once at creation otherwise; hot reloads (Ctrl-C `load`)
   # rebind the tool CLASSES, so stale instances would keep running old
@@ -747,11 +707,9 @@ class HivemindAgent
     @provider = model_provider(@model)
     if @chat
       @chat.with_model(@model, provider: @provider, assume_exists: true)
-      apply_request_headers(@chat)
     else
       @chat = RubyLLM.chat(model: @model, provider: @provider, assume_model_exists: true)
       @chat.with_instructions(system_prompt_with_memories)
-      apply_request_headers(@chat)
       register_tools
       @observers_hooked = false
       hook_chat_observers
@@ -767,38 +725,11 @@ class HivemindAgent
   # (complete), dry runs (try_model!), and compaction (whose material
   # message stays — only the turn is stripped).
   def ask_with_retry(chat, prompt)
-    # Every request carries the OpenCode identity headers (re-applied here
-    # so hot-reloaded chats and throwaway forks can't miss them).
-    apply_request_headers(chat)
     start = chat.messages.size
     chat.ask(prompt)
   rescue StandardError => e
-    log_bad_request_proof(chat) if e.is_a?(RubyLLM::BadRequestError)
     chat.messages.slice!(start..)
     raise
-  end
-
-  # Failure-only probe for provider 400s: re-render the Responses payload
-  # the gem just sent and log its server-side references
-  # (previous_response_id + function_call/call_id pairs) — ids and types
-  # only, never content. Decisive either way: if previous_response_id is
-  # present the stateless patch isn't active; if absent the reference the
-  # gateway rejects must come from the tool round-trip. Only runs when an
-  # ask actually fails, so zero noise on the happy path.
-  def log_bad_request_proof(chat)
-    provider = chat.instance_variable_get(:@provider)
-    return unless provider.is_a?(RubyLLM::Providers::OpenAIResponses)
-    payload = provider.send(:render_payload, chat.messages, tools: chat.tools,
-      temperature: nil, model: chat.model, stream: false)
-    items = Array(payload[:input]).map do |i|
-      t = i[:type].to_s
-      t += "(#{i[:call_id]})" if i[:call_id]
-      t += "(#{i[:name]})" if i[:type].to_s == 'function_call'
-      t
-    end
-    log("bad-request proof: previous_response_id=#{payload[:previous_response_id].inspect} input=[#{items.join(', ')}]")
-  rescue StandardError => e
-    log("bad-request proof unavailable: #{e.class}: #{e.message}")
   end
 
   # Build the per-turn USER prompt: fresh context snapshot (online
@@ -961,13 +892,12 @@ class HivemindAgent
   def clear_console_queue = @console_mutex.synchronize { @console_queue = [] }
 
   # Everything of the session that is not the conversation itself: the
-  # OpenCode session id (routing/prompt-cache identity), the console queue,
-  # the players this LLM session has met (compaction targets) and the ones
-  # whose long-term memory it already carries. The console queue is copied
-  # under its lock, so JSON.generate in the caller cannot race an append.
+  # console queue, the players this LLM session has met (compaction targets)
+  # and the ones whose long-term memory it already carries. The console
+  # queue is copied under its lock, so JSON.generate in the caller cannot
+  # race an append.
   def session_snapshot
     {
-      'opencode_session' => opencode_session_id,
       'console_queue' => console_queue,
       'session_players' => @session_players_mutex.synchronize { @session_players.to_a },
       'memories_sent' => memories_sent.to_a,
@@ -982,10 +912,6 @@ class HivemindAgent
   def restore_session_state(data)
     reset_memories_sent(data['memories_sent'])
     @console_mutex.synchronize { @console_queue = data['console_queue'].map { |e| [e[0], e[1].to_s] } } if data['console_queue'].is_a?(Array)
-    # Resume the OpenCode session id so the restored conversation keeps its
-    # routing/caching identity; a missing key (older file) mints fresh.
-    id = data['opencode_session']
-    @opencode_session_id = id if id.is_a?(String) && !id.empty?
     return unless data['session_players'].is_a?(Array)
     @session_players_mutex.synchronize do
       @session_players = Set.new(data['session_players'].map(&:to_s))
@@ -995,8 +921,7 @@ class HivemindAgent
   # Both seams, plus the three accessors above, are the persistence feature's
   # whole surface on this object — explicit publicity, because the middle of
   # this file is a private section.
-  public :chat, :console_queue, :clear_console_queue, :session_snapshot, :restore_session_state,
-         :apply_request_headers
+  public :chat, :console_queue, :clear_console_queue, :session_snapshot, :restore_session_state
 
   # Enqueue a chat/console line. player is nil for bare console lines
   # (join/leave events); chat and replies carry the speaker name. When the
@@ -1232,7 +1157,6 @@ class HivemindAgent
           configure_model!(m)
           tmp_provider = model_provider(m)
           tmp = RubyLLM.chat(model: m, provider: tmp_provider, assume_model_exists: true)
-          apply_request_headers(tmp)
           tmp.messages.replace(snapshot.dup)
           register_tools(tmp)
           observe_chat(tmp)

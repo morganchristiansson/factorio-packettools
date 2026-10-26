@@ -161,10 +161,7 @@ module HivemindCompaction
       log "session trimmed after compaction: dropped #{cut - floor} compacted messages, #{msgs.size - floor} kept"
       # The rewritten SOUL/KNOWLEDGE change the system prompt at token 0,
       # so the whole cached prefix rebuilds regardless of the kept suffix —
-      # there is no cache continuity to preserve. Rotate the session id
-      # with it: post-compaction is a new conversation identity.
-      @opencode_session_id = SecureRandom.uuid
-      apply_request_headers(@chat)
+      # there is no cache continuity to preserve.
       reset_memories_sent            # the trimmed thread lost the injections
       @session_players_mutex.synchronize { @session_players.clear } # fresh session; post-compact lines re-populate
       @chat.with_instructions(system_prompt_with_memories)
@@ -194,7 +191,6 @@ module HivemindCompaction
     # but responses rejects. Sanitize in place and keep the current @model/
     # @provider (no fallback, no new env var).
     pass = RubyLLM.chat(model: @model, provider: @provider, assume_model_exists: true)
-    apply_request_headers(pass)
     sanitized = []
     pending = Set.new
     @chat.messages.each do |m|

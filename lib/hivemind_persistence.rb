@@ -56,7 +56,6 @@ class HivemindPersistence
     data = JSON.parse(File.read(@path))
     host.restore_session_state(data)
     chat = host.chat
-    host.apply_request_headers(chat)
     # Re-arm pending follow-ups from their absolute unix deadlines. Format:
     #   { "prowl" => { "due_at" => ..., "task" => ... } }
     # An entry that came DUE during downtime gets a past-due monotonic time

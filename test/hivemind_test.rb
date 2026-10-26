@@ -889,45 +889,4 @@ class TestHivemindAgent < Minitest::Test
     assert_equal ' (100 in, 20 out)', @agent.send(:usage_line, msg)
     assert_equal '', @agent.send(:usage_line, RubyLLM::Message.new(role: :assistant, content: 'no tokens'))
   end
-
-
-  # ── OpenCode request identity (User-Agent + session id) ──────
-
-  # The gateway requires a custom User-Agent (not a generic SDK/HTTP
-  # name) plus a stable x-opencode-session per conversation.
-  def test_chat_carries_opencode_identity_headers
-    chat = @agent.instance_variable_get(:@chat)
-    ua = (chat.headers[:'User-Agent'] || chat.headers['User-Agent']).to_s
-    assert_equal HivemindAgent::USER_AGENT, ua
-    refute_match(/ruby_llm|faraday/i, ua)
-    sid = (chat.headers[:'x-opencode-session'] || chat.headers['x-opencode-session']).to_s
-    refute_empty sid
-    assert_equal @agent.opencode_session_id, sid
-  end
-
-  # Re-applying headers around an ask must NOT rotate the id — the whole
-  # conversation shares one stable value for routing/prompt caching.
-  def test_opencode_session_id_stable_across_asks
-    chat = @agent.instance_variable_get(:@chat)
-    before = @agent.opencode_session_id
-    chat.stubs(:ask).returns(RubyLLM::Message.new(role: :assistant, content: 'ok'))
-    @agent.send(:ask_with_retry, chat, 'hello')
-    assert_equal before, @agent.opencode_session_id
-    assert_equal before, (chat.headers[:'x-opencode-session'] || chat.headers['x-opencode-session']).to_s
-  end
-
-  # Post-compaction trim is also a new conversation identity: the rewritten
-  # SOUL/KNOWLEDGE change the system prompt at token 0, invalidating the
-  # whole cached prefix — the kept suffix buys no continuity, so the id
-  # rotates (needs a thread large enough to actually trim).
-  def test_trim_after_compaction_rotates_opencode_session_id
-    chat = @agent.instance_variable_get(:@chat)
-    3.times { chat.add_message(role: :user, content: 'x' * 10_000) }
-    @agent.instance_variable_set(:@compaction_included_count, chat.messages.size)
-    before = @agent.opencode_session_id
-    assert @agent.trim_session_after_compaction!
-    after = @agent.opencode_session_id
-    refute_equal before, after
-    assert_equal after, (chat.headers[:'x-opencode-session'] || chat.headers['x-opencode-session']).to_s
-  end
 end
