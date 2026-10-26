@@ -190,6 +190,22 @@ either on a client or on the game server host (server mode, with RCON).
   24 desyncs** (was 170 undecoded types / 6,717 desynced packets before).
   The remaining unknowns: Unknown(255) (13×, host player, 1-2 byte small
   numbers — pin with the runtime validator) and Unknown(97) (1×).
+
+  UPDATE 2026-10-27: S→C heartbeat wrapper identified and stripped. Type 85
+  is a server_tick_info wrapper (12-byte body). Type 32 is
+  stop_movement_in_the_next_tick (was mis-assigned
+  toggle_enable_vehicle_logistics_while_moving in the dump — the 2.0 defines
+  had it at id 82; 2.1 inserted it as a dedicated action at stable 32,
+  shifting all dump ids >= 32 by +1, not >= 40 as previously coded). The
+  full S→C capture (server-40220, 206k packets) now decodes 25,045 real
+  actions with 87 log-verified wire IDs and 0 mismatches (player index
+  matched at player_off=0). Types 159 (player_join_game) and 248
+  (player_leave_game) added as S→C-only events. 14 types remain not-in-table
+  — all 2.1-only (absent from the 2.0 defines dump), pinned via log
+  correlation on the S→C echoes (224/251 → close_gui, 347 → player_visited_planet)
+  but too low-count (≤3×) to commit. Type 5 shows 1× MISMATCH
+  (open_gui vs selected_entity_cleared) — likely a false S→C correlation;
+  C→S fixtures firmly establish 5 = open_gui.
 - **Chat payloads are `[uint16v player][uint32v len][text]`**, and the
   player index is 0xff-ESCAPED past 254: on a busy server every message
   starts `ff <u16 LE>`, and reading that as the 5-byte uint32v length escape

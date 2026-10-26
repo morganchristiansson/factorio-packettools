@@ -96,17 +96,23 @@ class TestFactorioProtocol < Minitest::Test
     ])
     result = FactorioProtocol.parse_udp_payload(pkt)
     actions = extract_actions(result)
-    assert_equal 1, actions.size, 'second element should be filtered as metadata'
+    assert_equal 2, actions.size, 'both real actions kept (no wrapper to strip)'
     assert_equal 'deconstruct', actions[0][:name]
+    assert_equal 2, actions[0][:game_player]
   end
 
-  # NOTE: the S→C server-echo filter (heartbeat_packet: take_while name ==
-  # 'server_tick_info') is currently a no-op — NO table maps an id to that
-  # name since the experimental hash died (2.0: 82 decodes as
-  # stop_movement_in_the_next_tick, stable 2.1: unresolved). No test: there
-  # is no stable S→C corpus to pin the wrapper id — server mode never
-  # captures S→C. If a client-mode capture lands, identify the wrapper and
-  # restore this test with the real id.
+  def test_server_echo_strips_wrapper
+    pkt = build_server_tc_packet([
+      { type: 85, delta: 1, data: Array.new(12, 0) },
+      { type: 132, delta: 2, data: [0x9d, 0x9f, 0xfe, 0xff, 0x1c, 0xae, 0x01, 0x00,
+                                      0xf5, 0xa2, 0xfe, 0xff, 0xcc, 0xcf, 0x01, 0x00] }
+    ])
+    result = FactorioProtocol.parse_udp_payload(pkt)
+    actions = extract_actions(result)
+    assert_equal 1, actions.size, 'server_tick_info wrapper should be stripped'
+    assert_equal 'deconstruct', actions[0][:name]
+    assert_equal 2, actions[0][:game_player]
+  end
 
   def test_client_heartbeat_keeps_all_actions
     # Client heartbeat should NOT filter metadata (is_server=false)

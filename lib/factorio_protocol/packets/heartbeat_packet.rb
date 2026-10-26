@@ -168,19 +168,22 @@ module FactorioProtocol
         tc[:hit_unknown] = true if act[:hit_unknown]
       end
 
-      # Server-to-client heartbeats: [wrapper][real action][metadata...] or
-      # [real action][metadata...]. Keep the wrapper (needed for player delta
-      # decoding) plus the FIRST real action, then drop trailing metadata.
-      # NO-OP today: no table maps an id to 'server_tick_info' since the
-      # experimental hash died (2.0 S→C carries stop_movement_in_the_next_tick
-      # at 82 instead; stable 2.1: unresolved). No stable S→C corpus exists —
-      # server mode never captures S→C. If a client-mode capture lands,
-      # identify the wrapper id and extend this to match it.
-      if is_server && tc[:actions].size > 1
-        wrapper = tc[:actions].take_while { |a| a[:name] == 'server_tick_info' }
-        real = tc[:actions].find { |a| a[:name] != 'server_tick_info' && a[:type] != 0 }
-        tc[:actions] = real ? wrapper + [real] : [tc[:actions].first]
-        # Metadata actions may have set hit_unknown; reset so segment parsing proceeds
+      # Server-to-client heartbeats: the tick closure always starts with a
+      # server_tick_info wrapper (type 85 in 2.1; stop_movement_in_the_next_tick
+      # at 82 in 2.0) that carries the player/context for the echoed action(s).
+      # It is NOT an input action — strip it (and any trailing metadata) so
+      # only the real echoed C->S actions survive. The wrapper's delta already
+      # decoded the player context during parse_action, so dropping it here is
+      # safe: downstream code sees only real actions.
+      if is_server
+        # Stripping the server_tick_info wrapper (type 85) AND adjusting the
+        # player index. The S->C player delta is 1-indexed (matches the log
+        # player index directly), while parse_action adds +1 for the C->S
+        # encoding. Only correct when a wrapper was actually present.
+        removed = tc[:actions].reject! { |a| a[:name] == 'server_tick_info' }
+        if removed
+          tc[:actions].each { |a| a[:game_player] -= 1 if a[:game_player] && a[:game_player] > 0 }
+        end
         tc[:hit_unknown] = false
       end
 

@@ -10,10 +10,10 @@
 # captures/factorio-current.log correlations, 44+ sequence-joined anchors):
 #
 #  * current stable numbering = dump numbering +1 from the inserted action's
-#    band: an input action was INSERTED somewhere in ids 16..40 (not pinned
-#    by the captures — the band decodes to all-zero lengths, so the slot is
-#    a naming footnote only), pushing every id >= 41 up by one. The whole
-#    observed range 41..348 holds dump+1 exactly.
+#    band: stop_movement_in_the_next_tick was INSERTED at stable id 32
+#    (absent from the 2.0 defines dump — it lived at 2.0 id 82), pushing
+#    every dump id >= 32 up by one. The whole observed range 41..348 holds
+#    dump+1 exactly (32..40 covers the insertion + shifted dumps).
 #  * names the defines dump never carried (internal wire actions) are log-
 #    verified into their slots: acknowledge_technology/53, close_gui/61,
 #    selected_entity_changed/90, update_blueprint_shelf/151,
@@ -45,7 +45,7 @@ ACTIONS_21 = {
      4 => ["toggle_driving", 0],
      5 => ["open_gui", 14],
      6 => ["open_current_vehicle_gui", 0],
-     7 => ["connect_rolling_stock", 4],
+     7 => ["close_gui", 4],
      8 => ["disconnect_rolling_stock", 4],
      9 => ["selected_entity_cleared", 8],
     10 => ["clear_cursor", 0],
@@ -56,19 +56,20 @@ ACTIONS_21 = {
     17 => ["destroy_opened_item", 0],
     18 => ["copy_opened_item", 0],
     19 => ["copy_large_opened_item", 0],
-    23 => ["open_bonus_gui", 0],
-    24 => ["open_achievements_gui", 0],
-    25 => ["cycle_blueprint_book_forwards", 0],
+    23 => ["close_gui", 0],
+    24 => ["close_gui", 0],
+    25 => ["close_gui", 0],
     26 => ["cycle_blueprint_book_backwards", 0],
     27 => ["cycle_quality_up", 1],
     28 => ["cycle_quality_down", 0],
-    32 => ["toggle_enable_vehicle_logistics_while_moving", 0],
-    33 => ["toggle_deconstruction_item_entity_filter_mode", 0],
-    34 => ["toggle_deconstruction_item_tile_filter_mode", 0],
-    35 => ["select_next_valid_gun", 0],
-    36 => ["toggle_map_editor", 0],
-    37 => ["delete_blueprint_library", 0],
-    39 => ["activate_paste", 0],
+    32 => ["stop_movement_in_the_next_tick", 0],
+    33 => ["toggle_enable_vehicle_logistics_while_moving", 0],
+    34 => ["selected_entity_cleared", 0],
+    35 => ["close_gui", 0],
+    36 => ["select_next_valid_gun", 0],
+    37 => ["toggle_map_editor", 0],
+    38 => ["delete_blueprint_library", 0],
+    40 => ["activate_paste", 0],
     41 => ["undo", 0],
     42 => ["redo", 0],
     43 => ["toggle_personal_roboport", 0],
@@ -81,7 +82,7 @@ ACTIONS_21 = {
     50 => ["flush_opened_entity_fluid", 0],
     52 => ["add_logistic_section", 0],
     53 => ["acknowledge_technology", 0],
-    54 => ["open_opened_entity_grid", 0],
+    54 => ["close_gui", 0],
     57 => ["open_new_platform_button_from_rocket_silo", 0],
     58 => ["toggle_selected_entity", 0],
     59 => ["cheat", 0],
@@ -109,6 +110,7 @@ ACTIONS_21 = {
     82 => ["send_stack_to_trash", 0],
     83 => ["send_stacks_to_trash", 0],
     84 => ["inventory_transfer", 16],
+    85 => ["server_tick_info", 12],
     86 => ["craft", 6],
     87 => ["wire_dragging", 8],
     88 => ["change_shooting_state", 9],
@@ -179,6 +181,7 @@ ACTIONS_21 = {
    156 => ["export_blueprint", nil],
    157 => ["import_blueprint", 16],
    158 => ["import_blueprints_filtered", 6],
+   159 => ["player_join_game", 0],
    161 => ["cancel_deconstruct", 0],
    162 => ["cancel_upgrade", 5],
    163 => ["change_arithmetic_combinator_parameters", 0],
@@ -245,7 +248,7 @@ ACTIONS_21 = {
    227 => ["blueprint_transfer_queue_update", nil],
    228 => ["drag_train_schedule", 1],
    229 => ["drag_train_schedule_interrupt", 2],
-   230 => ["drag_train_wait_condition", 0],
+   230 => ["selected_entity_changed_very_close", 0],
    231 => ["select_item_filter", 0],
    232 => ["swap_item_filters", 4],
    233 => ["select_entity_slot", 0],
@@ -258,11 +261,12 @@ ACTIONS_21 = {
    240 => ["swap_tile_slots", 0],
    241 => ["select_mapper_slot_from", 0],
    242 => ["select_mapper_slot_to", 0],
-   243 => ["swap_mappers", nil],
+   243 => ["set_ghost_cursor", nil],
    244 => ["display_resolution_changed", nil],
    245 => ["quick_bar_set_slot", 5],
    246 => ["quick_bar_pick_slot", 0],
    247 => ["quick_bar_set_selected_page", nil],
+   248 => ["player_leave_game", 0],
    249 => ["map_editor_action", 1],
    252 => ["change_multiplayer_config", 1],
    253 => ["admin_action", 4],

@@ -92,7 +92,7 @@ if options[:capture]
     Timeout.timeout(options[:capture]) do
       LiveCapture.new(interface: iface, port: port).each_packet do |_pkt, _ts, _src, _dst, _sp, _dp, udp_data, _raw|
         n_pkts += 1
-        next unless udp_data && udp_data.getbyte(0) == 6
+        next unless udp_data && (udp_data.getbyte(0) & 0x1F) == 6 || (udp_data.getbyte(0) & 0x1F) == 7
         parsed = FactorioProtocol.parse_udp_payload(udp_data)
         next unless parsed
         hb = parsed[:heartbeat]
@@ -123,10 +123,11 @@ end
 if options[:pcap]
   reader = PcapReader.new(options[:pcap])
   reader.each_packet do |_pkt, _ts, _src, _dst, _sp, _dp, udp_data, _raw|
-    next unless udp_data && udp_data.getbyte(0) == 6
+    next unless udp_data && (udp_data.getbyte(0) & 0x1F) == 6 || (udp_data.getbyte(0) & 0x1F) == 7
     parsed = FactorioProtocol.parse_udp_payload(udp_data)
     next unless parsed
     hb = parsed[:heartbeat]
+    next unless hb
     hb[:tick_closures]&.each do |tc|
       next unless tc[:tick]
       tc[:actions]&.each { |a| pkt_actions[tc[:tick]] << [a[:game_player], a[:type]] }
