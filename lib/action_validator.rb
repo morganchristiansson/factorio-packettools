@@ -50,12 +50,26 @@ class ActionValidator
     @stats = Hash.new(0)
     @reported = {}       # "wire|logname" => true, until the next summary
     @last_report = 0.0   # first summary prints as soon as there is something to say
+    @unattributed_enabled = true
+    @unattributed_samples = { wire: [], log: [] }
+  end
+
+  # Register the final cumulative report. Called by the sniffer at startup
+  # (once, on the live instance — not per-test-instance).
+  def register_exit_handler
+    at_exit { report }
   end
 
   attr_reader :stats, :votes
 
   # Reached by the host's single log-tailer thread (emit(:on_log_line)),
   # not by its own LogTail — one reader on the inode feeds every consumer.
+  # Plugin lifecycle: called when the plugin bus emits :on_start. Registers
+  # the exit handler for the final cumulative report.
+  def on_start
+    register_exit_handler if @host
+  end
+
   def on_log_line(line)
     record_log_line(line)
   end
@@ -139,6 +153,21 @@ class ActionValidator
     @log.keys.each { |t| @log.delete(t) if t < tick - TICK_TOLERANCE }
   end
 
+  # Log ticks evicted without ever being correlated — the wire actions at
+  # that tick never found a matching log line (or vice versa). A real
+  # desync (wrong action length, tick misread, player delta off) lands
+  # here: the wire parsed at tick T but the log line is elsewhere, so both
+  # sit unmatched until evicted. Counted here, reported in the periodic
+  # summary (not printed per-tick to avoid spam from the 600-tick window
+  # flush on startup).
+  def log_unattributed(buf, tick)
+    return unless @unattributed_enabled
+    entries = buf[tick]
+    return unless entries && !entries.empty?
+    @stats[:unattributed] += entries.size
+    @unattributed_samples[buf.equal?(@wire) ? :wire : :log] << [tick, entries.size]
+  end
+
   def record_pair(tick, player, wire_type, log_name)
     @votes[wire_type][log_name] += 1
     wire_name = FactorioProtocol.action_name(wire_type)
@@ -160,18 +189,42 @@ class ActionValidator
   # Periodic summary on the packet thread's cadence: counts, plus the
   # wire IDs whose winning log name disagrees with the action table —
   # the candidate corrections this feature exists to surface.
+  # Called from on_input_actions (rate-limited) and at_exit (final report).
   def maybe_report
     now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-    # First summary as soon as there is anything to say; then every interval.
-    content = @stats.values.any? || @votes.any?
-    return if !content || now - @last_report < REPORT_INTERVAL
+    # Rate-limited: first summary prints immediately, then every interval.
+    # The at_exit report bypasses the rate limit — called directly as `report`.
+    return if @last_report.nonzero? && now - @last_report < REPORT_INTERVAL
     first = @last_report.zero?
     @last_report = now
     @reported.clear unless first # the first summary does not re-open the detail lines
+    report_summary
+  end
+
+  def report
+    return unless @stats.values.any? || @votes.any?
+    report_summary
+  end
+                def report
+    return unless @stats.values.any? || @votes.any?
+    report_summary
+  end
+
+  def report_summary
+    return unless @stats.values.any? || @votes.any?
     s = @stats
     puts format('[action-validate] %<ok>d OK, %<mis>d mismatched, %<nit>d not-in-table, ' \
-                '%<seq>d sequence-length mismatches (actions correlated so far)',
-                ok: s[:ok], mis: s[:mismatch], nit: s[:not_in_table], seq: s[:seq_len_mismatch])
+                '%<seq>d sequence-length mismatches, %<un>d unattributed ticks ' \
+                '(actions correlated so far)',
+                ok: s[:ok], mis: s[:mismatch], nit: s[:not_in_table], seq: s[:seq_len_mismatch], un: s[:unattributed])
+    # Show a few unattributed tick samples (wire or log) to point at the gap.
+    @unattributed_samples.each do |label, samples|
+      next if samples.empty?
+      samples.sort_by! { |tick, _| tick }
+      tick, count = samples.first
+      puts "  sample: #{label} tick #{tick}: #{count} wire actions with no log line" if label == :wire
+      puts "  sample: #{label} tick #{tick}: #{count} log lines with no wire action" if label == :log
+    end
     disagreements = @votes.reject { |id, names| names.any? { |name, _| normalize(name) == normalize(table_name(id)) } }
     disagreements.sort.each do |id, names|
       winner, n = names.max_by { |_, c| c }
@@ -193,12 +246,21 @@ class ActionValidator
   def evict(buf, tick)
     @newest_tick = tick if tick > (@newest_tick ||= tick)
     floor = @newest_tick - TICK_WINDOW
-    buf.keys.each { |t| buf.delete(t) if t < floor }
+    buf.keys.each do |t|
+      if t < floor
+        log_unattributed(buf, t) # before delete — reports unmatched entries
+        buf.delete(t)
+      end
+    end
     cap(buf)
   end
 
   def cap(buf)
-    buf.delete(buf.keys.first) while buf.values.sum(&:size) > MAX_BUFFER_ENTRIES
+    while buf.values.sum(&:size) > MAX_BUFFER_ENTRIES
+      t = buf.keys.first
+      log_unattributed(buf, t)
+      buf.delete(t)
+    end
   end
 
   # CamelCase (log) vs snake_case (table) — compare normalized. Same

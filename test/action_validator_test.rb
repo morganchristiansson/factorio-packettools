@@ -148,7 +148,7 @@ class TestActionValidator < Minitest::Test
     # All within the tick window — nothing evicted yet.
     assert @v.instance_variable_get(:@log).size <= ActionValidator::TICK_WINDOW + 1
     # Crossing the tick window evicts from the front.
-    log! 100_000, 12, 'Build'
+    capture_io { log! 100_000, 12, 'Build' }
     assert_empty @v.instance_variable_get(:@log).keys.select { |t| t < 100_000 - ActionValidator::TICK_WINDOW }
     # FIFO cap backstop: an unbounded flood of one tick is capped by entries.
     10_000.times { log!(100_001, 12, 'Build') }
