@@ -52,6 +52,14 @@ class MapDownload
     end
   end
 
+  # LiveCapture invokes the transfer-block hook through #call (it carries a
+  # callable, per live_capture.rb's contract) — adapt the contract so the
+  # sniffer's map-download reassembly runs on the capture thread. add_block
+  # stays the real implementation used directly by tests.
+  def call(number, payload)
+    add_block(number, payload)
+  end
+
   def stop
     @thread&.kill
   end

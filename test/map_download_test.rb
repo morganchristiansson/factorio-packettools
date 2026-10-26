@@ -70,6 +70,18 @@ class TestMapDownload < Minitest::Test
     assert_equal 1, blocks
   end
 
+  # LiveCapture invokes the transfer-block hook through #call (callable
+  # contract), not add_block directly — cover that path so a missing #call
+  # regresses the test instead of crashing client mode.
+  def test_call_delegates_to_add_block
+    number, payload = LiveCapture.transfer_block(transfer_frame(7))
+    @dl = MapDownload.new(dir: @dir, quiet: 0.05) { |zip, n| @done = [zip, n] }
+    assert_respond_to @dl, :call
+    @dl.call(number, payload)
+    _zip, blocks = await
+    assert_equal 1, blocks
+  end
+
   def test_assembles_contiguous_blocks_into_one_archive
     @dl = MapDownload.new(dir: @dir, quiet: 0.05) { |zip, n| @done = [zip, n] }
     feed(@dl)
