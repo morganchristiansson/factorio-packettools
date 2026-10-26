@@ -387,9 +387,12 @@ module FactorioProtocol
     # Strict: the declared length must equal the remaining bytes, so a text
     # byte is never misread as a length (that truncated long messages
     # mid-word: "...feelings toward" instead of the full text).
+    # Note: `len` can be 0 (empty chat = Enter pressed with no text);
+    # `if len` would skip it as falsy, so check !nil? instead and handle
+    # zero-length explicitly.
     p_off, = decode_uint16v(d, 0)
     l_off, len = decode_uint32v(d, p_off)
-    if len && l_off + len == d.bytesize
+    if !len.nil? && l_off && l_off + len == d.bytesize
       return nil if len.zero? # [player][0x00] — an empty message, not text
       return d[l_off..-1].force_encoding('UTF-8').scrub('?')
     end
@@ -402,8 +405,9 @@ module FactorioProtocol
     # Main action list format: [uint32v len][text] — exact fit only. A
     # prefix-fit here reintroduces the truncation bug above (slot byte read
     # as a length, returning a chopped prefix of the real message).
+    # Same falsy-0 trap as above: check !nil? for the length.
     off, slen = decode_uint32v(d, 0)
-    if slen && slen > 0 && off + slen == d.bytesize
+    if !slen.nil? && slen > 0 && off && off + slen == d.bytesize
       return d[off, slen].force_encoding('UTF-8').scrub('?')
     end
 
