@@ -381,18 +381,16 @@ module FactorioProtocol
   # escape was read as a 5-byte uint32v length, so 82/255 captured messages
   # printed as "?d\u0001$mod bug or are we talking actual bug".
   def self.decode_chat(data)
-    return nil unless data && data.bytesize > 0
+    return nil unless data && data.bytesize >= 2
     d = data.dup.force_encoding('BINARY')
 
     # Strict: the declared length must equal the remaining bytes, so a text
     # byte is never misread as a length (that truncated long messages
     # mid-word: "...feelings toward" instead of the full text).
-    # Note: `len` can be 0 (empty chat = Enter pressed with no text);
-    # `if len` would skip it as falsy, so check !nil? instead and handle
-    # zero-length explicitly.
     p_off, = decode_uint16v(d, 0)
     l_off, len = decode_uint32v(d, p_off)
-    if !len.nil? && l_off && l_off + len == d.bytesize
+    if len && l_off + len == d.bytesize # Note: Ruby treats 0 as truthy, so
+      # len=0 (empty chat) reaches the zero-check below correctly.
       return nil if len.zero? # [player][0x00] — an empty message, not text
       return d[l_off..-1].force_encoding('UTF-8').scrub('?')
     end
@@ -405,14 +403,17 @@ module FactorioProtocol
     # Main action list format: [uint32v len][text] — exact fit only. A
     # prefix-fit here reintroduces the truncation bug above (slot byte read
     # as a length, returning a chopped prefix of the real message).
-    # Same falsy-0 trap as above: check !nil? for the length.
     off, slen = decode_uint32v(d, 0)
-    if !slen.nil? && slen > 0 && off && off + slen == d.bytesize
+    if slen > 0 && off && off + slen == d.bytesize
       return d[off, slen].force_encoding('UTF-8').scrub('?')
     end
 
-    # Raw text (no prefix) — a lone continuation segment, decoded standalone
-    d.force_encoding('UTF-8').scrub('?')
+    # Raw text (no prefix) — a lone continuation segment, decoded standalone.
+    # Reject non-printable bytes (e.g. [0x00] from non-chat write_to_console
+    # console-open/close events) that the strict format checks above didn't
+    # capture: a single NUL byte is not text.
+    text = d.force_encoding('UTF-8').scrub('?')
+    text if text.match?(/\S/)
   end
 
   # Recursively decode a localized string (Factorio's protobuf-like format).
