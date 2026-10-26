@@ -9,6 +9,7 @@ module FactorioProtocol
   require_relative 'factorio_protocol/quickbar'
   require_relative 'input_actions_20'
   require_relative 'input_actions_lens_20'
+  require_relative 'input_actions_lens_21'
   require_relative 'factorio_types'
 
   # ── Message Types ──────────────────────────────────────────────────
@@ -392,6 +393,25 @@ ACTIONS = {
   # Shared primitives live in WireDecode (mixed into packet classes too);
   # the module extends it so `FactorioProtocol.decode_uint16v` etc. still
   # work for legacy callers and specs.
+
+  # 2.1.23 STABLE (build 87750) renumbered the low ids relative to the
+  # experimental build this project started on (ACTIONS above). Wire-verified
+  # on captures/server-34197-*: the stable build shifted the low IDs by +1
+  # relative to the experimental dump (exp 67 = drop_item → stable 68;
+  # exp 68 = build → stable 69; exp 69 = start_walking → stable 70), and
+  # shifted write_to_console from exp 106 to stable 107 (market_offer took
+  # 106, change_train_stop_station took 107→108). The chat ID shift is
+  # wire-verified by 52 clean chat payloads in the stable capture: type 107
+  # carries chat (segment_type 107), type 106 does not.
+  ACTIONS_21 = ACTIONS.merge(
+    68 => ["drop_item", 8],
+    69 => ["build", 16],
+    70 => ["start_walking", 16],
+    106 => ["market_offer", nil],
+    107 => ["write_to_console", nil],
+    108 => ["change_train_stop_station", 0],
+  ).freeze
+
   extend WireDecode
 
   # ── Action Name / Length Lookup ────────────────────────────────────
@@ -410,14 +430,14 @@ ACTIONS = {
 
   # The wire numbering of input actions is version-dependent: 2.0 and 2.1
   # use different defines.input_action values (verified on a live 2.0.77
-  # session — start_walking=67, write_to_console=104 — vs the 2.1 table's
-  # 69 / 106). ACTIONS (below) is the 2.1 mapping; ACTIONS_20 is 2.0.
+  # session — start_walking=67, write_to_console=104 — vs 2.1 stable's
+  # 70 / 107). ACTIONS is the experimental 2.1 dump; ACTIONS_21 is the
+  # wire-verified stable 2.1.23 (build 87750) numbering. ACTIONS_20 is 2.0.
   #
   # **2.0 is the DEFAULT, on purpose** (2026-10-03, asked for explicitly):
   # it is the only RELEASED version and the one every server runs, so an
-  # undetectable version must decode as 2.0 — not as a table built from an
-  # experimental build's `defines.input_action` dump. ACTIONS (below) is that
-  # 2.1 dump and stays reachable: `select_version` picks it when the wire (or
+  # undetectable version must decode as 2.0. ACTIONS_21 (the stable 2.1
+  # table) is picked by `select_version` when the wire (or
   # `protocol_version:` in config.yaml) actually says 2.1. The measured
   # C→S lengths ride along with the 2.0 tables, so the default decode is
   # also the measured one.
@@ -444,9 +464,9 @@ ACTIONS = {
 
   # Pick the main-action + segment-type mapping for a server version
   # string ("2.0.77", "2.1", or a bare "2.0"). Anything 2.0.x uses the
-  # defines dump; 2.1+ (and unknown) keep the main ACTIONS table — that
-  # branch is only reached when something really says 2.1, since the
-  # default is 2.0 (see the note above). Returns
+  # 2.0 defines dump (ACTIONS_20 + SEGMENT_TYPES_20); 2.1+ (and unknown,
+  # which only happens when something explicitly says 2.1, since the
+  # default is 2.0) keeps the stable 2.1 table (ACTIONS_21). Returns
   # the chosen label ("2.0" / "2.1+") for logging.
   # Inspect one UDP payload for a ConnectionRequest (msg 2) and return the
   # advertised Factorio version. Returns nil when the payload is not a
@@ -468,18 +488,17 @@ ACTIONS = {
       self.c2s_lens = C2S_LENS_20
       '2.0'
     else
-      self.actions = ACTIONS
-      self.segment_types = ACTIONS
-      self.c2s_lens = nil
+      self.actions = ACTIONS_21
+      self.segment_types = ACTIONS_21
+      self.c2s_lens = C2S_LENS_21
       '2.1+'
     end
   end
 
-  # MEASURED client→server payload lengths for the selected version, or nil
-  # when none were measured (only the 2.1 tables, which have none — see
-  # C2S_LENS_20). Where present they win
-  # over the table's guessed length: they come from the wire, not from a
-  # same-name lookup in another version's table.
+  # MEASURED client→server payload lengths for the selected version (see
+  # C2S_LENS_20 / C2S_LENS_21). Where present they win over the table's
+  # guessed length: they come from the wire, not from a same-name lookup
+  # in another version's table.
 
   # Restore the default (2.0) mappings. Exposed for tests so version-
   # dependent fixtures don't leak their tables into later cases.

@@ -182,11 +182,11 @@ class TestFactorioProtocol < Minitest::Test
     # closure. The 266 must not consume +8 or it eats start_walking's header.
     pkt = build_client_tc_packet([
       { type: 266, delta: 1, data: [0x84] },
-      { type: 69, delta: 0, data: [0] * 16 },
+      { type: 70, delta: 0, data: [0] * 16 },
     ])
     result = FactorioProtocol.parse_udp_payload(pkt)
     actions = extract_actions(result)
-    assert_equal [266, 69], actions.map { |a| a[:type] }
+    assert_equal [266, 70], actions.map { |a| a[:type] }
     assert_equal '84', actions[0][:data].unpack1('H*')
     assert_equal 16, actions[1][:data].bytesize
     assert actions.all? { |a| a[:game_player] == 1 }
@@ -198,13 +198,13 @@ class TestFactorioProtocol < Minitest::Test
     # drag position. Reading only 11B left the position to be re-parsed as a
     # phantom action (zoom Player_252 from the position's x-byte 0x80).
     pkt = build_client_tc_packet([
-      { type: 68, delta: 2, data: [0x80, 0xfb, 0xff, 0xff, 0x80, 0x02, 0x00, 0x00, 0x00, 0x01, 0x01,
+      { type: 69, delta: 2, data: [0x80, 0xfb, 0xff, 0xff, 0x80, 0x02, 0x00, 0x00, 0x00, 0x01, 0x01,
                                     0x80, 0xfb, 0xff, 0xff, 0x80, 0x04, 0x00, 0x00, 0x00, 0x10] },
       { type: 9, delta: 0, data: [] },
     ])
     result = FactorioProtocol.parse_udp_payload(pkt)
     actions = extract_actions(result)
-    assert_equal [68, 9], actions.map { |a| a[:type] }
+    assert_equal [69, 9], actions.map { |a| a[:type] }
     assert_equal 21, actions[0][:data].bytesize, 'drag build carries both positions'
     assert actions.all? { |a| a[:game_player] == 2 }
     assert actions.all? { |a| !a.key?(:player) }
@@ -213,8 +213,8 @@ class TestFactorioProtocol < Minitest::Test
   # ── Build action (type 68) ─────────────────────────────────────
 
   def test_build_data_length
-    entry = FactorioProtocol::ACTIONS[68]
-    assert_equal ['build', 9], entry
+    entry = FactorioProtocol::ACTIONS_21[69]
+    assert_equal ['build', 16], entry
   end
 
   def test_build_decodes_position_and_dir
@@ -225,7 +225,7 @@ class TestFactorioProtocol < Minitest::Test
     assert_equal 9, data.bytesize
 
     pkt = build_client_tc_packet([
-      { type: 68, delta: 2, data: data.bytes }
+      { type: 69, delta: 2, data: data.bytes }
     ])
     result = FactorioProtocol.parse_udp_payload(pkt)
     actions = extract_actions(result)
@@ -372,6 +372,55 @@ class TestFactorioProtocol < Minitest::Test
     assert_nil FactorioProtocol.decode_chat(nil)
   end
 
+  # ── write_to_console on 2.1.23 stable (type 107, not 106) ──────
+
+  def test_stable_wtc_type_107_not_market_offer
+    # On 2.1.23 stable, write_to_console is type 107 (not 106, which is
+    # market_offer). The experimental ACTIONS table numbers it 106; ACTIONS_21
+    # corrects this via merge. Without the correction, the parser would name
+    # type 107 "change_active_item_group_for_crafting" and never hit the
+    # write_to_console name-based hack.
+    FactorioProtocol.select_version('2.1')
+    assert_equal 'write_to_console', FactorioProtocol.action_name(107)
+    assert_equal 'market_offer', FactorioProtocol.action_name(106)
+    assert_nil FactorioProtocol.action_len(107)
+    assert_nil FactorioProtocol.action_len(106)
+  end
+
+  def test_stable_chat_reset_command
+    # Real C→S packet from captures/server-34197-20261025-084429.pcap.gz
+    # (2.1.23 stable, build 87750). Player 24 sends a /reset command chat.
+    # Segment type 107 → write_to_console, with the name-based hack reading
+    # the uint32v length-prefixed string payload.
+    hex = '060638795b2b71ae40000000000001016b010000001701000817062f72657365746aae400000000000'
+    result = FactorioProtocol.parse_udp_payload([hex].pack('H*'))
+    refute_nil result
+    hb = result[:heartbeat]
+    refute hb[:hit_unknown], 'no desync on a clean chat packet'
+    actions = extract_actions(result)
+    assert_equal 1, actions.size
+    assert_equal 107, actions[0][:type]
+    assert_equal 'write_to_console', actions[0][:name]
+    assert_equal '/reset', FactorioProtocol.decode_chat(actions[0][:data])
+  end
+
+  def test_stable_chat_evolution_command
+    # Real C→S packet from captures/server-34197-20261025-084429.pcap.gz
+    # (2.1.23 stable). Player 24 sends a /evolution command. This packet
+    # has the has_random flag (0x26 header) — verifies the random flag does
+    # not interfere with segment parsing.
+    hex = '260635245c2b845341000000000001016b060000001701000c170a2f65766f6c7574696f6e7f53410000000000'
+    result = FactorioProtocol.parse_udp_payload([hex].pack('H*'))
+    refute_nil result
+    hb = result[:heartbeat]
+    refute hb[:hit_unknown], 'no desync on a clean chat packet with random flag'
+    actions = extract_actions(result)
+    assert_equal 1, actions.size
+    assert_equal 107, actions[0][:type]
+    assert_equal 'write_to_console', actions[0][:name]
+    assert_equal '/evolution', FactorioProtocol.decode_chat(actions[0][:data])
+  end
+
   # ── Player delta calculation ───────────────────────────────────
 
   def test_player_delta_calculation
@@ -423,8 +472,8 @@ class TestFactorioProtocol < Minitest::Test
 
   def test_action_name_known
     assert_equal 'deconstruct', FactorioProtocol.action_name(131)
-    assert_equal 'build', FactorioProtocol.action_name(68)
-    assert_equal 'write_to_console', FactorioProtocol.action_name(106)
+    assert_equal 'build', FactorioProtocol.action_name(69)
+    assert_equal 'write_to_console', FactorioProtocol.action_name(107)
   end
 
   def test_action_name_unknown
@@ -433,8 +482,8 @@ class TestFactorioProtocol < Minitest::Test
 
   def test_action_len_known
     assert_equal 16, FactorioProtocol.action_len(131)  # deconstruct (fixed to 16)
-    assert_equal 9, FactorioProtocol.action_len(68)    # build
-    assert_nil FactorioProtocol.action_len(106)         # write_to_console (variable)
+    assert_equal 16, FactorioProtocol.action_len(69)    # build (table value; hack adjusts to 9/10/11/21 by variant)
+    assert_nil FactorioProtocol.action_len(107)         # write_to_console (variable, no table length)
   end
 
   def test_detect_version_from_connection_request

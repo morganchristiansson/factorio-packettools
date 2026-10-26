@@ -26,9 +26,9 @@ REAL_PACKET_FIXTURES = [
   {
     name: 'client_chat_message_0x0b',
     description: 'Player_12 chat with 0x0b message-type prefix. Regression: was truncated to 11 bytes (",that nuke ")',
-    hex: '060634195f3970b6b1000000000001016afc0000000b01002e0b2c74686174206e756b65206973206e6f7420676f6e6e612062652066696e6973686564207468697320686f75726cb6b10000000000',
+    hex: '060634195f3970b6b1000000000001016bfc0000000b01002e0b2c74686174206e756b65206973206e6f7420676f6e6e612062652066696e6973686564207468697320686f75726cb6b10000000000',
     actions: [
-      { type: 106, name: 'write_to_console', game_player: 12,
+      { type: 107, name: 'write_to_console', game_player: 12,
         data: '0b2c74686174206e756b65206973206e6f7420676f6e6e612062652066696e6973686564207468697320686f7572',
         chat: 'that nuke is not gonna be finished this hour' },
     ],
@@ -36,11 +36,11 @@ REAL_PACKET_FIXTURES = [
   {
     name: 'server_chat_echo_segment',
     description: 'Server echo of chat via segment (type 0x05, meta=0x22=34 total length)',
-    hex: '0706ef7fb200e934b2000000000003540164ad0dd5e834b20000000000016a5c010000050100240522626172656c792067657420616e792069726f6e20776974682074686174207468656e',
+    hex: '0706ef7fb200e934b2000000000003540164ad0dd5e834b20000000000016b5c010000050100240522626172656c792067657420616e792069726f6e20776974682074686174207468656e',
     actions: [
       { type: 84, name: 'server_tick_info', game_player: 1,
         data: '64ad0dd5e834b20000000000' },
-      { type: 106, name: 'write_to_console', game_player: 6,
+      { type: 107, name: 'write_to_console', game_player: 6,
         data: '0522626172656c792067657420616e792069726f6e20776974682074686174207468656e',
         chat: 'barely get any iron with that then' },
     ],
@@ -48,22 +48,22 @@ REAL_PACKET_FIXTURES = [
   {
     name: 'server_empty_chat_echo',
     description: 'Server echo of a zero-length chat message [0x05][meta=0] — decodes to nil, not garbage',
-    hex: '0706540fb2006cc4b10000000000035401128c19c86bc4b10000000000016a56010000050100020500',
+    hex: '0706540fb2006cc4b10000000000035401128c19c86bc4b10000000000016b56010000050100020500',
     actions: [
       { type: 84, name: 'server_tick_info', game_player: 1,
         data: '128c19c86bc4b10000000000' },
-      { type: 106, name: 'write_to_console', game_player: 6,
+      { type: 107, name: 'write_to_console', game_player: 6,
         data: '0500', chat: nil },
     ],
   },
   {
     name: 'server_build_echo',
     description: 'Server echo of a drag build (11-byte data) with server_tick_info wrapper',
-    hex: '0706cd89b200c73eb20000000000045401d160516ac63eb200000000004439805000008044010000000012',
+    hex: '0706cd89b200c73eb20000000000045401d160516ac63eb200000000004539805000008044010000000012',
     actions: [
       { type: 84, name: 'server_tick_info', game_player: 1,
         data: 'd160516ac63eb20000000000' },
-      { type: 68, name: 'build', game_player: 58,
+      { type: 69, name: 'build', game_player: 58,
         data: '8050000080440100000000' },
     ],
   },
@@ -81,11 +81,11 @@ REAL_PACKET_FIXTURES = [
   {
     name: 'server_start_walking_echo',
     description: 'Server echo of start_walking (16-byte direction vector)',
-    hex: '0706a87fb200a234b20000000000045401e4ec6d55a134b2000000000045390000000000000080000000000000f03f',
+    hex: '0706a87fb200a234b20000000000045401e4ec6d55a134b2000000000046390000000000000080000000000000f03f',
     actions: [
       { type: 84, name: 'server_tick_info', game_player: 1,
         data: 'e4ec6d55a134b20000000000' },
-      { type: 69, name: 'start_walking', game_player: 58,
+      { type: 70, name: 'start_walking', game_player: 58,
         data: '0000000000000080000000000000f03f' },
     ],
   },
@@ -199,11 +199,11 @@ REAL_PACKET_FIXTURES = [
   {
     name: 'server_chat_echo_random_flag_packet',
     description: 'Server heartbeat with random flag (0x27 header). Regression: heartbeat was parsed from byte 5 instead of 1, dropping ALL tick closures — this message was missing entirely',
-    hex: '27068781b300e835b300000000000354015db76ddfe735b30000000000016a5e0100000501001a05186d6f6c74656e20737570706c79206e6f7420737461626c65',
+    hex: '27068781b300e835b300000000000354015db76ddfe735b30000000000016b5e0100000501001a05186d6f6c74656e20737570706c79206e6f7420737461626c65',
     actions: [
       { type: 84, name: 'server_tick_info', game_player: 1,
         data: '5db76ddfe735b30000000000' },
-      { type: 106, name: 'write_to_console', game_player: 6,
+      { type: 107, name: 'write_to_console', game_player: 6,
         data: '05186d6f6c74656e20737570706c79206e6f7420737461626c65',
         chat: 'molten supply not stable' },
     ],
@@ -355,31 +355,31 @@ REAL_PACKET_FIXTURES = [
   {
     name: 'client_selected_changed_plus_start_walking',
     description: 'selected_entity_changed_very_close (1B payload, NO +8) + start_walking (16B) + trailer. Regression: 266 consumed 1+8=9B, swallowing start_walking header 45 00; the middle of its 2 doubles (e6 3f = tail of the 0.7123 direction double) was re-parsed as phantom drag_train_wait_condition Player_64 (delta 63)',
-    hex: '06066442c44e914500000000000004ff0a0101844500cc3b7f669ea0e63fcc3b7f669ea0e6bf8e45000000000000',
+    hex: '06066442c44e914500000000000004ff0a0101844600cc3b7f669ea0e63fcc3b7f669ea0e6bf8e45000000000000',
     actions: [
       { type: 266, name: 'selected_entity_changed_very_close', game_player: 1,
         data: '84' },
-      { type: 69, name: 'start_walking', game_player: 1,
+      { type: 70, name: 'start_walking', game_player: 1,
         data: 'cc3b7f669ea0e63fcc3b7f669ea0e6bf' },
     ],
   },
   {
     name: 'client_selected_cleared_plus_start_walking',
     description: 'selected_entity_cleared (intermediate action: NO 8-byte tick data — that is the closure trailer and only belongs to the last action) + start_walking + trailer. Regression: type 9 consumed 8B, swallowing the start_walking header',
-    hex: '0606ba47c44e634b0000000000000409014500cc3b7f669ea0e63fcc3b7f669ea0e63f604b000000000000',
+    hex: '0606ba47c44e634b0000000000000409014600cc3b7f669ea0e63fcc3b7f669ea0e63f604b000000000000',
     actions: [
       { type: 9, name: 'selected_entity_cleared', game_player: 1,
         data: '' },
-      { type: 69, name: 'start_walking', game_player: 1,
+      { type: 70, name: 'start_walking', game_player: 1,
         data: 'cc3b7f669ea0e63fcc3b7f669ea0e63f' },
     ],
   },
   {
     name: 'client_drag_build_with_position',
     description: 'C→S drag build: the build action carries BOTH positions in one 21-byte payload (9B pos + 01 01 drag marker + 10B headerless drag position) followed by selected_entity_cleared. Regression: the parser read only 11B, leaving the drag position\'s bytes to be re-parsed as a phantom action — the position\'s x-byte 0x80 read as type 128 zoom_around_point with the next byte (0xfb) as delta → phantom Player_252',
-    hex: '060619175202dbb800000000000004440280fbffff8002000000010180fbffff8004000000100900b3b8000000000000',
+    hex: '060619175202dbb800000000000004450280fbffff8002000000010180fbffff8004000000100900b3b8000000000000',
     actions: [
-      { type: 68, name: 'build', game_player: 2,
+      { type: 69, name: 'build', game_player: 2,
         data: '80fbffff8002000000010180fbffff800400000010' },
       { type: 9, name: 'selected_entity_cleared', game_player: 2,
         data: 'b3b8000000000000' },
@@ -414,7 +414,7 @@ REAL_PACKET_FIXTURES = [
   {
     name: 'client_selected_changed_stream',
     description: '15x selected_entity_changed_very_close (1B payload each) interleaved with start_walking - the hover stream that previously derailed into phantom actions with players 137/191',
-    hex: '060642bd5102e15e00000000000024ff0a0102b1ff0a010088ff0a010088ff0a010088ff0a010088ff0a010088ff0a010088ff0a010088ff0a010088ff0a010088ff0a010088ff0a010088ff0a010088ff0a010088ff0a0100884500cc3b7f669ea0e63fcc3b7f669ea0e6bfff0a0100884500cc3b7f669ea0e63fcc3b7f669ea0e6bfd95e000000000000',
+    hex: '060642bd5102e15e00000000000024ff0a0102b1ff0a010088ff0a010088ff0a010088ff0a010088ff0a010088ff0a010088ff0a010088ff0a010088ff0a010088ff0a010088ff0a010088ff0a010088ff0a010088ff0a0100884600cc3b7f669ea0e63fcc3b7f669ea0e6bfff0a0100884600cc3b7f669ea0e63fcc3b7f669ea0e6bfd95e000000000000',
     actions: [
       { type: 266, name: 'selected_entity_changed_very_close', game_player: 2, data: 'b1' },
       { type: 266, name: 'selected_entity_changed_very_close', game_player: 2, data: '88' },
@@ -431,10 +431,10 @@ REAL_PACKET_FIXTURES = [
       { type: 266, name: 'selected_entity_changed_very_close', game_player: 2, data: '88' },
       { type: 266, name: 'selected_entity_changed_very_close', game_player: 2, data: '88' },
       { type: 266, name: 'selected_entity_changed_very_close', game_player: 2, data: '88' },
-      { type: 69, name: 'start_walking', game_player: 2,
+      { type: 70, name: 'start_walking', game_player: 2,
         data: 'cc3b7f669ea0e63fcc3b7f669ea0e6bf' },
       { type: 266, name: 'selected_entity_changed_very_close', game_player: 2, data: '88' },
-      { type: 69, name: 'start_walking', game_player: 2,
+      { type: 70, name: 'start_walking', game_player: 2,
         data: 'cc3b7f669ea0e63fcc3b7f669ea0e6bf' },
     ],
   },
@@ -718,6 +718,46 @@ REAL_PACKET_FIXTURES = [
     actions: [
       { type: 66, name: 'build', game_player: 161, data: '00fbffff0051000000000010' },
       { type: 67, name: 'start_walking', game_player: 161, data: '000000000000f0bf0000000000000080' },
+    ],
+  },
+
+  # ── C→S write_to_console (type 107) from a 2.1.23 stable server (build 87750) ──
+  #
+  # Verified against captures/server-34197-20261025-084429.pcap.gz (no desyncs,
+  # 52 type-107 chat messages). In stable 2.1, write_to_console moved from
+  # the experimental table's 106 to 107 (market_offer took 106); the name-based
+  # hack in parse_action and decode_chat handle it without a table length.
+  {
+    name: 'stable_chat_reset',
+    description: 'Player 24 (/reset command) on 2.1.23 stable. type 107 (not 106 — the experimental table numbers it 106, which is market_offer on stable). Single-segment, no random flag.',
+    version: '2.1.23',
+    hex: '060638795b2b71ae40000000000001016b010000001701000817062f72657365746aae400000000000',
+    actions: [
+      { type: 107, name: 'write_to_console', game_player: 24,
+        total_segs: 1, seg_no: 0,
+        data: '17062f7265736574', chat: '/reset' },
+    ],
+  },
+  {
+    name: 'stable_chat_evolution',
+    description: 'Player 24 (/evolution command) on 2.1.23 stable. Same type 107, with the has_random flag (0x26 header). Verifies decode_chat handles the full [player][uint32v len][text] payload.',
+    version: '2.1.23',
+    hex: '260635245c2b845341000000000001016b060000001701000c170a2f65766f6c7574696f6e7f53410000000000',
+    actions: [
+      { type: 107, name: 'write_to_console', game_player: 24,
+        total_segs: 1, seg_no: 0,
+        data: '170a2f65766f6c7574696f6e', chat: '/evolution' },
+    ],
+  },
+  {
+    name: 'stable_chat_yo',
+    description: 'Player 24 short chat "yo" on 2.1.23 stable. 2-byte payload after the [player][len] header — the parser must not read past the declared length.',
+    version: '2.1.23',
+    hex: '060617245d2b794e42000000000001016b0f000000170100041702796f764e420000000000',
+    actions: [
+      { type: 107, name: 'write_to_console', game_player: 24,
+        total_segs: 1, seg_no: 0,
+        data: '1702796f', chat: 'yo' },
     ],
   },
 ].freeze

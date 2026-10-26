@@ -24,17 +24,24 @@ module ActionLenSolver
   # claims 0 for build_terrain, which is exactly the kind of wrong zero this
   # whole exercise exists to eliminate — so their walk length comes from the
   # parser, per payload, and never from the table.
+  #
+  # These are 2.0 WIRE IDs (they are only the ids whose layout the parser has
+  # logic for; 2.0's own table). For another version, pass code_parsed: [] —
+  # the parser has no content-defined layout keyed on that version's wire ids
+  # (2.1's build_terrain at id 180 relies on its table length).
   CODE_PARSED = [171, 240, 294].freeze
 
   module_function
 
   # The lengths to walk THIS payload with: the corpus-wide measured map, plus the
-  # table's 0-length entries (that is how a `nothing` is stepped over), plus the
-  # parser's own lengths for the content-defined actions.
+  # SELECTED table's 0-length entries (that is how a `nothing` is stepped over),
+  # plus the parser's own lengths for the content-defined actions.uses the
+  # table FactorioProtocol.actions currently selects (2.0 by default, 2.1 after
+  # FactorioProtocol.select_version) — so the same code measures either.
   def walk_lens_for(data, lens, exclude = nil)
     walk = lens.dup
     walk.delete(exclude) if exclude
-    FactorioProtocol::ACTIONS_20.each do |t, (_n, len)|
+    FactorioProtocol.actions.each do |t, (_n, len)|
       next unless len == 0 && !CODE_PARSED.include?(t)
       next if t == exclude
       walk[t] = len

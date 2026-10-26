@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
-# write_to_console message payloads (segment type 104 in 2.0, 106 in 2.1)
+# write_to_console message payloads (segment type 104 in 2.0, 107 in 2.1
+# stable)
 # as FactorioProtocol.decode_chat must read them.
 #
 # The wire shape is [uint16v player][uint32v len][text] — the sender's

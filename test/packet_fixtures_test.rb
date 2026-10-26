@@ -134,7 +134,6 @@ class TestPacketFixtures < Minitest::Test
     95 => 'set_circuit_condition: 30 closures, no single-action packet',
     99 => 'set_logistic_filter_item: content-dependent (22 or 23)',
     101 => 'set_circuit_mode_of_operation: 19 closures',
-    107 => 'change_active_item_group_for_crafting: content-dependent',
     108 => 'change_active_item_group_for_filters: 163 closures, no single-action packet',
     120 => 'send_spidertron: 5 closures',
     133 => 'blueprint-record family: 1-16 closures each, no single-action packet',

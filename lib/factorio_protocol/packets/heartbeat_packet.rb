@@ -220,7 +220,7 @@ module FactorioProtocol
             # server version's defines.input_action (see
             # FactorioProtocol.segment_types) — NOT the version-stable
             # main-action table. 2.0.77: chat arrives as a segment with
-            # type 104 (write_to_console); 2.1: type 106.
+            # type 104 (write_to_console); 2.1 stable (build 87750): type 107.
             seg_name = FactorioProtocol.segment_action_name(seg_type)
             tc[:actions] << {
               type: seg_type, name: seg_name,
@@ -266,21 +266,22 @@ module FactorioProtocol
       raw_player = (last_index + delta) & 0xFFFF
       game_player = raw_player + 1
       data_start = offset
-      # Version-dependent table (ACTIONS_20 for 2.0, ACTIONS for 2.1) —
-      # names AND data lengths come from the selected map.
+      # Version-dependent table (ACTIONS_20 for 2.0, ACTIONS_21 for 2.1 stable) —
+      # names AND data lengths come from the selected map. Stable 2.1.23
+      # (build 87750) renumbered write_to_console from 106 → 107 and
+      # shifted drop_item/build/start_walking by +1 (67→68, 68→69, 69→70).
       entry = FactorioProtocol.actions[type]
       name = entry ? entry[0] : "Unknown(#{type})"
       alen = entry ? entry[1] : nil
 
       # Build: 9 bytes base (x+y+dir), 10 with ghost flag, 11 in drag mode.
-      # C→S drag build carries the position INSIDE the action data: 21 bytes =
-      # 9B pos + 01 01 drag marker + 10B headerless drag position (x+y+dir+flag).
-      # Reading only 11 bytes used to leave the 10B position to be re-parsed as a
-      # phantom action (e.g. zoom_around_point Player_252 from the position's
-      # x-byte 0x80). S→C echoes send the position as a separate counted action
-      # (11B build + 10B position), so it is only folded in for client packets.
-      # Version-agnostic: matched by NAME (2.0: build=66, 2.1: 68).
-      if name == 'build'
+      # Version-agnostic: matched by NAME (2.0: build=66, 2.1 stable: 69).
+      # The `unless alen.nil?` guard skips name-based rewrites when the
+      # table explicitly has no length (types whose layout the parser
+      # computes from structure, not a byte count) — otherwise a nil alen
+      # would be overwritten to 11/10 and the action would consume bytes
+      # that belong to the next one.
+      if name == 'build' && !alen.nil?
         if is_drag && !is_server && offset + 21 <= data.bytesize &&
            data.getbyte(offset + 9) == 0x01 && data.getbyte(offset + 10) == 0x01
           alen = 21
@@ -352,11 +353,12 @@ module FactorioProtocol
       hit_unknown = false
 
       # MEASURED C→S length wins over the table's guess and over the
-      # name-based tweaks above: it was read off the wire (C2S_LENS_20), and
-      # a guess that is one byte off desyncs every action after it in the
-      # closure. Unmeasured types keep the table/hack value — hence key?,
-      # not a plain read: a miss here would blank the table's length and
-      # report every 0-byte action as unknown.
+      # name-based tweaks above: it was read off the wire (C2S_LENS_20 /
+      # C2S_LENS_21), and a guess that is one byte off desyncs every action
+      # after it in the closure. Unmeasured types keep the table/hack value —
+      # hence key?, not a plain read: a miss here would blank the table's
+      # length and report every 0-byte action as unknown. Only applies to
+      # C→S packets (not server echoes).
       if (measured = FactorioProtocol.c2s_lens) && measured.key?(type)
         alen = measured[type] unless is_server
       end
