@@ -12,10 +12,8 @@ FIXTURE_DIR = File.join(__dir__, 'fixtures')
 
 class FixtureTests < Minitest::Test
   def teardown
-    # Never leak the version-dependent tables into other tests. reset_version
-    # covers actions, segment_types AND c2s_lens — resetting only the first two
-    # left the measured 2.0 lengths in place, which made this file's own
-    # results depend on test order.
+    # Never leak the version-dependent tables into other tests: reset_version
+    # restores the 2.1 defaults (actions + segment_types).
     FactorioProtocol.reset_version
   end
 
@@ -164,7 +162,7 @@ class FixtureTests < Minitest::Test
     # the 2.0 chat segment type 104 resolves to gui_click, so the sniffer's
     # log_action chat branch (act[:name] == 'write_to_console') never fires
     # and the message is never treated as chat.
-    FactorioProtocol.segment_types = FactorioProtocol::ACTIONS
+    FactorioProtocol.segment_types = FactorioProtocol::ACTIONS_21
     result = parse_fixture('chat_20_segment')
     act = extract_actions(result).first
     assert_equal 'gui_click', act[:name]

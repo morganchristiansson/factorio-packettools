@@ -33,7 +33,7 @@ require_relative '../lib/factorio_protocol'
 MIN_OBS = 5    # distinct closures that must agree
 MARGIN = 3     # and this factor over the runner-up
 opts = OptionParser.new do |o|
-  o.on('--check', 'verify every C2S_LENS_20 entry against the wire') { @check = true }
+  o.on('--check', 'verify every fixed table length against the wire') { @check = true }
   o.on('--decide', 'list every type the wire decides but the table lacks') { @decide = true }
   o.on('--type N', Integer, 'measure one action type') { |v| @type = v }
   o.on('--json', 'machine-readable output') { @json = true }
@@ -42,9 +42,12 @@ opts.parse!
 args = ARGV.reject { |a| a.start_with?('--') }
 abort 'usage: measure_action_lens.rb [--check|--decide|--type N] [--json] PCAP...' if args.empty?
 
-FactorioProtocol.select_version('2.0')
-lens = FactorioProtocol.c2s_lens || {}
-name = ->(t) { FactorioProtocol::ACTIONS_20[t]&.first || '** UNIDENTIFIED **' }
+# The measured lengths live IN the action table now (input_actions_21.rb):
+# `lens` here is the table's fixed lengths, and --check re-verifies them
+# against the wire — the table IS the measured artifact.
+FactorioProtocol.select_version('2.1')
+lens = FactorioProtocol.actions.select { |_t, (_n, l)| !l.nil? }.transform_values { |(_n, l)| l }
+name = ->(t) { FactorioProtocol.actions[t]&.first || '** UNIDENTIFIED **' }
 CODE = ActionLenSolver::CODE_PARSED
 
 def tally_for(paths, lens, type)
@@ -94,7 +97,7 @@ if @check
     [t, claimed, d[:length], d[:votes]] if d && d[:length] != claimed
   end
   if bad.empty?
-    puts "all #{lens.size} C2S_LENS_20 entries the wire can decide agree"
+    puts "all #{lens.size} table lengths the wire can decide agree"
     exit 0
   end
   bad.sort_by { |t, _, _, v| -v }.each do |t, claimed, got, votes|
@@ -111,7 +114,7 @@ if @json
                      candidates: fresh.transform_values { |d| { length: d[:length], votes: d[:votes] } })
   exit 0
 end
-puts "C2S_LENS_20: #{lens.size} measured lengths; capture set: #{args.size} file(s)"
+puts "table: #{lens.size} fixed lengths; capture set: #{args.size} file(s)"
 puts
 if fresh.empty?
   puts '== nothing new: the wire decides nothing the table lacks =='

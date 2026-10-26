@@ -108,9 +108,9 @@ class FactorioClientBuildTest < Minitest::Test
   end
 
   def test_a_heartbeat_with_an_action_decodes_back_as_that_action
-    # set_player_color (2.0 wire 296): 4 UNORM bytes, so the parser reads the
-    # data back whole.
-    action = FactorioProtocol.build_input_action(296, 3, "\x01\x02\x03\x04".b) +
+    # set_player_color (stable 2.1 wire 312): 4 UNORM bytes, so the parser
+    # reads the data back whole.
+    action = FactorioProtocol.build_input_action(312, 3, "\x01\x02\x03\x04".b) +
              [137_631_110, 0].pack('VV') # the closure trailer
     built = FactorioProtocol.build_client_heartbeat(
       seq: 1, next_receive: 137_631_111, closures: [[137_631_110, 1, action]]
@@ -119,7 +119,7 @@ class FactorioClientBuildTest < Minitest::Test
     assert_equal 1, hb[:tick_closures].size
     assert_equal 1, hb[:tick_closures][0][:actions].size
     a = hb[:tick_closures][0][:actions][0]
-    assert_equal 296, a[:type]
+    assert_equal 312, a[:type]
     assert_equal 'set_player_color', a[:name]
     assert_equal 3, a[:game_player] # (0xFFFF + delta 3) & 0xFFFF = 2, +1 = 3
     assert_equal "\x01\x02\x03\x04".b, a[:data]

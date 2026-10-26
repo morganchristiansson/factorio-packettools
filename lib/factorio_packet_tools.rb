@@ -827,6 +827,12 @@ class FactorioPacketTools
         keep_frame = true if track_quickbar(act)
         log_action(ts, act, hdr[:msg_type] == 7, ghost: @ghost_mode, raw_frame: raw_frame)
       end
+      # Runtime action-ID validation (action_validator plugin): the decoded
+      # C→S actions of one tick closure, joined against the server log's
+      # "Action performed" lines by (tick, player). S→C echoes are never
+      # correlated — the log names the SERVER's processed actions, and
+      # those are what the C→S stream carries.
+      @plugins.emit(:on_input_actions, tc[:tick], tc[:actions]) if hdr[:msg_type] == 6 && tc[:tick]
     end
     keep_frame ||= @stats[:desync] > @desync_before
     @unknown_writer&.write_frame(raw_frame, Time.at(ts)) if keep_frame && raw_frame

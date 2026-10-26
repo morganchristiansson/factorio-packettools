@@ -17,6 +17,7 @@ require 'minitest/autorun'
 require 'mocha/minitest'
 require 'tmpdir'
 require_relative '../factorio-packettools'
+require 'factorio_protocol/build' # build_server_heartbeat / build_input_action
 require_relative 'fixtures/packets'
 require 'player_backup' # the feature under test here; the plugin set requires it too
 
@@ -45,6 +46,15 @@ class TestServerMode < Minitest::Test
   def msg13_packet
     # network header(1, msg 13) | block_number(4 LE) | 503 bytes payload
     "\x0d".b + [1234].pack('V') + ('A'.b * 503)
+  end
+
+  # A synthetic S→C heartbeat echoing one action — the deleted server_*_echo
+  # fixtures were experimental-vintage (no stable 2.1 S→C corpus exists), and
+  # the direction-filter tests only need a msg-7 packet that decodes.
+  def s2c_echo_packet(type = 70, data = "\x00" * 16) # start_walking, 16B
+    FactorioProtocol.build_server_heartbeat(
+      seq: 1, closures: [[0, 1, FactorioProtocol.build_input_action(type, 1, data)]]
+    )
   end
 
   # A real msg-4 carries a session block between the username and the mod
@@ -182,7 +192,7 @@ class TestServerMode < Minitest::Test
       # incoming client chat (msg 6) — should be analyzed
       sniffer.send(:process_packet, 1, ts, CLIENT_IP, SERVER_IP, 34197, 34197, fixture_packet('client_chat_message_0x0b'), "\x00" * 14 + fixture_packet('client_chat_message_0x0b'))
       # outgoing server echo (msg 7) — should be skipped as broadcast duplicate
-      sniffer.send(:process_packet, 2, ts, SERVER_IP, CLIENT_IP, 34197, 34197, fixture_packet('server_chat_echo_segment'), "\x00" * 14 + fixture_packet('server_chat_echo_segment'))
+      sniffer.send(:process_packet, 2, ts, SERVER_IP, CLIENT_IP, 34197, 34197, s2c_echo_packet, "\x00" * 14 + s2c_echo_packet)
       # outgoing TransferBlock (msg 13) — should be dropped entirely
       sniffer.send(:process_packet, 3, ts, SERVER_IP, CLIENT_IP, 34197, 34197, msg13_packet, "\x00" * 14 + msg13_packet)
       sniffer.send(:print_summary)
@@ -214,7 +224,7 @@ class TestServerMode < Minitest::Test
     output, = run_sniffer(server: true, host_ips: [SERVER_IP], player_db: nil, debug: true) do |sniffer|
       ts = 1_700_000_000.0
       sniffer.send(:process_packet, 1, ts, CLIENT_IP, SERVER_IP, 34197, 34197, fixture_packet('client_selected_entity_cleared'))
-      sniffer.send(:process_packet, 2, ts, SERVER_IP, CLIENT_IP, 34197, 34197, fixture_packet('server_open_gui_echo_14b'))
+      sniffer.send(:process_packet, 2, ts, SERVER_IP, CLIENT_IP, 34197, 34197, s2c_echo_packet)
       sniffer.send(:process_packet, 3, ts, SERVER_IP, CLIENT_IP, 34197, 34197, msg13_packet)
     end
 
@@ -225,14 +235,16 @@ class TestServerMode < Minitest::Test
   # ── Test 3: client mode regression ────────────────────────────────────
 
   def test_client_mode_processes_both_directions
-    output, = run_sniffer(player_db: nil) do |sniffer|
+    # debug: the per-action lines are debug-gated and the synthetic echo
+    # carries an action, not chat (chat on stable rides segments).
+    output, = run_sniffer(player_db: nil, debug: true) do |sniffer|
       ts = 1_700_000_000.0
       sniffer.send(:process_packet, 1, ts, CLIENT_IP, SERVER_IP, 34197, 34197, fixture_packet('client_chat_message_0x0b'))
-      sniffer.send(:process_packet, 2, ts, SERVER_IP, CLIENT_IP, 34197, 34197, fixture_packet('server_chat_echo_segment'))
+      sniffer.send(:process_packet, 2, ts, SERVER_IP, CLIENT_IP, 34197, 34197, s2c_echo_packet)
     end
 
     assert_includes output, 'that nuke is not gonna be finished this hour', 'client direction processed'
-    assert_includes output, 'barely get any iron', 'server echo still processed in client mode'
+    assert_includes output, 'start_walking', 'server echo still processed in client mode'
   end
 
   # Regression: the build-action formatter looked up
@@ -1442,5 +1454,29 @@ class TestServerMode < Minitest::Test
     agent.define_singleton_method(:on_player_event) { |_kind, _name| }
     agent.define_singleton_method(:close_events) {}
     agent
+  end
+
+  # ── action_validator plugin wiring ────────────────────────────────────
+  #
+  # The emit (on_input_actions, per C→S tick closure) must reach the feature
+  # through the sniffer's own PluginSet: the plugin in the config list is
+  # built lazily and correlates against log lines it was fed.
+
+  def test_action_validator_plugin_correlates_at_runtime
+    sniffer = make_test_sniffer(server: true, host_ips: [SERVER_IP], plugins: [:action_validator])
+    validator = sniffer.instance_variable_get(:@plugins)[:action_validator]
+    refute_nil validator, 'the action_validator plugin builds from the plugins list'
+
+    # The client_pipette fixture decodes to one pipette (91) action by
+    # player 24 — the matching log line joins it.
+    validator.record_log_line(
+      'Info InputActionHandler.cpp:672: Action performed [4244037 23 Pipette]'
+    )
+    sniffer.send(:process_packet, 1, 1_700_000_000.0, CLIENT_IP, SERVER_IP,
+                 34197, 34197, fixture_packet('client_pipette'))
+
+    assert_equal 1, validator.stats[:ok], 'the wire action correlated with the log line'
+    assert_equal 0, validator.stats[:mismatch]
+    assert_equal({ 'Pipette' => 1 }, validator.votes[91])
   end
 end

@@ -20,7 +20,7 @@
 #   --pcap FILE        analyze an existing capture (log filtered by window)
 #   --toggle           enable action logging at start, disable at end (RCON)
 #   --log FILE         default ~/factorio/factorio-current.log
-#   --table 20|21      diff against ACTIONS_20 (default) or ACTIONS (2.1)
+#   --table 20|21      diff against ACTIONS_21 (default) or ACTIONS_20 (replaying old 2.0 captures)
 #   --suggest          print a corrected Ruby table for pasting
 require 'optparse'
 require 'timeout'
@@ -28,14 +28,14 @@ require_relative '../lib/pcap'
 require_relative '../lib/factorio_protocol'
 require_relative '../lib/server_detect'
 
-options = { log: File.expand_path('~/factorio/factorio-current.log'), table: 20, suggest: false }
+options = { log: File.expand_path('~/factorio/factorio-current.log'), table: 21, suggest: false }
 OptionParser.new do |opts|
   opts.banner = 'Usage: validate_actions.rb [--capture SECONDS | --pcap FILE] [--toggle] [--table 20|21] [--suggest]'
   opts.on('--capture SECONDS', Integer, 'Live-capture for SECONDS (root), tailing the log meanwhile') { |v| options[:capture] = v }
   opts.on('--pcap FILE', 'Analyze an existing packet capture') { |v| options[:pcap] = v }
   opts.on('--toggle', 'Enable action logging at start, disable at end (RCON)') { |v| options[:toggle] = true }
   opts.on('--log FILE', "Factorio log (default: ~/factorio/factorio-current.log)") { |v| options[:log] = v }
-  opts.on('--table N', Integer, 'Table to diff against: 20 (2.0 defines) or 21 (2.1)') { |v| options[:table] = v }
+  opts.on('--table N', Integer, 'Table to diff against: 21 (2.1 stable, default) or 20 (2.0)') { |v| options[:table] = v }
   opts.on('--suggest', 'Print a corrected Ruby table for pasting') { |v| options[:suggest] = true }
 end.parse!
 abort 'Give --capture SECONDS or --pcap FILE' unless options[:capture] || options[:pcap]
@@ -157,29 +157,33 @@ def self.normalize(name)
   name.to_s.gsub(/([a-z0-9])([A-Z])/, '\1_\2').downcase  # CamelCase -> snake_case
 end
 
-best = { score: -1, tick_off: 0, conf: {}, exact: 0 }
+best = { score: -1, tick_off: 0, player_off: 0, conf: {}, exact: 0 }
 (-2..2).each do |tick_off|
-  conf = Hash.new(0)
-  joined = 0
-  exact = 0
-  (log_actions.keys & pkt_actions.keys.map { |t| t + tick_off }).each do |lt|
-    lbp = log_actions[lt].group_by(&:first)
-    pbp = pkt_actions[lt - tick_off].group_by(&:first)
-    lbp.each do |lplayer, lseq|
-      pseq = pbp[lplayer]&.reject { |(_p, w)| w == 0 }  # strip nothing padding
-      next unless pseq
-      joined += 1
-      next unless lseq.size == pseq.size  # exact positional match only
-      exact += 1
-      lseq.zip(pseq).each { |(_, name), (_, wire)| conf[[wire, normalize(name)]] += 1 }
+  (0..1).each do |player_off| # log player + player_off == wire game_player
+    conf = Hash.new(0)
+    joined = 0
+    exact = 0
+    (log_actions.keys & pkt_actions.keys.map { |t| t + tick_off }).each do |lt|
+      lbp = log_actions[lt].group_by { |(lp, _)| lp + player_off }
+      pbp = pkt_actions[lt - tick_off].group_by(&:first)
+      lbp.each do |lplayer, lseq|
+        pseq = pbp[lplayer]&.reject { |(_p, w)| w == 0 }  # strip nothing padding
+        next unless pseq
+        joined += 1
+        next unless lseq.size == pseq.size  # exact positional match only
+        exact += 1
+        lseq.zip(pseq).each { |(_, name), (_, wire)| conf[[wire, normalize(name)]] += 1 }
+      end
+    end
+    if joined > best[:score]
+      best = { score: joined, tick_off: tick_off, player_off: player_off, conf: conf, exact: exact }
     end
   end
-  best = { score: joined, tick_off: tick_off, conf: conf, exact: exact } if joined > best[:score]
 end
-puts "alignment: tick_offset=#{best[:tick_off]} player=game (#{best[:score]} joins, #{best[:exact]} exact)"
+puts "alignment: tick_offset=#{best[:tick_off]} player_off=#{best[:player_off]} (#{best[:score]} joins, #{best[:exact]} exact)"
 
 # Table names are snake_case; compare against the normalized log names.
-table = options[:table] == 21 ? FactorioProtocol::ACTIONS : FactorioProtocol::ACTIONS_20
+table = options[:table] == 21 ? FactorioProtocol::ACTIONS_21 : FactorioProtocol::ACTIONS_20
 known = table.each_with_object({}) { |(id, (name, _)), h| h[id] = name }
 best_name = {}
 best[:conf].each { |(wire, name), n| best_name[wire] = [name, n] if !best_name[wire] || n > best_name[wire][1] }

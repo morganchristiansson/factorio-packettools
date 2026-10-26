@@ -19,8 +19,9 @@
 # This is the DEFAULT table set (2.0 is the only released version);
 # 2.1's experimental table is ACTIONS. Data lengths here are inherited
 # from ACTIONS BY NAME (payload shapes are version-stable) — they are
-# guesses, and C2S_LENS_20 (measured, by wire ID) overrides them on
-# client→server.
+# guesses; the measured overrides that used to live in C2S_LENS_20 were
+# deleted with the 2.0 lens (2.0 is retired — this table is reference
+# documentation for improving the 2.1 tables).
 #
 # SEGMENT_TYPES_20 — input-action segment types for 2.0 (chat arrives via
 # a segment with type 104 = write_to_console; 2.1 uses 106).

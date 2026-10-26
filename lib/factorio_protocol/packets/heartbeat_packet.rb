@@ -168,10 +168,14 @@ module FactorioProtocol
         tc[:hit_unknown] = true if act[:hit_unknown]
       end
 
-      # Server-to-client heartbeats: [server_tick_info][real action][metadata...]
-      # or [real action][metadata...]. Keep the server_tick_info wrapper (needed
-      # for player delta decoding; it is filtered at display) plus the FIRST real
-      # action, then drop trailing metadata entries.
+      # Server-to-client heartbeats: [wrapper][real action][metadata...] or
+      # [real action][metadata...]. Keep the wrapper (needed for player delta
+      # decoding) plus the FIRST real action, then drop trailing metadata.
+      # NO-OP today: no table maps an id to 'server_tick_info' since the
+      # experimental hash died (2.0 S→C carries stop_movement_in_the_next_tick
+      # at 82 instead; stable 2.1: unresolved). No stable S→C corpus exists —
+      # server mode never captures S→C. If a client-mode capture lands,
+      # identify the wrapper id and extend this to match it.
       if is_server && tc[:actions].size > 1
         wrapper = tc[:actions].take_while { |a| a[:name] == 'server_tick_info' }
         real = tc[:actions].find { |a| a[:name] != 'server_tick_info' && a[:type] != 0 }
@@ -351,17 +355,6 @@ module FactorioProtocol
 
       adata = nil
       hit_unknown = false
-
-      # MEASURED C→S length wins over the table's guess and over the
-      # name-based tweaks above: it was read off the wire (C2S_LENS_20 /
-      # C2S_LENS_21), and a guess that is one byte off desyncs every action
-      # after it in the closure. Unmeasured types keep the table/hack value —
-      # hence key?, not a plain read: a miss here would blank the table's
-      # length and report every 0-byte action as unknown. Only applies to
-      # C→S packets (not server echoes).
-      if (measured = FactorioProtocol.c2s_lens) && measured.key?(type)
-        alen = measured[type] unless is_server
-      end
 
       # build_terrain (2.0: 171) — a LIST of 10-byte terrain records, each
       # record after the first preceded by the 5-byte separator 00 00 00 AB 00

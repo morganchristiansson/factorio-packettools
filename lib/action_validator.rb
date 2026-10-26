@@ -1,0 +1,216 @@
+# frozen_string_literal: true
+
+require_relative 'log_tail'
+require_relative 'server_detect'
+
+# Sniffer feature `action_validator` (config.yaml `plugins:`) — runtime
+# action-ID validation, the live form of tools/validate_actions.rb.
+#
+# Tails the server's factorio-current.log (its `/toggle-action-logging`
+# lines, `Action performed [<game_tick> <player> <CamelCaseName>]`) and
+# joins them against the decoded C→S input actions by (tick, player,
+# position): the log names actions, the capture numbers them — the join
+# pins wire IDs to names and flags MISMATCH / NOT-IN-TABLE / a lost
+# action at runtime, on the live server, while it happens. No RCON and
+# no toggle here: action logging must already be on (it is what the log
+# lines are); the file is read-only.
+#
+# The correlation pairs also VOTE: every (wire id → log name) pair lands
+# in #votes, so the periodic summary can list wire IDs whose winning log
+# name disagrees with the action table — candidate corrections for
+# lib/input_actions_21.rb, exactly what the offline validator's
+# --suggest prints. Unlike the offline tool, this sees the desync damage
+# too: a (tick, player) whose log and wire sequences DIFFER in length is
+# a lost/invented action — usually a wrong measured length before it.
+#
+# Server mode only (on_start fires with RCON; the log lives on the
+# server host). Client mode has no server log — the plugin stays idle.
+class ActionValidator
+  LOG_RE = /Action performed \[(\d+) (\d+) (\w+)\]/.freeze
+
+  # Eviction is by GAME TICK, not wall time: the join is tick-based, so
+  # age is measured in ticks. Entries older than the newest seen tick by
+  # more than TICK_WINDOW fall out. A size cap (FIFO, oldest inserted
+  # first) is the backstop for the one direction ticks can't bound: the
+  # log tailing while no packets arrive — activity decides how much is in
+  # flight, the cap decides what that can cost in memory.
+  TICK_WINDOW = 600
+  MAX_BUFFER_ENTRIES = 4096
+  # Ticks scanned around an exact match when it misses (the closure tick
+  # can lag the processing tick — tools/validate_actions.rb scans ±2 too).
+  TICK_TOLERANCE = 2
+  # Seconds between summary lines (and the rate limit on mismatch spam:
+  # one detail line per distinct (wire, log) pair until the next summary).
+  REPORT_INTERVAL = 300.0
+
+  def initialize(host)
+    @host = host
+    @mutex = Mutex.new
+    @log = Hash.new { |h, k| h[k] = [] }  # tick => [[player1idx, log_name], ...]
+    @wire = Hash.new { |h, k| h[k] = [] }  # tick => [[player1idx, wire_type], ...]
+    @votes = Hash.new { |h, k| h[k] = Hash.new(0) } # wire id => log name => n
+    @stats = Hash.new(0)
+    @reported = {}       # "wire|logname" => true, until the next summary
+    @last_report = 0.0   # first summary prints as soon as there is something to say
+  end
+
+  attr_reader :stats, :votes
+
+  # Server mode startup (on_start only fires with RCON): tail the log.
+  # A missing log file is a real answer — the plugin reports and stays
+  # idle, it is never half-alive.
+  def on_start
+    path = ServerDetect.log_path
+    unless path && File.file?(path)
+      puts '[action-validate] disabled: no factorio-current.log found (server mode only; ' \
+           'turn on /toggle-action-logging on the server to feed it action lines)'
+      return
+    end
+    @thread = Thread.new do
+      LogTail.follow(path) { |line| record_log_line(line) }
+    rescue StandardError => e
+      warn "[action-validate] log tail died: #{e.class}: #{e.message}"
+    end
+    puts "[action-validate] tailing #{path} — correlating Action performed lines with wire action ids"
+  end
+
+  # One tailed log line → [player1idx, log_name] on its tick. The log's
+  # player index is 1-based (same convention as the decoded game_player).
+  def record_log_line(line)
+    m = line.match(LOG_RE)
+    return unless m
+    @mutex.synchronize do
+      @log[m[1].to_i] << [m[2].to_i, m[3]]
+      evict(@log, m[1].to_i)
+    end
+  end
+
+  # THE EVENT (the sniffer emits it per C→S tick closure): correlate this
+  # tick's decoded actions against the log. Runs on the capture thread —
+  # work here must stay cheap, the buffers hold ticks and the join is a
+  # hash lookup.
+  def on_input_actions(tick, actions)
+    wire = actions&.reject { |a| a[:type].zero? } # 'nothing' padding is never logged
+    return if !tick || wire.nil? || wire.empty?
+    @mutex.synchronize do
+      @wire[tick] = wire.map { |a| [a[:game_player], a[:type]] }
+      evict(@wire, tick)
+      correlate(tick)
+      maybe_report
+    end
+  end
+
+  # ── Correlation ──────────────────────────────────────────────────
+
+  # Join one wire tick against the log: exact tick first, then the small
+  # lag window. Per (tick, player) with equal sequence lengths, pair
+  # positionally — the offline validator's join, one tick at a time.
+  def correlate(tick)
+    log_tick = (0..TICK_TOLERANCE).find { |o| @log.key?(tick + o) && !@log[tick + o].empty? }
+    # A wire tick with no log lines yet is the normal idle case (logging
+    # off, or pure movement the log's absence also covers) — not an error.
+    return unless log_tick
+    lseqs = @log[tick + log_tick]
+    wseqs = @wire.delete(tick)
+    # The log's player index is 0-based on stable 2.1.23 (wire game_player 3
+    # logs as 2); the 2.0-era log was 1-based. Scan the offset like
+    # tools/validate_actions.rb and prefer whichever joins.
+    joined = nil
+    [1, 0].each do |player_off|
+      lplayers = lseqs.group_by { |(lp, _)| lp + player_off }
+      next if (lplayers.keys & wseqs.group_by(&:first).keys).empty?
+      joined = [lplayers, player_off]
+      break
+    end
+    return unless joined
+    lplayers, player_off = joined
+    lplayers.each do |player, entries|
+      lseq = entries.map(&:last)
+      wseq = wseqs.select { |(p, _t)| p == player }.map(&:last)
+      if lseq.size != wseq.size
+        # Sequence lengths differ: the log and the wire disagree on how
+        # many actions this player performed this tick — a lost or
+        # invented action on OUR side (usually a wrong length before it).
+        @stats[:seq_len_mismatch] += 1
+        if @stats[:seq_len_mismatch] <= 5
+          puts "[action-validate] tick #{tick} player #{player}: #{wseq.size} wire actions " \
+               "but #{lseq.size} log actions (#{lseq.join(',')}) — a length before this likely desynced"
+        end
+        next
+      end
+      wseq.zip(lseq).each { |wt, lname| record_pair(tick, player, wt, lname) }
+    end
+    # This wire tick is done: the log entries it consumed (and any older
+    # stragglers — a future closure can only need log ticks >= this one)
+    # are dead. Clear them instead of waiting for the FIFO cap.
+    @log.keys.each { |t| @log.delete(t) if t <= tick }
+  end
+
+  def record_pair(tick, player, wire_type, log_name)
+    @votes[wire_type][log_name] += 1
+    wire_name = FactorioProtocol.action_name(wire_type)
+    if wire_name.start_with?('Unknown')
+      @stats[:not_in_table] += 1
+    elsif normalize(wire_name) == normalize(log_name)
+      @stats[:ok] += 1
+    else
+      @stats[:mismatch] += 1
+      key = "#{wire_type}|#{log_name}"
+      unless @reported[key]
+        @reported[key] = true
+        puts "[action-validate] MISMATCH tick #{tick} player #{player}: " \
+             "wire #{wire_type}=#{wire_name} but log says #{log_name}"
+      end
+    end
+  end
+
+  # Periodic summary on the packet thread's cadence: counts, plus the
+  # wire IDs whose winning log name disagrees with the action table —
+  # the candidate corrections this feature exists to surface.
+  def maybe_report
+    now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    # First summary as soon as there is anything to say; then every interval.
+    content = @stats.values.any? || @votes.any?
+    return if !content || now - @last_report < REPORT_INTERVAL
+    first = @last_report.zero?
+    @last_report = now
+    @reported.clear unless first # the first summary does not re-open the detail lines
+    s = @stats
+    puts format('[action-validate] %<ok>d OK, %<mis>d mismatched, %<nit>d not-in-table, ' \
+                '%<seq>d sequence-length mismatches (actions correlated so far)',
+                ok: s[:ok], mis: s[:mismatch], nit: s[:not_in_table], seq: s[:seq_len_mismatch])
+    disagreements = @votes.reject { |id, names| names.key?(table_name(id)) }
+    disagreements.sort.each do |id, names|
+      winner, n = names.max_by { |_, c| c }
+      puts format('  candidate: wire %<id>d table=%<tn>s but log says %<wn>s (x%<n>d)',
+                  id: id, tn: table_name(id) || '(absent)', wn: winner, n: n)
+    end
+  end
+
+  # Wire id → table name, or nil. Read through the SELECTED tables, so
+  # the summary speaks the version the session decodes with.
+  def table_name(id) = FactorioProtocol.actions.dig(id, 0)
+
+  # ── Buffers ──────────────────────────────────────────────────────
+
+  # Tick-window eviction (primary): drop every tick older than the newest
+  # seen by more than TICK_WINDOW. Then the FIFO cap (backstop, oldest
+  # inserted first — hashes keep insertion order and both streams arrive
+  # roughly in order). Called on every insert.
+  def evict(buf, tick)
+    @newest_tick = tick if tick > (@newest_tick ||= tick)
+    floor = @newest_tick - TICK_WINDOW
+    buf.keys.each { |t| buf.delete(t) if t < floor }
+    cap(buf)
+  end
+
+  def cap(buf)
+    buf.delete(buf.keys.first) while buf.values.sum(&:size) > MAX_BUFFER_ENTRIES
+  end
+
+  # CamelCase (log) vs snake_case (table) — compare normalized. Same
+  # shape as tools/validate_actions.rb#normalize.
+  def normalize(name)
+    name.to_s.gsub(/([a-z0-9])([A-Z])/, '\1_\2').downcase
+  end
+end

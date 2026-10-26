@@ -116,6 +116,26 @@ module FactorioProtocol
       (requests.empty? ? ''.b : [requests.size].pack('C') + requests.pack('V*'))
   end
 
+  # SERVER→CLIENT heartbeat: same closure layout, msg 7, no next_receive and
+  # no heartbeat requests (the server sends those in the C→S direction).
+  # Used by tests and the observer client's synthetic echoes.
+  def self.build_server_heartbeat(seq:, closures:, has_random: false)
+    all_empty = closures.all? { |_, _, actions| actions.nil? || actions.to_s.empty? }
+    has_tcl = closures.size > 0
+    flags = 0
+    flags |= 0x02 if has_tcl
+    flags |= 0x04 if has_tcl && closures.size == 1
+    flags |= 0x08 if all_empty && has_tcl
+    body = closures.map do |tick, count, actions|
+      blob = [tick].pack('Q<')
+      next blob if all_empty
+      blob + encode_uint32v(count.to_i << 1) + actions.to_s
+    end
+    out = build_header(7, has_random: has_random) + [flags].pack('C') + [seq].pack('V')
+    out += [closures.size].pack('C') if (flags & 0x02) != 0 && (flags & 0x04).zero?
+    out + body.join
+  end
+
   # Build a synchronizer action for C→S heartbeats.
   # format: type(uint8) + data
   # 0x03 ClientChangedState: type(1) + state(1)

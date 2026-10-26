@@ -5,14 +5,19 @@ network-layer reference and compact payload table live in `docs/README.md`;
 input actions are listed in `docs/actions.md`. This file holds the
 *verified-by-capture* notes, fixes, and open questions.
 
-## ACTIONS Table (`lib/factorio_protocol.rb`)
+## ACTIONS Table (`lib/input_actions_21.rb`, one table per version)
 
-Built from the `defines.input_action` dump (`external/input_actions_dump.txt`).
-IDs from the dump may DIFFER from protocol IDs in some sessions. The mapping
-includes:
-- Core actions (build=68, wire_dragging=86, etc.)
+2.1 stable: `ACTIONS_21` — the `defines.input_action` dump
+(`external/input_actions_dump.txt`, from a pre-stable build) with the
+stable renumbering, log-verified internal wire actions, and measured
+lengths folded in. Regenerate with `scratch/corr/gen_actions21.rb`
+(dump + log-verified OBS overlay + MEASURED lengths). IDs from the dump
+may DIFFER from protocol IDs in some sessions. The mapping includes:
+- Core actions (build=69, wire_dragging=87, …)
 - Internal-only actions (nothing=0, stop_walking=1, stop_mining=3)
-- Session-verified protocol IDs for some types (wire_dragging at 84 vs 86)
+- Session-verified protocol IDs for some types
+- `Unknown(n)` entries for wire types with no dump slot (a measured length
+  and no name yet — the action_validator plugin names them live)
 
 ## Parsed Message Coverage
 
@@ -145,24 +150,50 @@ a join whose in-game bar is empty, writes it back with
 feature is a module mixed in by the plugin manager — see
 `lib/player_backup.rb` and the `on_join_enriched` seam.
 
-**The tables DEFAULT to 2.0** (`ACTIONS_20` + `SEGMENT_TYPES_20` +
-`C2S_LENS_20`; the measured C→S lengths ride along). 2.0 is the only
-RELEASED version and the only one any server runs — the 2.1 table
-(`ACTIONS`) came off an experimental build's `defines.input_action` dump
-this project started on, and is selected only when the wire says 2.1.
-Nothing announces 2.0, so there is nothing to detect: with the old 2.1
-default a 2.0 capture named 9.4% of its actions `Unknown(n)` and, worse,
-mis-read their payload lengths (68k phantom actions in one sweep). The
-version-aware paths therefore all only exist to notice something that is
-NOT 2.0:
+**The tables DEFAULT to 2.1 stable** (2026-10-26; `ACTIONS_21` = defines
+dump with the stable renumbering, log-verified internal actions, and
+wire-MEASURED C→S lengths folded in). 2.1 is the released stable version
+and the only one any server runs; 2.0 (`ACTIONS_20` + `SEGMENT_TYPES_20`)
+is RETIRED — kept as reference documentation for improving 2.1, and its
+decode is lens-less (the measured-length files were deleted), so old 2.0
+captures replay with degraded decode.
+
+History, kept because it shaped the tables: the project started on an
+experimental 2.1 build whose dump (`ACTIONS`) numbered actions differently
+from both 2.0 and stable. With a 2.0 default a 2.0 capture named 9.4% of
+its actions `Unknown(n)` and mis-read their payload lengths (68k phantom
+actions in one sweep). The version-aware paths exist to notice a server
+that is NOT what the tables expect:
 
 - `msg 2` (ConnectionRequest, C→S, 14 bytes) carries the version the client
   advertises — `FactorioProtocol.detect_version(udp)` returns e.g.
   `"2.0.77 (build 19003)"` straight off the wire, no RCON needed.
 - Precedence: `config.yaml protocol_version:` > RCON
   `helpers.game_version` > the connection request > the 2.0 default.
-- The IDs really are version-dependent (2.0 `build`=66, 2.1 `build`=68);
-  `select_version('2.1')` remains for an experimental server.
+- The IDs really are version-dependent (2.0 `build`=66, experimental
+  `build`=68, stable `build`=69 — the stable enum inserted an action in the
+  16..40 band and pushed every id >= 41 up by one; `write_to_console`
+  104→106→107, `start_walking` 67→69→70, `set_player_color` 296→311→312).
+- **Stable 2.1.23 measured lengths, folded into `ACTIONS_21`**
+  (tools/measure_action_lens.rb over the 2026-10-25 capture set):
+  inventory_transfer/84=16 (99v42), craft/86=6, pipette/91=10,
+  cursor_transfer/79=16, stack_transfer/81=17, stack_split/92=17,
+  gui_click/105=17, custom_input/197=25, setup_assembling_machine/89=3,
+  selected_entity_changed/90=8, acknowledge_technology/53=0,
+  fast_entity_split/282=1, clear_recipe_notification/315=2,
+  player_music_changed/348=1, change_active_item_group_for_*/110,111=1,
+  quick_bar_set_slot/245=5, and render_mode_changed/310=1 — a NEW action
+  the dump's build had dropped from defines; log-verified by the x36
+  /toggle-action-logging joins. After the fold: 30 undecoded of 90,456
+  actions, 24 desynced packets across the full 11-capture replay (was
+  170 undecoded / 6,717 desynced).
+- **The /toggle-action-logging player index is 0-BASED on stable 2.1.23**
+  (`Action performed [tick 2 SelectedEntityCleared]` = wire game_player 3);
+  the 2.0-era log was 1-based. tools/validate_actions.rb scans the offset;
+  lib/action_validator.rb (the runtime plugin) should too if the game ever
+  flips back.
+- `/toggle-action-logging` lines: `Action performed [<game_tick> <player>
+  <CamelCaseName>]`, joined against the wire by (tick, player, position).
 - `-r` pre-scans the first capture for that msg 2 (`prescan_pcap_version`)
   so an experimental-server capture gets its tables from packet 1.
 
