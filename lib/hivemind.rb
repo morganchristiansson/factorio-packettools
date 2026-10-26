@@ -528,6 +528,14 @@ class HivemindAgent
     enqueue(:handle_player_event, kind, player, now: now)
   end
 
+  # Reached by the host's single log-tailer thread (emit(:on_log_line)): the
+  # sniffer owns the file handle, this feature just parses the line. Forwarded
+  # to the (optional) logwatcher sub-plugin; async (enqueued to this agent's
+  # worker) so the tailer thread is never blocked by an LLM call.
+  def on_log_line(line)
+    @plugins[:logwatcher]&.handle_log_line(line)
+  end
+
   # The heavy join/leave handler, on this agent's worker (the sniffer emits
   # on_player_event on the bus; :joined runs an RCON attrs query and maybe a
   # greeting LLM call, so it must not run on the capture thread).

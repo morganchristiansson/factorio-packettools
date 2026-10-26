@@ -1479,4 +1479,63 @@ class TestServerMode < Minitest::Test
     assert_equal 0, validator.stats[:mismatch]
     assert_equal({ 'Pipette' => 1 }, validator.votes[91])
   end
+
+  # ── Centralized game-log tailer ─────────────────────────────────
+  #
+  # ONE host-owned LogTail thread fans each new line to every subscriber
+  # over the plugin bus (:on_log_line), instead of each log consumer
+  # tailing the file itself. action_validator is reached by that emit.
+
+  def test_start_log_watcher_fans_one_readers_line_to_subscribers
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, 'factorio-current.log')
+      File.write(path, '') # must exist so the host commits to tailing it
+      sniffer = make_test_sniffer(server: true, host_ips: [SERVER_IP],
+                                  plugins: [:action_validator], log_path: path)
+      validator = sniffer.instance_variable_get(:@plugins)[:action_validator]
+      line = 'Info InputActionHandler.cpp:672: Action performed [4244037 23 Pipette]'
+      # ONE follow() call (one reader on the inode); yield one log line into
+      # the emit block so it fans out to the subscriber — no real polling.
+      LogTail.expects(:follow).once.yields(line)
+      output = capture_io { sniffer.send(:start_log_watcher) }.join
+      assert_includes output, 'tailing', 'the host reports the single tailer started'
+      thread = sniffer.instance_variable_get(:@log_thread)
+      refute_nil thread, 'the host starts one tailer thread'
+      thread.join(2) # let the yielded emit land on the reader thread
+      assert validator.instance_variable_get(:@log).key?(4244037),
+             'the single reader fanned the line to action_validator via :on_log_line'
+    end
+  end
+
+  def test_start_log_watcher_is_idempotent_does_not_double_start
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, 'factorio-current.log')
+      File.write(path, '')
+      sniffer = make_test_sniffer(server: true, host_ips: [SERVER_IP],
+                                  plugins: [:action_validator], log_path: path)
+      # Fake a LIVE reader thread so a second start_log_watcher sees it alive
+      # and short-circuits — exactly the reload seam (start_log_watcher is
+      # re-called on Ctrl-C). Thread.new is faked, so the real follow() block
+      # never runs: this isolates the one-reader guard.
+      fake = Object.new
+      def fake.alive? = true
+      Thread.expects(:new).once.returns(fake)
+      LogTail.expects(:follow).never
+      capture_io { sniffer.send(:start_log_watcher) }
+      assert_same fake, sniffer.instance_variable_get(:@log_thread), 'one reader thread started'
+      # Idempotent: live thread → second call reuses it, no second Thread.new.
+      capture_io { sniffer.send(:start_log_watcher) }
+      assert_same fake, sniffer.instance_variable_get(:@log_thread), 'second call reuses the thread'
+    end
+  end
+
+  def test_start_log_watcher_idle_without_a_log
+    sniffer = make_test_sniffer(server: true, host_ips: [SERVER_IP],
+                                plugins: [:action_validator],
+                                log_path: '/no/such/factorio-current.log')
+    LogTail.expects(:follow).never
+    output = capture_io { sniffer.send(:start_log_watcher) }.join
+    assert_includes output, 'idle', 'no log file ⇒ consumers stay idle, no thread'
+    assert_nil sniffer.instance_variable_get(:@log_thread)
+  end
 end

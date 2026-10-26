@@ -88,6 +88,11 @@ class FactorioPacketTools
     @stats = { packets: 0, factorio_packets: 0, actions: 0, outgoing_skipped: 0, capture_skipped: 0,
                bad_string: 0, unknown: 0, desync: 0, decode_error: 0 }
     @unknown_names = {} # undecoded action type -> how often we saw it
+    # log_path: explicit factorio-current.log from config.yaml (nil = auto-detect
+    # in #start_log_watcher). The host keeps ONE tailer thread that emits
+    # :on_log_line to the plugin bus instead of each feature tailing the file.
+    @log_path = options[:log_path]
+    @log_thread = nil
     # Capture is ALWAYS on for live capture (auto-named + rotated); pcap-read
     # analysis (-r) doesn't re-capture. Auto-naming writes timestamped files
     # directly (captures/server-<port>-<ts>.pcap) — the latest file IS the
@@ -252,7 +257,6 @@ class FactorioPacketTools
         hivemind = @plugins[:hivemind]
         if hivemind
           hivemind.plugins[:followups]&.ensure_followup_scheduler
-          hivemind.plugins[:logwatcher]&.ensure_log_watcher(ServerDetect.log_path)
           puts "[hivemind] AI agent online — answering chat for \"#{hivemind.triggers.join(', ')}\" (model #{hivemind.model})"
         end
       end
@@ -338,6 +342,18 @@ class FactorioPacketTools
     @plugins.emit(:on_player_color, name, rgba)
   end
 
+  # A new line from the server's factorio-current.log. Tailed by a single
+  # host-owned thread (#start_log_watcher, NOT by the features) and fanned
+  # out to every consumer over the plugin bus: action_validator (its
+  # /toggle-action-logging join) and the Hivemind agent's logwatcher
+  # (scenario `event=` lines). One reader thread on the inode, N consumers —
+  # replacing the old design where each feature spawned its own LogTail. The
+  # tailer thread only calls this; handlers are cheap, so it never blocks the
+  # capture loop (which never reads the log).
+  def on_log_line(line)
+    @plugins.emit(:on_log_line, line)
+  end
+
   # Chat relay hub: the single chat event every chat feature is reached by.
   # publish_chat fans :on_chat to the plugin features — discord, translation
   # and hivemind — all sync-light on_chat that enqueue their blocking work to
@@ -403,6 +419,10 @@ class FactorioPacketTools
       load_roster if @rcon
       load_player_attrs if @rcon
       on_start if @rcon
+      # The single log-tailer thread (emits :on_log_line to the plugin bus).
+      # Started after on_start so consumers are built first; idempotent, revived
+      # on reload. RCON-gated like on_start: the consumers are server-mode features.
+      start_log_watcher if @rcon
       # Memoized: a reload must NOT reopen the capture device. Reusing this
       # handle across reloads is what makes them lossless (and avoids two
       # BPF listeners duplicating every packet).
@@ -471,7 +491,9 @@ class FactorioPacketTools
     select_protocol_version
     hivemind = @plugins[:hivemind]
     hivemind&.plugins&.[](:followups)&.ensure_followup_scheduler
-    hivemind&.plugins&.[](:logwatcher)&.ensure_log_watcher(ServerDetect.log_path)
+    # Revive the host-owned single log-tailer (idempotent; a live thread is
+    # left alone, a dead one is restarted). Server-mode only.
+    start_log_watcher if @rcon
     # Hot reload swaps code under the same hivemind object; re-point
     # the cached attrs/tick provider in case this is the first
     # reload after the agent was constructed (or libs changed
@@ -483,6 +505,30 @@ class FactorioPacketTools
   end
 
   private
+
+  # The single host-owned tailer for factorio-current.log: one LogTail thread
+  # reads the file once and emits each new line to the plugin bus (:on_log_line),
+  # so action_validator and the agent's logwatcher share ONE reader instead of
+  # each tailing the inode. Path: explicit `log_path:` config, else auto-detected
+  # from the running factorio process (ServerDetect.log_path). Idempotent —
+  # re-called on hot reload to restart a thread that died; a live thread is
+  # left alone. The resolved path is cached on the same ivar (survives reload) so
+  # reload re-reads the same file instead of another /proc scan.
+  def start_log_watcher
+    @log_path = ServerDetect.log_path if @log_path.nil?
+    path = @log_path
+    if path && File.file?(path)
+      return if @log_thread&.alive?
+      @log_thread = Thread.new do
+        LogTail.follow(path) { |line| @plugins.emit(:on_log_line, line) }
+      rescue StandardError => e
+        warn "[log] tail thread died: #{e.class}: #{e.message}"
+      end
+      puts "[log] tailing #{path} — feeding log-line consumers (action_validator, logwatcher)"
+    else
+      warn "[log] no factorio-current.log found (set log_path: in config.yaml) — log-line consumers idle"
+    end
+  end
 
   # Every lib file a reload re-reads: the core list, the loaded features'
   # files, and the loaded hivemind plugins' files. Absolute paths come from

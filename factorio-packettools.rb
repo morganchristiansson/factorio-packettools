@@ -189,14 +189,17 @@ if __FILE__ == $PROGRAM_NAME
   # debris).
 
 
-  # Auto-enable server mode: when no explicit mode was chosen (no server config,
-  # no ip, no pcap) and a factorio server is running on THIS host, run in
-  # server mode with the detected config. Live capture only — for pcap analysis
-  # the capture may come from a different machine, so an automatic server-IP
-  # filter would silently drop everything. The capture interface is auto-picked
-  # below (server's --bind IP → its interface, else default route), so `-i` is optional.
+  # Auto-enable server mode: only when the user made NO explicit mode choice —
+  # `server:` left unset (nil), no `ip:`, no `-r` — and a factorio server runs
+  # on THIS host. Live capture only — for pcap analysis the capture may come
+  # from a different machine, so an automatic server-IP filter would silently
+  # drop everything; the interface is auto-picked below. An explicit `server:`
+  # key (true OR false) is a mode choice and is left alone — `!options[:server]`
+  # is true for BOTH nil and false, which used to silently flip `server: false`
+  # back into server mode; `nil?` distinguishes them. This is the only place
+  # that sets options[:server] = true implicitly.
   auto_server = false
-  if !options[:server] && !options[:ip] && !options[:pcap]
+  if options[:server].nil? && !options[:ip] && !options[:pcap]
     detected = ServerDetect.detect
     if detected[:serving]
       auto_server = true

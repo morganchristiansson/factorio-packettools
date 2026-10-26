@@ -121,13 +121,6 @@ class TestHivemindLogWatcher < Minitest::Test
   end
 
 
-  # ── Watcher thread lifecycle ───────────────────────────────────
-
-  def test_ensure_log_watcher_requires_existing_file
-    refute @logwatcher.ensure_log_watcher('/nonexistent/factorio-current.log')
-  end
-
-
   private
 
   def reset_window!

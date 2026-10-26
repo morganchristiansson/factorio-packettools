@@ -1,13 +1,12 @@
 # frozen_string_literal: true
 
-require_relative 'log_tail'
-
 # Hivemind feature `logwatcher` — the file is lib/hivemind_logwatcher.rb (the
 # plugin set's `hivemind_` prefix), the class takes its CamelCase name.
 # Listed in config-hivemind.yaml `plugins:` and built by the agent's
 # Plugins::PluginSet with the agent as its owner. The game server log
-# watcher: tails the running
-# server's factorio-current.log
+# watcher: receives the server's factorio-current.log lines (tailked ONCE
+# by the host in FactorioPacketTools#start_log_watcher, forwarded as
+# :on_log_line to this feature) and parses the interesting ones.
 # (scenario `log()` events in the common `event=<name>, k=v, ...` format from
 # freeplay.lua/reset.lua: player-died, map-reset, research-finished,
 # evo-stage, apex-spitter, artillery-target, fluid-flushed) and feeds the
@@ -37,7 +36,8 @@ class HivemindLogwatcher
   def log_turn_events = (@log_turn_events ||= host.hive_config.fetch('log_turn_events').map(&:to_s))
   def log_event_interval = @log_event_interval ||= host.hive_config.fetch('log_event_interval').to_f
 
-  # Game-log watcher (factorio-current.log tail): scenario `log()` events
+  # One line from the host's single factorio-current.log tailer (forwarded
+  # here as :on_log_line via the agent's on_log_line). Scenario `log()` events
   # in the common `event=<name>, k=v, ...` format from freeplay.lua/reset.lua
   # (player-died, map-reset, research-finished, evo-stage, apex-spitter,
   # artillery-target, fluid-flushed) are QUEUED for the next prompt.
@@ -58,27 +58,7 @@ class HivemindLogwatcher
   # signal (it appears on round-scoped lines and on nothing else).
   MIN_ROUND_MINUTES = 10
 
-  # Tail the server's factorio-current.log (path from ServerDetect.log_path)
-  # and feed interesting lines to the agent. The watcher thread lives on the
-  # agent object, so it survives hot reloads; a dead thread is revived by
-  # calling this again at the sniffer's reload seam. Idempotent.
-  def ensure_log_watcher(path)
-    return false if path.nil?
-    return true if @thread&.alive?
-    unless File.file?(path)
-      host.log "log watcher: #{path} not found — not watching"
-      return false
-    end
-    @thread = Thread.new do
-      LogTail.follow(path) { |line| handle_log_line(line) }
-    rescue StandardError => e
-      host.log_error('log watcher died (restart the sniffer or hot-reload to revive)', e)
-    end
-    host.log "watching #{path} for #{LOG_EVENT_PREFIX}... (turn on #{log_turn_events.join(', ')})"
-    true
-  end
-
-  # One tailed log line. Any `event=<name>, ...` line is QUEUED
+  # One received log line. Any `event=<name>, ...` line is QUEUED
   # (append_history) so it rides along with whatever prompt comes next;
   # only TURN_EVENTS (a map reset closes a round: distill memories while
   # the session is fresh) additionally fire a dedicated turn on the FIRST

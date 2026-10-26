@@ -45,8 +45,8 @@ listed. A plugin that is off is never `require`d and never built.
 Call sites are nil-safe (`plugins[:followups]&.schedule(…)`,
 `plugins[:persistence]&.persist!`), so a missing feature is a no-op rather
 than a guard: `/compact` refuses, `run_log_event_turn` skips the post-event
-distillation, `register_tools` leaves the timer tools out, the sniffer skips
-`ensure_log_watcher`, and without `persistence` the session file is simply
+distillation, `register_tools` leaves the timer tools out, the sniffer's
+`start_log_watcher` is a no-op without a log path), and without `persistence` the session file is simply
 never written. `compaction` is the last feature still MIXED IN rather than
 built (`HivemindAgent.still_modules`), which is why it still asks
 `agent.plugin?('compaction')` first.
@@ -394,9 +394,10 @@ running across reloads (methods resolve against the reloaded classes) and
 need no cleanup.
 
 On hot reload the sniffer re-points the agent's providers and calls
-`@plugins[:hivemind].ensure_followup_scheduler` / `ensure_log_watcher` for
-the plugins that are on (`followups`, `logwatcher` — `reload_code!` revives
-a thread that died).
+`@plugins[:hivemind].ensure_followup_scheduler` for the on-plugins, plus
+`start_log_watcher` on the host — `reload_code!` revives the single shared
+tailer thread if it died (action_validator and the logwatcher both subscribe
+to its `:on_log_line` emit, so there is only one reader on the inode).
 Hot reload swaps CODE, not object shape — the agent keeps its boot-time
 ivars. Changes that add/remove instance state need a full restart;
 method/tool/prompt changes hot-reload fine. `hivemind.rb` is re-`load`ed
@@ -462,10 +463,15 @@ agent simply never hears the game log. Its two keys (`log_turn_events`,
 `log_event_interval`) are read by the plugin with `fetch` — required while it
 is on, ignored while it is off.
 
-In server mode the agent tails the running server's `factorio-current.log`
-(path auto-detected from `/proc/<pid>/cwd` of the factorio process,
-fallback `~/factorio`; see `ServerDetect.log_path`). Lines carrying a key
-in the scenario common format `event=<name>, k=v, ...` (player-died,
+In server mode the SNIFFER (host) tails the running server's
+`factorio-current.log` **once**, in a single thread owned by
+`FactorioPacketTools#start_log_watcher` (path auto-detected from
+`/proc/<pid>/cwd` of the factorio process, fallback `~/factorio`, or
+`log_path:` in config.yaml) and emits each new line on the plugin bus as
+`:on_log_line` — reaching `action_validator` directly and the agent's
+`logwatcher` sub-feature via `HivemindAgent#on_log_line`. There is one
+reader thread on the inode regardless of how many consumers subscribe.
+Lines carrying a key in the scenario common format `event=<name>, k=v, ...` (player-died,
 map-reset, research-finished, evo-stage, apex-spitter, artillery-target,
 fluid-flushed) are queued for the next prompt (timestamp and `Script
 `@...lua:NNN:` prefix stripped — the model sees e.g.
@@ -484,9 +490,8 @@ matched by parsed event name via `#log_event_name`)
   at all (queue-only, no turn).
   Manual `/compact` ignores that gate.
 
-Repeats inside the window stay queue-only. The watcher thread lives on the
-agent object (survives hot reloads); `ensure_log_watcher` revives it at the
-sniffer's reload seam if it died.
+The tailer thread lives on the host/sniffer object (survives hot reloads);
+`start_log_watcher` revives it at the reload seam if it died.
 
 ## Scheduled follow-ups (timers)
 

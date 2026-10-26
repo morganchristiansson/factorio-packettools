@@ -1,14 +1,12 @@
 # frozen_string_literal: true
 
-require_relative 'log_tail'
-require_relative 'server_detect'
-
 # Sniffer feature `action_validator` (config.yaml `plugins:`) — runtime
 # action-ID validation, the live form of tools/validate_actions.rb.
 #
-# Tails the server's factorio-current.log (its `/toggle-action-logging`
-# lines, `Action performed [<game_tick> <player> <CamelCaseName>]`) and
-# joins them against the decoded C→S input actions by (tick, player,
+# Receives the server's factorio-current.log lines (tailked ONCE by the
+# host in FactorioPacketTools#start_log_watcher, fanned out as :on_log_line
+# over the plugin bus) and joins them against the decoded C→S input
+# actions by (tick, player,
 # position): the log names actions, the capture numbers them — the join
 # pins wire IDs to names and flags MISMATCH / NOT-IN-TABLE / a lost
 # action at runtime, on the live server, while it happens. No RCON and
@@ -23,8 +21,9 @@ require_relative 'server_detect'
 # too: a (tick, player) whose log and wire sequences DIFFER in length is
 # a lost/invented action — usually a wrong measured length before it.
 #
-# Server mode only (on_start fires with RCON; the log lives on the
-# server host). Client mode has no server log — the plugin stays idle.
+# Server mode only (the host tailer starts with `on_start`/RCON; the log
+# lives on the server host). Client mode has no server log — the plugin
+# stays idle.
 class ActionValidator
   LOG_RE = /Action performed \[(\d+) (\d+) (\w+)\]/.freeze
 
@@ -56,22 +55,10 @@ class ActionValidator
 
   attr_reader :stats, :votes
 
-  # Server mode startup (on_start only fires with RCON): tail the log.
-  # A missing log file is a real answer — the plugin reports and stays
-  # idle, it is never half-alive.
-  def on_start
-    path = ServerDetect.log_path
-    unless path && File.file?(path)
-      puts '[action-validate] disabled: no factorio-current.log found (server mode only; ' \
-           'turn on /toggle-action-logging on the server to feed it action lines)'
-      return
-    end
-    @thread = Thread.new do
-      LogTail.follow(path) { |line| record_log_line(line) }
-    rescue StandardError => e
-      warn "[action-validate] log tail died: #{e.class}: #{e.message}"
-    end
-    puts "[action-validate] tailing #{path} — correlating Action performed lines with wire action ids"
+  # Reached by the host's single log-tailer thread (emit(:on_log_line)),
+  # not by its own LogTail — one reader on the inode feeds every consumer.
+  def on_log_line(line)
+    record_log_line(line)
   end
 
   # One tailed log line → [player1idx, log_name] on its tick. The log's
