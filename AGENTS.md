@@ -212,17 +212,19 @@ either on a client or on the game server host (server mode, with RCON).
     desyncs from wrong length caused false correlations).
   - Type 304: display_scale_changed (3 OK) — new 2.1-only type, added via
     SPECIAL (not in dump or experimental table).
-  - Types 23/24/25 reverted to dump names (open_bonus_gui/open_achievements_
-    gui/cycle_blueprint_book_forwards) — the S→C-verified close_gui
-    overrides (1-2 occurrences) were false correlations; the C→S capture
-    shows different (also low-count) false matches. Type 5 left as open_gui
-    (1 S→C match was too weak vs C→S fixtures).
+  - Types 23/24 reverted to dump names (open_bonus_gui/open_achievements_gui)
+    — the S→C-verified close_gui overrides (1-2 occurrences) were false
+    correlations; the latest C→S capture shows different false matches.
+    Type 25: open_alerts_config_gui (1x on latest C→S capture; dump's
+    cycle_blueprint_book_forwards likely shifted in 2.1). Type 5 left as
+    open_gui (1 S→C match was too weak vs C→S fixtures).
   - All remaining MISMATCH/NOT-IN-TABLE entries are ≤3 occurrences, dominated
     by false correlations with common action names (stop_walking, zoom_around_
-    point, selected_entity_cleared/very_close at adjacent types). 12 NOT-
-    IN-TABLE gap types (12, 14, 20, 21, 22, 30, 31, 55, 97, 128, 224, 225,
-    250, 251, 255, 345, 347, 393) are 2.1-only with ≤1 occurrence each —
-    too weak to pin, left for /toggle-action-logging on a busier session.
+    point, selected_entity_cleared/very_close at adjacent types). Two captures
+    (150048 and 161919) were cross-checked: all disagreements between them are
+    false correlations — common action names match at wrong types due to
+    desyncs from nil-length gap types. Type 7 confirmed as close_gui (6129 OK
+    in old C→S, 2 false take_equipment matches in new — old wins on volume).
 - **Chat payloads are `[uint16v player][uint32v len][text]`**, and the
   player index is 0xff-ESCAPED past 254: on a busy server every message
   starts `ff <u16 LE>`, and reading that as the 5-byte uint32v length escape
