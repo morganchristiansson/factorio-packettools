@@ -19,8 +19,9 @@ module LogTail
   # Set from_start: true to read from the beginning (for -r replay against
   # an already-complete log file).
   def follow(path, from_start: false, &block)
+    seek_end = !from_start
     File.open(path, 'r') do |f|
-      f.seek(0, IO::SEEK_END) unless from_start
+      f.seek(0, IO::SEEK_END) if seek_end
       loop do
         line = f.gets
         if line
@@ -36,7 +37,10 @@ module LogTail
         sleep POLL_INTERVAL
         begin
           f.reopen(path)
-          f.seek(0, IO::SEEK_END)
+          # On recovery after disappearance, seek to end if we started that way
+          # (don't replay old content); on truncation detection, start from
+          # the beginning to catch any post-rotation writes.
+          f.seek(0, IO::SEEK_END) if seek_end && f.stat.size >= f.pos
         rescue SystemCallError
           # still gone; keep polling via the outer loop
         end
