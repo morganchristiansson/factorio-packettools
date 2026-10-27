@@ -197,7 +197,23 @@ that is NOT what the tables expect:
   render_mode_changed/310=1. Residual first-action desyncs are dominated by
   selected_entity_changed_very_close/266 (~15.7k closures): its payload is a
   VARIABLE-length record (C→S seen as `88 ff 0a 01 00 …` repeats / entity refs)
-  — no scalar length, needs the structural entity decode, out of scope.
+  — no scalar length, needs the structural entity decode.
+- **266 IS entity-prototype-dependent (confirmed 2026-10-27).** Running a
+  throwaway local server (2.1.23 / build 87750, matches the captures) + RCON
+  regenerated `external/entity_prototypes_runtime.txt` (1027 entities, the
+  wire's 1-indexed `prototypes.entity` order; 87=stone-furnace, 149=iron-ore,
+  265=fulgurite-small). The 266 payload opens with the selected entity's
+  prototype id (uint16v), then a per-entity unit ref (uint16v), then a 7-byte
+  block — so a C→S single-entity payload is ≈9 bytes, NOT the table's 1. The
+  leading id decodes to real hovered entities (radar, heat-interface,
+  uranium-ore, small/medium/big-biter, worm-turret, wriggler-pentapod,
+  proxies, chests), and CONTENT-bearing entities append MORE: bottomless-chest
+  → a list of item refs (`ff 0a 01 …`), biolab → a position double, ores → a
+  stack. That per-prototype extra is why no scalar length fits. A C→S branch
+  that consumed proto+unit+7 was prototyped and REVERTED: it changed decoder
+  hit_unknown only marginally (the content-entity forms dominate the residual)
+  and left the validator's OK/seq/unattributed numbers identical. The dump +
+  this layout make a real per-prototype serializer feasible if pursued.
 - **The /toggle-action-logging player index is 0-BASED on stable 2.1.23**
   (`Action performed [tick 2 SelectedEntityCleared]` = wire game_player 3);
   the 2.0-era log was 1-based. tools/validate_actions.rb scans the offset;
