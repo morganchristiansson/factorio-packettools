@@ -1033,21 +1033,13 @@ class FactorioPacketTools
         return " #{state} #{gname} tick=#{tick}"
       end
     when "selected_entity_changed_very_close",
-         "selected_entity_changed_very_close_precise"
-      # Payload opens with the selected ENTITY's prototype id (u16v), then a
-      # per-entity unit/position structure that varies with the entity's
-      # content (a chest's items, a patch's resource…), so the bytes past the
-      # proto aren't a fixed layout and there is no single tick offset. The
-      # old code guessed a tick at d[plen] which printed garbage
-      # (0xffffff55 -> 4294967125) for S→C echoes.
-      plen2, pid = FactorioProtocol.decode_uint16v(d, 0)
-      if pid && plen2
-        name = @entity_db ? @entity_db.name(pid) : nil
-        extra = d.bytesize > plen2 ? " +#{d.bytesize - plen2}B" : ''
-        return " proto=#{pid}#{name ? "(#{name})" : ''}#{extra} #{d[0, 18].unpack1('H*')}"
-      end
-    when "selected_entity_changed_relative"
-      # Relative variant carries a cursor-relative offset, not a proto ref.
+         "selected_entity_changed_very_close_precise",
+         "selected_entity_changed_relative"
+      # NOT a decoded layout: hovering a known coal patch shows a payload
+      # (0x56 = pumpjack in the entity table) that disagrees with the hovered
+      # entity, so the leading byte is NOT the entity proto id. The real ref
+      # is buried in the body and varies with the entity's content; don't
+      # mislabel it. Show raw bytes for review.
       return " #{d[0, 18].unpack1('H*')}"
     when "selected_entity_cleared"
       # Client: [tick(4)][pad(4)]; server echo: [55 ff ff ff][token(4)] (or
