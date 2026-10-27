@@ -16,9 +16,11 @@ module LogTail
   # normally; call inside a Thread. Errors from the BLOCK propagate (the
   # caller's thread rescues); read-side errors (file vanished mid-poll)
   # are handled internally by re-entering the wait-for-file state.
-  def follow(path, &block)
+  # Set from_start: true to read from the beginning (for -r replay against
+  # an already-complete log file).
+  def follow(path, from_start: false, &block)
     File.open(path, 'r') do |f|
-      f.seek(0, IO::SEEK_END)
+      f.seek(0, IO::SEEK_END) unless from_start
       loop do
         line = f.gets
         if line

@@ -423,7 +423,7 @@ class FactorioPacketTools
       # Started after on_start so consumers are built first; idempotent, revived
       # on reload. Needs RCON in server mode (host-side log) OR a configured
       # log_path in client mode (where the player reads the server log).
-      start_log_watcher if @rcon || log_consumers?
+      start_log_watcher(from_start: @options[:pcap]) if @rcon || log_consumers?
       # Memoized: a reload must NOT reopen the capture device. Reusing this
       # handle across reloads is what makes them lossless (and avoids two
       # BPF listeners duplicating every packet).
@@ -495,7 +495,7 @@ class FactorioPacketTools
     # Revive the host-owned single log-tailer (idempotent; a live thread is
     # left alone, a dead one is restarted). Server-mode (RCON) or any
     # log-line consumer enabled (action_validator, hivemind logwatcher).
-    start_log_watcher if @rcon || log_consumers?
+    start_log_watcher(from_start: @options[:pcap]) if @rcon || log_consumers?
     # Hot reload swaps code under the same hivemind object; re-point
     # the cached attrs/tick provider in case this is the first
     # reload after the agent was constructed (or libs changed
@@ -521,13 +521,13 @@ class FactorioPacketTools
   # re-called on hot reload to restart a thread that died; a live thread is
   # left alone. The resolved path is cached on the same ivar (survives reload) so
   # reload re-reads the same file instead of another /proc scan.
-  def start_log_watcher
+  def start_log_watcher(from_start: false)
     @log_path = ServerDetect.log_path if @log_path.nil?
     path = @log_path
     if path && File.file?(path)
       return if @log_thread&.alive?
       @log_thread = Thread.new do
-        LogTail.follow(path) { |line| @plugins.emit(:on_log_line, line) }
+        LogTail.follow(path, from_start: from_start) { |line| @plugins.emit(:on_log_line, line) }
       rescue StandardError => e
         warn "[log] tail thread died: #{e.class}: #{e.message}"
       end
