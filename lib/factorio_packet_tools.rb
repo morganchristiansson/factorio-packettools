@@ -1035,20 +1035,18 @@ class FactorioPacketTools
     when "selected_entity_changed_very_close",
          "selected_entity_changed_very_close_precise",
          "selected_entity_changed_relative"
-      # Client form: [payload][tick(4)][pad(4)] — payload len 1/2/4
-      # Server echo: [payload][ref(4)][token(4)][tick-1(4)][pad(4)]
-      plen = { 'selected_entity_changed_very_close' => 1,
-               'selected_entity_changed_very_close_precise' => 2,
-               'selected_entity_changed_relative' => 4 }[act[:name]] || 0
-      if d.bytesize >= plen + 12 && d.getbyte(plen) == 0x54
-        payload = d[0, plen].unpack1('H*')
-        tok = d.unpack1('V', offset: plen + 4)
-        tick = d.unpack1('V', offset: plen + 8) + 1
-        return " payload=#{payload} tok=#{tok} tick=#{tick}"
-      elsif d.bytesize >= plen + 4
-        payload = d[0, plen].unpack1('H*')
-        tick = d.unpack1('V', offset: plen)
-        return " payload=#{payload} tick=#{tick}"
+      # Payload opens with the selected ENTITY's prototype id (u16v), then a
+      # per-entity unit/position structure that varies with the entity's
+      # content (a chest's items, a patch's resource…), so the bytes past the
+      # proto aren't a fixed layout and there is no single tick offset. Show
+      # the resolved proto name + the first bytes; the old code guessed a
+      # tick at d[plen] which printed garbage (0xffffff55 -> 4294967125) for
+      # S→C echoes.
+      pid, plen2 = FactorioProtocol.decode_uint16v(d, 0)
+      if pid && plen2
+        name = @entity_db ? @entity_db.name(pid) : nil
+        extra = d.bytesize > plen2 ? " +#{d.bytesize - plen2}B" : ''
+        return " proto=#{pid}#{name ? "(#{name})" : ''}#{extra} #{d[0, 18].unpack1('H*')}"
       end
     when "selected_entity_cleared"
       # Client: [tick(4)][pad(4)]; server echo: [ref(4)][token(4)]
