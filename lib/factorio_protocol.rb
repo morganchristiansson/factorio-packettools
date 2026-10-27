@@ -206,6 +206,22 @@ module FactorioProtocol
     hdr
   end
 
+  # ── Heartbeat Payload Check ────────────────────────────────────────
+
+  # True when the UDP payload is a synchronizer heartbeat: packet type 6
+  # rides the low 5 bits of the first byte (C→S InputActions, the
+  # tick-closure carrier) or 7 (the server's S→C echo of the same). The
+  # action validators decode exactly these. ONE shared check — the callers
+  # used to duplicate the `getbyte(0) & 0x1F` test (and one copy had an
+  # `&&`/`||` precedence bug that crashed on nil): FactorioPacketTools
+  # #recordable_heartbeat? and tools/validate_actions.rb.
+  def self.heartbeat_payload?(data)
+    b = data&.getbyte(0)
+    return false unless b
+    t = b & 0x1F
+    t == 6 || t == 7
+  end
+
   # Length-prefixed strings are decoded by WireDecode#decode_string, which is
   # the shared FactorioWire reader (same `[length][bytes]` shape, no
   # terminator on the wire) — see lib/factorio_wire.rb.

@@ -16,12 +16,19 @@ module LogTail
   # normally; call inside a Thread. Errors from the BLOCK propagate (the
   # caller's thread rescues); read-side errors (file vanished mid-poll)
   # are handled internally by re-entering the wait-for-file state.
-  # Set from_start: true to read from the beginning (for -r replay against
-  # an already-complete log file).
-  def follow(path, from_start: false, &block)
-    seek_end = !from_start
+  # from_start: read from the beginning (for -r replay against an already-
+  #   complete log file).
+  # start_at: byte offset to seek to (for -r replay with a known log offset
+  #   — avoids scanning 300MB of history).
+  def follow(path, from_start: false, start_at: nil, &block)
+    seek_end = !from_start && !start_at
     File.open(path, 'r') do |f|
-      f.seek(0, IO::SEEK_END) if seek_end
+      if start_at
+        f.seek(start_at)
+        f.gets # align to next line boundary (skip partial line at offset)
+      elsif seek_end
+        f.seek(0, IO::SEEK_END)
+      end
       loop do
         line = f.gets
         if line
@@ -37,9 +44,6 @@ module LogTail
         sleep POLL_INTERVAL
         begin
           f.reopen(path)
-          # On recovery after disappearance, seek to end if we started that way
-          # (don't replay old content); on truncation detection, start from
-          # the beginning to catch any post-rotation writes.
           f.seek(0, IO::SEEK_END) if seek_end && f.stat.size >= f.pos
         rescue SystemCallError
           # still gone; keep polling via the outer loop

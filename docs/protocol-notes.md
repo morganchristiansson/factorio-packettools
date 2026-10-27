@@ -377,7 +377,7 @@ overrides, e.g. for pcap analysis).
 Correlating those names with the packet capture's wire IDs by
 (tick, player, position) yields a definitive ID→name map:
 
-    sudo ruby tools/validate_actions.rb --capture 60 --toggle --table 20 --suggest
+    ruby tools/validate_actions.rb --pcap session.pcap.gz --suggest
 
 Flags OK (table matches), MISMATCH (different name for the ID), and
 NOT IN TABLE entries.
@@ -421,9 +421,10 @@ built against them. One frame per packet, whatever the reason:
 
 Unidentified action types are deliberately left that way: with no length
 they hit `hit_unknown`, so their frames are collected here and can be named
-with `/toggle-action-logging` (`tools/validate_actions.rb --capture 60
---toggle --table 20 --suggest`). Pinning a measured length for an
-UNIDENTIFIED type would decode its closures but stop flagging them.
+with `/toggle-action-logging` (validate a capture against the log with
+`tools/validate_actions.rb --pcap session.pcap.gz --suggest`). Pinning a
+measured length for an UNIDENTIFIED type would decode its closures but stop
+flagging them.
 
 **Distance, not membership.** "An action attributed to a player outside the
 roster" sounds like a desync signal and is not one: on the 2026-10-03 set it
@@ -1085,5 +1086,5 @@ prints the work list: `evidence but ambiguous` (ties or too few closures) and
 are `254 selected_entity_changed_based_on_unit_number` (always the last
 action, always 0 bytes, but its closures all contain a `171` whose length is
 content-defined), then a spread of IDs the 2.0 table does not name
-(122, 147, 229, 210, 82, …) whose NAMES still need
-`tools/validate_actions.rb --capture 60 --toggle`.
+(122, 147, 229, 210, 82, …) whose NAMES still need correlating with
+a `/toggle-action-logging` capture via `tools/validate_actions.rb --pcap`.

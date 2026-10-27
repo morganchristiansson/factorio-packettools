@@ -465,6 +465,16 @@ class TestFactorioProtocol < Minitest::Test
     assert hdr[:has_random]
   end
 
+  def test_heartbeat_payload_detects_both_directions
+    assert FactorioProtocol.heartbeat_payload?([0x06].pack('C')), 'bare C→S heartbeat'
+    assert FactorioProtocol.heartbeat_payload?([0x26].pack('C')), 'C→S with has_random — type still 6'
+    assert FactorioProtocol.heartbeat_payload?([0x07].pack('C')), 'S→C heartbeat'
+    assert FactorioProtocol.heartbeat_payload?([0x27].pack('C')), 'S→C has_random'
+    refute FactorioProtocol.heartbeat_payload?([0x05].pack('C')), 'map progress is not a heartbeat'
+    refute FactorioProtocol.heartbeat_payload?(nil)
+    refute FactorioProtocol.heartbeat_payload?(''.b)
+  end
+
   # ── Action name / len lookup ───────────────────────────────────
 
   def test_action_name_known

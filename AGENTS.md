@@ -61,7 +61,7 @@ either on a client or on the game server host (server mode, with RCON).
   misdecode, never a scrubbed guess) so callers keep the frame.
 - `tools/item_db.rb` — regenerate item/entity prototype ID→name dumps from RCON (wire IDs = `prototypes.item` / `prototypes.entity` iteration order)
 - `tools/extract_players_from_save.rb` — recover the FULL roster (1-indexed game index → {name, online_time_ticks, last_online_tick, locale}, everyone who ever joined, from the save's player-record run; name + play time + last-online verified 338/338 against a live `game.players` dump, locale 290/338 with zero wrong values) from a save archive or a decompressed level.dat. It needs NO cache — a player record is a name with the play-time pair in front of it — which is what makes CLIENT MODE work: the map download is the server's save, so seeding players-cache.json from it names everyone already in the game (and their locale, which the wire never carries: zero locale codes in 380 MB of captures). When the cache does have names they also validate the run and the merge refuses a save from another world. `--merge` writes names, and a locale only where the cache has none (a known locale is never overwritten; differences are reported, the cache can hold an older one). Recipe in `docs/save-file-format.md`, format in `docs/save/level-dat.md`
-- `tools/validate_actions.rb` — validate input-action wire IDs against `/toggle-action-logging` output (correlate `Action performed [tick player Name]` lines with packet captures by tick; flags OK/MISMATCH/NOT-IN-TABLE; `--suggest` prints a corrected table). Run: `sudo ruby tools/validate_actions.rb --capture 60 --toggle`. Truncates factorio-current.log back to its pre-run size afterwards (the game never rotates it).
+- `tools/validate_actions.rb` — validate input-action wire IDs against `/toggle-action-logging` output (correlate `Action performed [tick player Name]` lines with packet captures by tick; flags OK/MISMATCH/NOT-IN-TABLE; `--suggest` prints a corrected table). Offline, 2.1-only, streaming: streams the capture and the log sequentially in one paced merge (pre-capture log history skipped; O(1) memory — no threads). Run: `ruby tools/validate_actions.rb --pcap captures/*.pcap --suggest`. (Live validation lives in the `action_validator` plugin, not here.)
 - `tools/measure_action_lens.rb` — the ONE tool for C→S action lengths (now audits the ACTION TABLE itself, the separate lens files are gone): default = what is still undecoded (worst first), `--decide` = what the wire settles that the table lacks, `--type N` = one type with its candidate tally, `--check` = do the table's fixed lengths still agree with the wire. It never writes the table — confirmed lengths fold into `lib/input_actions_21.rb` directly. Run over the FULL rolling captures, not the unknown-packet ones: those contain only what the old decoder got wrong, so rare actions appear once or twice there. Uses `tools/action_len_solver.rb` (the tested core).
 - `tools/dump_input_actions.rb` — regenerate `lib/input_actions_20.rb` (2.0 defines dump + validated internal wire actions)
 - `players-cache.json` — 1-indexed player ID→name/locale cache (per-server/savefile; re-seeded from RCON), plus per-player `color` (`LuaPlayer.color` as [r,g,b,a] 0..1 — from RCON, and from the packets too: `set_player_color` (2.0 wire 296, stable 2.1 wire 312) is 4 UNORM bytes R,G,B,A, measured against the save in `docs/protocol-notes.md`) and `quickbar` (fixed 10 pages × 10 slots of item prototype ids) and `quickbar_page` tracked from the capture stream
@@ -372,11 +372,10 @@ HIVE_API_KEY=... sudo ruby factorio-packettools.rb
 # connection request. Force it with `protocol_version: "2.0"` in config.yaml:
 ruby factorio-packettools.rb -r capture.pcap
 
-# Validate input-action wire IDs against /toggle-action-logging (root):
-sudo ruby tools/validate_actions.rb --capture 60 --toggle --suggest
-# (default --table 21; the log's player index is 0-based on 2.1.23 — the
-#  tool scans the offset. Confirmed names fold directly into
-#  lib/input_actions_21.rb.)
+# Validate input-action wire IDs against /toggle-action-logging (runs
+# offline, reverting a capture against the log; capture always on for
+# live capture — the action_validator plugin is the live path):
+ruby tools/validate_actions.rb --pcap captures/client-*.pcap.gz --suggest
 
 # C→S action lengths (2.1): audit the table against the captures; confirmed
 # lengths fold directly into lib/input_actions_21.rb:

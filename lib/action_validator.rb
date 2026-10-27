@@ -25,6 +25,7 @@
 # log_path: pointing at the server's factorio-current.log.
 class ActionValidator
   LOG_RE = /Action performed \[(\d+) (\d+) (\w+)\]/.freeze
+  LOG_LINE_RE = /Action performed \[(?<tick>\d+) (?<player>\d+) (?<name>\w+)\]/.freeze
 
   # Eviction is by GAME TICK, not wall time: the join is tick-based, so
   # age is measured in ticks. Entries older than the newest seen tick by
@@ -34,6 +35,10 @@ class ActionValidator
   # flight, the cap decides what that can cost in memory.
   TICK_WINDOW = 600
   MAX_BUFFER_ENTRIES = 4096
+  # Larger cap for -r replay: the log tailer outruns the capture replay
+  # (~5x), so we need a bigger buffer to retain entries until @consume_tick
+  # is set and the tick-window eviction takes over. ~50MB for 400K entries.
+  REPLAY_PRELOAD_CAP = 400_000
   # Ticks scanned around an exact match when it misses (the closure tick
   # can lag the processing tick — tools/validate_actions.rb scans ±2 too).
   TICK_TOLERANCE = 2
@@ -52,6 +57,7 @@ class ActionValidator
     @last_report = 0.0   # first summary prints as soon as there is something to say
     @unattributed_enabled = true
     @unattributed_samples = { wire: [], log: [] }
+    @join_memo = {}      # "tick:player" => joined once — packets can FEED the same closure again
   end
 
   # Register the final cumulative report. Called by the sniffer at startup
@@ -61,6 +67,19 @@ class ActionValidator
   end
 
   attr_reader :stats, :votes
+
+  # Override the FIFO backstop size (entries). The streaming validator
+  # sets a generous one because ITS pace — the capture replay, guarded by
+  # the log reader's pacing — is what bounds memory, not the cap.
+  attr_writer :buf_cap
+
+  # The capture side's current replay position: the tick correlate is
+  # processing (set at the head of every correlate call, matched or not),
+  # or nil before the capture has produced its first action-bearing tick
+  # closure. Paced log readers wait while they run ahead of this.
+  def consume_tick
+    @mutex.synchronize { @consume_tick }
+  end
 
   # Reached by the host's single log-tailer thread (emit(:on_log_line)),
   # not by its own LogTail — one reader on the inode feeds every consumer.
@@ -79,9 +98,41 @@ class ActionValidator
   def record_log_line(line)
     m = line.match(LOG_RE)
     return unless m
+    tick = m[1].to_i
     @mutex.synchronize do
-      @log[m[1].to_i] << [m[2].to_i, m[3]]
-      evict(@log, m[1].to_i)
+      counts = (@buf_counts ||= {})
+      id = @log.object_id
+      counts[id] = (counts[id] || 0) + 1
+      log_buf = @log
+      log_buf[tick] << [m[2].to_i, m[3]]
+      @newest_tick = tick if tick > (@newest_tick ||= tick)
+      # Only evict by tick window when the capture replay has started
+      # (@consume_tick is set in correlate). Before that, the log tailer
+      # outruns the capture by ~40x — evicting by @newest_tick would
+      # delete entries the capture hasn't reached yet. The cap below
+      # bounds the buffer until @consume_tick takes over.
+      ref = @consume_tick || @newest_tick
+      floor = ref - TICK_WINDOW
+      while (old_t = log_buf.keys.first) && old_t < floor
+        drop_log_unmatched(old_t, log_buf[old_t].size)
+        counts[id] -= log_buf[old_t].size
+        log_buf.delete(old_t)
+      end
+      # Cap backstop: same-tick floods only (a misdecode can pile thousands
+      # of uncorrelated log lines onto one tick — see drop_log_unmatched).
+      # Tick-window eviction above (driven by @consume_tick in correlate)
+      # bounds normal operation. Larger limit for -r replay: the log tailer
+      # reads ahead of the capture, so the buffer temporarily holds more.
+      # buf_cap= overrides for a self-paced caller (the streaming validator
+      # bounds memory through pacing, not the cap).
+      cap_limit = @buf_cap ||
+                  ((@host.respond_to?(:options) && @host.options[:pcap]) ? REPLAY_PRELOAD_CAP : MAX_BUFFER_ENTRIES)
+      while counts[id] > cap_limit
+        old_t = log_buf.keys.first
+        drop_log_unmatched(old_t, log_buf[old_t].size)
+        counts[id] -= log_buf[old_t].size
+        log_buf.delete(old_t)
+      end
     end
   end
 
@@ -89,12 +140,21 @@ class ActionValidator
   # tick's decoded actions against the log. Runs on the capture thread —
   # work here must stay cheap, the buffers hold ticks and the join is a
   # hash lookup.
-  def on_input_actions(tick, actions)
+  #
+  # append: a replayed capture can split one tick's closures across
+  # packets (and echo them from S→C). The caller deduplicates identical
+  # repeats; a genuinely different later fragment APPENDS to what this
+  # tick already holds, like the offline join's accumulation.
+  def on_input_actions(tick, actions, append: false)
     wire = actions&.reject { |a| a[:type].zero? } # 'nothing' padding is never logged
     return if !tick || wire.nil? || wire.empty?
     @mutex.synchronize do
-      @wire[tick] = wire.map { |a| [a[:game_player], a[:type]] }
-      evict(@wire, tick)
+      entries = wire.map { |a| [a[:game_player], a[:type]] }
+      entries = @wire[tick].to_a + entries if append && @wire[tick]
+      @buf_counts ||= {}
+      @buf_counts[@wire.object_id] = (@buf_counts[@wire.object_id] || 0) + entries.size
+      @wire[tick] = entries
+      evict(@wire, tick, tick)        # wire floor is capture's current tick, not log tailer's
       correlate(tick)
       maybe_report
     end
@@ -103,61 +163,191 @@ class ActionValidator
   # ── Correlation ──────────────────────────────────────────────────
 
   # Join one wire tick against the log: exact tick first, then the small
-  # lag window (the log can lag 0-2 ticks behind the wire — tools/validate
-  # actions.rb scans ±2 too). Consumes the matched log tick so the NEXT wire
-  # tick cannot re-correlate stale entries (without this, tick+0 log entries
-  # found at offset +1 get re-matched by tick+1, causing false seq_len
-  # mismatches and cross-type MISMATCH reports).
+  # lag window (the log can lag or lead small amounts — the offline tool
+  # scans ±2; mirror that, scored per tick). Consumes ONLY the pairs that
+  # joined: a tick's closures arrive across MULTIPLE packets (one per
+  # client, each carrying its own player's inputs), so the log bucket and
+  # the wire tick must stay alive until every player that will ever join
+  # it has joined — deleting the whole bucket on the first feed starved
+  # every later feed of its player's lines.
+  #
+  # Ambiguity rule: when the best candidate (tick offset, player offset)
+  # is NOT strictly better than the runner-up, the join is DEFERRED — the
+  # entries stay in both buffers. This is the action-logged-later case:
+  # the wire tick has no log line of its own (bucket empty), so a future
+  # line at +1 and the true line at +2 tie on lengths alone; joining at
+  # +1 would steal the wrong line and cascade (measured on the full
+  # S→C capture: whole runs of zoom/walk swaps). Deferred ticks are
+  # retried by later correlates (below): by then the conflicting garbage
+  # was consumed by its own feed, the true pairing is the only candidate
+  # left, and the join is unambiguous.
   def correlate(tick)
-    log_tick = (0..TICK_TOLERANCE).find { |o| @log.key?(tick + o) && !@log[tick + o].empty? }
-    # A wire tick with no log lines yet is the normal idle case (logging
-    # off, or pure movement the log's absence also covers) — not an error.
-    return unless log_tick
-    actual_log_tick = tick + log_tick
-    lseqs = @log.delete(actual_log_tick)
-    wseqs = @wire.delete(tick)
-    # The log's player index is 0-based on stable 2.1.23 (wire game_player 3
-    # logs as 2); the 2.0-era log was 1-based. Scan the offset like
-    # tools/validate_actions.rb and prefer whichever joins.
-    joined = nil
-    [1, 0].each do |player_off|
-      lplayers = lseqs.group_by { |(lp, _)| lp + player_off }
-      next if (lplayers.keys & wseqs.group_by(&:first).keys).empty?
-      joined = [lplayers, player_off]
-      break
+    @consume_tick = tick
+    attempt_join(tick)
+    # Retry leftovers: older wire ticks deferred by the ambiguity rule
+    # (or whose log line simply had not been admitted yet). They join here
+    # only when the choice is now unambiguous.
+    @wire.keys.select { |t| t < tick }.each { |t| attempt_join(t) }
+    # Older log ticks no future wire tick will reach (a candidate offset is
+    # within TICK_TOLERANCE of its wire tick) are dead — CORRELATED entries
+    # were already consumed by attempt_join, so anything still here is an
+    # uncorrelated misdecode remainder (see drop_log_unmatched), which is
+    # counted, not silently dropped. O(1) amortized from the front.
+    floor = tick - TICK_TOLERANCE
+    while (t = @log.keys.first) && t < floor
+      drop_log_unmatched(t, @log[t].size)
+      @log.delete(t)
     end
-    return unless joined
-    lplayers, player_off = joined
-    lplayers.each do |player, entries|
-      lseq = entries.map(&:last)
-      wseq = wseqs.select { |(p, _t)| p == player }.map(&:last)
-      next if wseq.empty? # log-only player (remote, not on this client's C→S)
-      if lseq.size != wseq.size
-        # Sequence lengths differ: the log and the wire disagree on how
-        # many actions this player performed this tick — a lost or
-        # invented action on OUR side (usually a wrong length before it).
+  end
+
+  # One join attempt for one wire tick. Returns when consumed (or nothing
+  # matched); leaves everything in place when deferred.
+  def attempt_join(tick)
+    return unless @wire.key?(tick) # plain-hash read: no default-proc pollution
+    wseqs = @wire[tick]
+    return if wseqs.empty?
+    wplayers = wseqs.group_by(&:first)
+    # Score each (tick lag, player offset) combination. Per common player:
+    #   sizes equal        -> all positions pair (the bulk case; the name
+    #                         agreement is measured but never gates pairing,
+    #                         so a wrong table name still gets REPORTED)
+    #   sizes differ       -> the wire missed (or invented) an action — a
+    #                         known decode defect — so only the name-AGREEING
+    #                         prefix pairs from the left, the excess stays on
+    #                         its own side
+    # Candidates rank by name agreement FIRST, then paired count, then the
+    # smaller offsets: name agreement is the structural truth signal (the
+    # action-logged-later case has its true pair right there at offset 0
+    # with an agreeing extra line, while the accidental +1 sibling pair
+    # disagrees). The votes themselves (record_pair) stay name-agnostic —
+    # whatever actually pairs gets voted and reported, never filtered.
+    scored = []
+    (0..TICK_TOLERANCE).each do |o|
+      next unless @log.key?(tick + o) # plain-hash reads: no default-proc pollution
+      bucket = @log[tick + o]
+      next if bucket.empty?
+      (0..1).each do |player_off|
+        lplayers = bucket.group_by { |(lp, _)| lp + player_off }
+        common = lplayers.keys & wplayers.keys
+        next if common.empty?
+        plan = {} # player => [pairs] (the [wire_type, log_name] zips to join)
+        agrees = 0
+        pairs_total = 0
+        common.each do |player|
+          entries = lplayers[player]
+          lseq = entries.map(&:last)
+          wseq = wplayers[player].map(&:last)
+          if lseq.size == wseq.size
+            zipped = wseq.zip(lseq)
+            plan[player] = [zipped, entries]
+            pairs_total += zipped.size
+            agrees += zipped.count { |(wt, ln)| name_matches?(wt, ln) }
+          else
+            zipped = wseq.zip(lseq).take_while { |(wt, ln)| name_matches?(wt, ln) }
+            next if zipped.empty? # no agreeing prefix, no pairs from here
+            plan[player] = [zipped, entries]
+            pairs_total += zipped.size
+            agrees += zipped.size
+          end
+        end
+        next if plan.empty?
+        scored << [o, player_off, plan, agrees, pairs_total]
+      end
+    end
+    return unless scored.any?
+    scored.sort_by! { |(_o, _po, _plan, agrees, pairs_total)| [-agrees, -pairs_total, _o, _po] }
+    o, player_off, plan, agrees, pairs_total = scored.first
+    if scored.size > 1
+      _, _, _, agrees2, pairs2 = scored[1]
+      return if agrees == agrees2 && pairs_total == pairs2 # ambiguous — defer, don't guess
+    end
+    actual_log_tick = tick + o
+
+    # Pair what joins, consume positionally from both buffers, keep the rest.
+    matched_counts = {} # player => pairs joined
+    plan.each do |player, (zipped, entries)|
+      key = "#{tick}:#{player}"
+      next if @join_memo[key] # fed again by another packet with the same closure
+      @join_memo[key] = true
+      @join_memo.shift if @join_memo.size > 4096
+      if entries.size != zipped.size
+        # Log had extra lines beyond the agreeing prefix (the wire missed
+        # an action — or the wire invented one): a lost/invented action on
+        # OUR side, usually a wrong length before it.
         @stats[:seq_len_mismatch] += 1
         if @stats[:seq_len_mismatch] <= 5
-          offset_note = log_tick == 0 ? '' : " (log at tick #{actual_log_tick}, offset +#{log_tick})"
-        puts "[action-validate] tick #{tick} player #{player}: #{wseq.size} wire actions but #{lseq.size} log actions (#{lseq.join(',')}) — a length before this likely desynced#{offset_note}"
+          offset_note = o.zero? ? '' : " (log at tick #{actual_log_tick}, offset +#{o})"
+          puts "[action-validate] tick #{tick} player #{player}: #{zipped.size} wire actions but #{entries.size} log actions (#{entries.map(&:last).join(',')}) — a length before this likely desynced#{offset_note}"
         end
-        next
       end
-      wseq.zip(lseq).each { |wt, lname| record_pair(tick, player, wt, lname, log_tick, actual_log_tick) }
+      zipped.each { |(wt, lname)| record_pair(tick, player, wt, lname, o, actual_log_tick) }
+      matched_counts[player] = zipped.size
     end
-    # This wire tick is done: the log entries it consumed (and any older
-    # stragglers — a future closure can only need log ticks >= this one)
-    # are dead. Clear them instead of waiting for the FIFO cap.
-    # The wire tick is fully consumed (wseqs deleted above); evict older log
-    # ticks that no future wire tick will reach (log_tick is within
-    # TICK_TOLERANCE of the wire tick, so anything <= tick is unreachable).
-    @log.keys.each { |t| @log.delete(t) if t < tick - TICK_TOLERANCE }
+    return if matched_counts.empty?
+
+    # Positional consumption: drop each joined player's FIRST n entries from
+    # both buffers (group_by preserved order, so positional identity holds).
+    # Unjoined log-only / wire-only entries stay for the feeds to come.
+    taken = Hash.new(0)
+    kept_l = []
+    (@log[actual_log_tick] || []).each do |lentry|
+      ident_w = lentry[0] + player_off
+      if matched_counts.key?(ident_w) && taken[ident_w] < matched_counts[ident_w]
+        taken[ident_w] += 1
+      else
+        kept_l << lentry
+      end
+    end
+    if kept_l.empty?
+      @log.delete(actual_log_tick)
+    else
+      @log[actual_log_tick] = kept_l
+    end
+
+    taken_w = Hash.new(0)
+    kept_w = []
+    removed_w = 0
+    wseqs.each do |wentry|
+      p = wentry[0]
+      if matched_counts.key?(p) && taken_w[p] < matched_counts[p]
+        taken_w[p] += 1
+        removed_w += 1
+      else
+        kept_w << wentry
+      end
+    end
+    @buf_counts ||= {}
+    @buf_counts[@wire.object_id] = (@buf_counts[@wire.object_id] || 0) - removed_w
+    if kept_w.empty?
+      @wire.delete(tick)
+    else
+      @wire[tick] = kept_w
+    end
+  end
+
+  # Wire type name vs log name under the case-normalizing comparison.
+  def name_matches?(wire_type, log_name)
+    n = FactorioProtocol.action_name(wire_type)
+    return false unless n
+    normalize(n) == normalize(log_name)
+  end
+
+  # Correlated entries are eaten by attempt_join the moment they join, so a
+  # bucket that survives to be EVICTED here was never matched — a misdecode
+  # (a wrong length earlier desynced this tick's decode, so its log lines
+  # never found a wire action). Count them into the cumulative report as
+  # log-side unmatched instead of silently forgetting them, so the buffers
+  # self-empty and report tracks every orphan. This is the live tail's ONLY
+  # reason to matter: it empties itself, growing only on misdecodes.
+  def drop_log_unmatched(tick, count)
+    @stats[:log_unmatched] += count
+    (@unattributed_samples[:log] << [tick, count]) if @unattributed_samples[:log].size < 100
   end
 
   # Report only wire-side unattributed entries (wire actions that never found
   # a matching log line — potential tick misread or unlogged action).
-  # Log-side unattributed entries are noise in client mode (remote players'
-  # log lines have no matching C→S wire actions).
+  # Log-side unmatched entries ride the @stats[:log_unmatched] counter via
+  # drop_log_unmatched (they are not listened into @log).
   def log_unattributed(buf, tick)
     return unless @unattributed_enabled
     return unless buf.equal?(@wire)
@@ -204,24 +394,41 @@ class ActionValidator
     return unless @stats.values.any? || @votes.any?
     report_summary
   end
-                def report
-    return unless @stats.values.any? || @votes.any?
-    report_summary
+
+  # End-of-stream accounting (the streaming validator calls it once after
+  # the last on_input_actions): whatever is still buffered never correlated
+  # — their log lines / wire actions never found a partner before the
+  # stream ended (or a misdecode orphaned them). Count them into the report
+  # and release them; the standalone tool corrects afterwards.
+  def finish_accounting
+    @mutex.synchronize do
+      @wire.each_key { |t| log_unattributed(@wire, t) }
+      @log.keys.each { |t| drop_log_unmatched(t, @log[t].size) }
+      @wire.clear
+      @log.clear
+    end
   end
 
   def report_summary
     return unless @stats.values.any? || @votes.any?
     s = @stats
     puts format('[action-validate] %<ok>d OK, %<mis>d mismatched, %<nit>d not-in-table, ' \
-                '%<seq>d sequence-length mismatches, %<un>d unattributed ticks ' \
+                '%<seq>d sequence-length mismatches, %<un>d unattributed, %<lun>d log-unmatched ' \
                 '(actions correlated so far)',
-                ok: s[:ok], mis: s[:mismatch], nit: s[:not_in_table], seq: s[:seq_len_mismatch], un: s[:unattributed])
+                ok: s[:ok], mis: s[:mismatch], nit: s[:not_in_table], seq: s[:seq_len_mismatch],
+                un: s[:unattributed], lun: s[:log_unmatched])
     # Show a few unattributed wire-tick samples to point at the gap.
     samples = @unattributed_samples[:wire]
     if samples.any?
       samples.sort_by! { |tick, _| tick }
       tick, count = samples.first
       puts "  sample: wire tick #{tick}: #{count} wire actions with no log line"
+    end
+    lsamples = @unattributed_samples[:log]
+    if lsamples.any?
+      lsamples.sort_by! { |tick, _| tick }
+      tick, count = lsamples.first
+      puts "  sample: log tick #{tick}: #{count} log actions that never correlated (misdecode)"
     end
     disagreements = @votes.reject { |id, names| names.any? { |name, _| normalize(name) == normalize(table_name(id)) } }
     disagreements.sort.each do |id, names|
@@ -237,25 +444,40 @@ class ActionValidator
 
   # ── Buffers ──────────────────────────────────────────────────────
 
-  # Tick-window eviction (primary): drop every tick older than the newest
-  # seen by more than TICK_WINDOW. Then the FIFO cap (backstop, oldest
-  # inserted first — hashes keep insertion order and both streams arrive
-  # roughly in order). Called on every insert.
-  def evict(buf, tick)
+  # Tick-window eviction: drop every tick older than the newest seen by
+  # more than TICK_WINDOW. Live feeding is incremental (paced by the
+  # game, never a bulk feed), so the tick window alone bounds the buffer
+  # — no size cap. Oldest-first, O(1) amortized: hashes keep insertion
+  # order, so keys.first is the oldest and we stop at the first key above
+  # the floor. Wire ticks dropped here also count as unattributed.
+  def evict(buf, tick, ref = nil, cap_limit = MAX_BUFFER_ENTRIES)
     @newest_tick = tick if tick > (@newest_tick ||= tick)
-    floor = @newest_tick - TICK_WINDOW
-    buf.keys.each do |t|
-      if t < floor
-        log_unattributed(buf, t) # before delete — reports unmatched entries
-        buf.delete(t)
-      end
+    ref ||= @consume_tick || @newest_tick
+    floor = ref - TICK_WINDOW
+    # O(1) fast-path: Ruby hashes keep insertion order, so keys.first is
+    # the oldest. If it's >= floor and the per-buffer entry count is within
+    # bounds, skip the O(n) scan entirely — keeps record_log_line O(n) total.
+    counts = (@buf_counts ||= {})
+    key = buf.object_id
+    oldest = buf.keys.first
+    if oldest && oldest >= floor && (counts[key] || 0) <= cap_limit
+      return
     end
-    cap(buf)
+    # Ruby hashes are insertion-ordered, so keys.first is the oldest.
+    # Only delete from the front — stop as soon as a key is above the floor.
+    # This is O(k) for k entries below floor, not O(n) for all entries.
+    while (t = buf.keys.first) && t < floor
+      counts[key] = (counts[key] || 0) - buf[t].size
+      log_unattributed(buf, t)
+      buf.delete(t)
+    end
+    cap(buf, counts, key, cap_limit)
   end
 
-  def cap(buf)
-    while buf.values.sum(&:size) > MAX_BUFFER_ENTRIES
+  def cap(buf, counts, key, limit = MAX_BUFFER_ENTRIES)
+    while (counts[key] || 0) > limit
       t = buf.keys.first
+      counts[key] -= buf[t].size
       log_unattributed(buf, t)
       buf.delete(t)
     end

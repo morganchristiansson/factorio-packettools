@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'time'
+require 'tmpdir'
 require_relative 'factorio_protocol'
 require_relative 'item_db'
 require_relative 'player_db'
@@ -307,7 +308,7 @@ class FactorioPacketTools
   # `attrs` is the live PlayerAttrs mirror (roster + play time): a feature
   # that keeps a name-keyed base it adds to the totals (player_backup) reads
   # it through set_foreign_bases.
-  attr_reader :rcon, :player_db, :attrs
+  attr_reader :rcon, :player_db, :attrs, :options
 
   # THE EVENT CATALOGUE — what the sniffer tells features, and the whole
   # plugin API. Every event is a no-op on Plugins::Feature, so it is emitted
@@ -423,7 +424,7 @@ class FactorioPacketTools
       # Started after on_start so consumers are built first; idempotent, revived
       # on reload. Needs RCON in server mode (host-side log) OR a configured
       # log_path in client mode (where the player reads the server log).
-      start_log_watcher(from_start: @options[:pcap]) if @rcon || log_consumers?
+      start_log_watcher if @rcon || log_consumers?
       # Memoized: a reload must NOT reopen the capture device. Reusing this
       # handle across reloads is what makes them lossless (and avoids two
       # BPF listeners duplicating every packet).
@@ -495,7 +496,7 @@ class FactorioPacketTools
     # Revive the host-owned single log-tailer (idempotent; a live thread is
     # left alone, a dead one is restarted). Server-mode (RCON) or any
     # log-line consumer enabled (action_validator, hivemind logwatcher).
-    start_log_watcher(from_start: @options[:pcap]) if @rcon || log_consumers?
+    start_log_watcher if @rcon || log_consumers?
     # Hot reload swaps code under the same hivemind object; re-point
     # the cached attrs/tick provider in case this is the first
     # reload after the agent was constructed (or libs changed
@@ -504,6 +505,13 @@ class FactorioPacketTools
     hivemind&.current_tick = -> { @game_tick }
     hivemind.player_db = @player_db if hivemind
     # Agent event queues/workers persist on the same objects across reloads.
+  end
+
+  # Every lib file a reload re-reads: the core list, the loaded features'
+  # files, and the loaded hivemind plugins' files. Absolute paths come from
+  # Plugins (a feature may live outside lib/), bare names are lib/ files.
+  def reload_files
+    (RELOADABLE_LIBS + @plugins.files + [@plugins[:hivemind]].compact.flat_map(&:plugin_files)).uniq
   end
 
   private
@@ -517,17 +525,22 @@ class FactorioPacketTools
       (@plugins.enabled?(:hivemind) && (@plugins[:hivemind].plugins[:logwatcher] rescue nil))
   end
 
-  # from the running factorio process (ServerDetect.log_path). Idempotent —
-  # re-called on hot reload to restart a thread that died; a live thread is
-  # left alone. The resolved path is cached on the same ivar (survives reload) so
-  # reload re-reads the same file instead of another /proc scan.
-  def start_log_watcher(from_start: false)
+  # The single host-owned tailer for factorio-current.log: one LogTail thread
+  # reads the file once and emits each new line to the plugin bus (:on_log_line),
+  # fanned to every consumer (action_validator, hivemind logwatcher). Runs ONLY
+  # for live capture — -r replay is offline, so it never tails the log (offline
+  # validation against the log is tools/validate_actions.rb). Resolved path
+  # cached on the same ivar (survives reload) so reload re-reads the same file
+  # instead of another /proc scan. Idempotent: re-called on hot reload to
+  # restart a thread that died; a live thread is left alone.
+  def start_log_watcher
+    return if @options[:pcap] # -r replay is offline — no log tailing
     @log_path = ServerDetect.log_path if @log_path.nil?
     path = @log_path
     if path && File.file?(path)
       return if @log_thread&.alive?
       @log_thread = Thread.new do
-        LogTail.follow(path, from_start: from_start) { |line| @plugins.emit(:on_log_line, line) }
+        LogTail.follow(path) { |line| @plugins.emit(:on_log_line, line) }
       rescue StandardError => e
         warn "[log] tail thread died: #{e.class}: #{e.message}"
       end
@@ -535,13 +548,6 @@ class FactorioPacketTools
     else
       warn "[log] no factorio-current.log found (set log_path: in config.yaml) — log-line consumers idle"
     end
-  end
-
-  # Every lib file a reload re-reads: the core list, the loaded features'
-  # files, and the loaded hivemind plugins' files. Absolute paths come from
-  # Plugins (a feature may live outside lib/), bare names are lib/ files.
-  def reload_files
-    (RELOADABLE_LIBS + @plugins.files + [@plugins[:hivemind]].compact.flat_map(&:plugin_files)).uniq
   end
 
   # Whether to persist this packet to the capture file. `capture: full`
@@ -565,8 +571,7 @@ class FactorioPacketTools
   # heartbeats are always kept (byte 1 is message_id there, not flags).
   def recordable_heartbeat?(udp_data)
     return true if udp_data.bytesize < 2
-    mt = udp_data.getbyte(0) & 0x1F
-    return true unless mt == 6 || mt == 7
+    return true unless FactorioProtocol.heartbeat_payload?(udp_data)
     return true if (udp_data.getbyte(0) & 0x40) != 0
     f = udp_data.getbyte(1)
     (f & 0x01) != 0 || (f & 0x10) != 0 || ((f & 0x02) != 0 && (f & 0x08) == 0)
@@ -1294,6 +1299,7 @@ class FactorioPacketTools
     paths = Array(@options[:pcaps])
     paths = [@options[:pcap]] if paths.empty?
     prescan_pcap_version(paths.first)
+    on_start if log_consumers?
     paths.each_with_index do |path, i|
       puts "[pcap] #{i + 1}/#{paths.size} #{path}" if paths.size > 1
       begin

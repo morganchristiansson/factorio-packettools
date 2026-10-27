@@ -198,7 +198,7 @@ class PcapReader
     if gzip?
       Tempfile.create(['factorio-pcap', '.pcap']) do |file|
         file.binmode
-        file.write(gunzip_best_effort(File.binread(@path)))
+        stream_gunzip(file)
         file.flush
         read_capture(file.path) { |*args| yield(*args) }
       end
@@ -214,17 +214,19 @@ class PcapReader
     raw.getbyte(0) == 0x1f && raw.getbyte(1) == 0x8b
   end
 
-  # Decompress what is available when a live gzip capture has no trailer yet.
-  def gunzip_best_effort(raw)
-    out = +''.b
-    gz = Zlib::GzipReader.new(StringIO.new(raw))
-    loop { out << gz.readpartial(1 << 20) }
-    out
-  rescue EOFError
-    out
+  # Streaming gunzip: 1MB chunks straight into the temp file, so a whole
+  # capture never materializes as one Ruby string (File.binread of a
+  # multi-hundred-MB .gz was the streaming replay's own OOM source).
+  # Best-effort like before: a .gz still being written decompresses as
+  # far as its bytes allow and warns about the truncation.
+  def stream_gunzip(file)
+    Zlib::GzipReader.open(@path) do |gz|
+      while (chunk = gz.read(1 << 20))
+        file.write(chunk)
+      end
+    end
   rescue Zlib::GzipFile::Error => e
-    warn "Warning: gzip stream incomplete (#{e.message}); using #{out.bytesize} decompressed bytes"
-    out
+    warn "Warning: gzip stream incomplete (#{e.message}); using what decompressed so far"
   end
 
   def read_capture(path)

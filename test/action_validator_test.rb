@@ -143,6 +143,43 @@ class TestActionValidator < Minitest::Test
     assert_empty out, 'second summary within the interval must not print'
   end
 
+  def test_append_accumulates_split_closure
+    # The split arrives split (two packets, one tick) BEFORE the log line —
+    # the merged wire side joins both log entries in one go.
+    capture_io { @v.on_input_actions(1000, [{ type: 70, game_player: 12 }]) } # start_walking, stable 2.1
+    log! 1000, 12, 'StartWalking'
+    log! 1000, 12, 'StopWalking'
+    capture_io do
+      @v.on_input_actions(1000, [{ type: 1, game_player: 12 }], append: true) # stop_walking
+    end
+    assert_equal 0, @v.stats[:seq_len_mismatch], 'merged wire half joins both log lines'
+    assert_equal 2, @v.stats[:ok]
+  end
+
+  def test_raw_refeed_overwrites_not_appends
+    # An identical closure fed AGAIN without append (an S→C echo the caller
+    # chose not to dedupe) must keep the count at one.
+    log! 1000, 12, 'StartWalking'
+    capture_io do
+      @v.on_input_actions(1000, [{ type: 70, game_player: 12 }])
+      @v.on_input_actions(1000, [{ type: 70, game_player: 12 }])
+    end
+    assert_equal 1, @v.stats[:ok]
+  end
+
+  def test_consume_tick_reader_tracks_replay_position
+    assert_nil @v.consume_tick, 'nil before the capture produced anything'
+    capture_io { wire! 1000, [[70, 12]] }
+    assert_equal 1000, @v.consume_tick
+  end
+
+  def test_finish_counts_unjoined_wire_ticks_as_unattributed
+    capture_io { wire! 1000, [[70, 12]] } # no log line — never joins
+    assert_equal 0, @v.stats[:unattributed]
+    @v.finish_accounting
+    assert_equal 1, @v.stats[:unattributed]
+  end
+
   def test_buffers_evict_old_ticks_and_cap_size
     1000.times { |i| log!(i, 12, 'Build') }
     # All within the tick window — nothing evicted yet.
