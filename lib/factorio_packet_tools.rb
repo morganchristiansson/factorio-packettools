@@ -418,7 +418,7 @@ class FactorioPacketTools
       # reload — see load_roster for why that re-seed matters.
       load_roster if @rcon
       load_player_attrs if @rcon
-      on_start if @rcon
+      on_start if @rcon || log_consumers?
       # The single log-tailer thread (emits :on_log_line to the plugin bus).
       # Started after on_start so consumers are built first; idempotent, revived
       # on reload. Needs RCON in server mode (host-side log) OR a configured
