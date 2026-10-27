@@ -137,12 +137,12 @@ class ActionValidator
         # invented action on OUR side (usually a wrong length before it).
         @stats[:seq_len_mismatch] += 1
         if @stats[:seq_len_mismatch] <= 5
-          puts "[action-validate] tick #{tick} player #{player}: #{wseq.size} wire actions " \
-               "but #{lseq.size} log actions (#{lseq.join(',')}) — a length before this likely desynced"
+          offset_note = log_tick == 0 ? '' : " (log at tick #{actual_log_tick}, offset +#{log_tick})"
+        puts "[action-validate] tick #{tick} player #{player}: #{wseq.size} wire actions but #{lseq.size} log actions (#{lseq.join(',')}) — a length before this likely desynced#{offset_note}"
         end
         next
       end
-      wseq.zip(lseq).each { |wt, lname| record_pair(tick, player, wt, lname) }
+      wseq.zip(lseq).each { |wt, lname| record_pair(tick, player, wt, lname, log_tick, actual_log_tick) }
     end
     # This wire tick is done: the log entries it consumed (and any older
     # stragglers — a future closure can only need log ticks >= this one)
@@ -168,9 +168,10 @@ class ActionValidator
     @unattributed_samples[buf.equal?(@wire) ? :wire : :log] << [tick, entries.size]
   end
 
-  def record_pair(tick, player, wire_type, log_name)
+  def record_pair(tick, player, wire_type, log_name, log_tick = 0, actual_log_tick = nil)
     @votes[wire_type][log_name] += 1
     wire_name = FactorioProtocol.action_name(wire_type)
+    offset_note = log_tick == 0 ? '' : " (log at tick #{actual_log_tick}, offset +#{log_tick})"
     if wire_name.start_with?('Unknown')
       @stats[:not_in_table] += 1
     elsif normalize(wire_name) == normalize(log_name)
@@ -180,8 +181,7 @@ class ActionValidator
       key = "#{wire_type}|#{log_name}"
       unless @reported[key]
         @reported[key] = true
-        puts "[action-validate] MISMATCH tick #{tick} player #{player}: " \
-             "wire #{wire_type}=#{wire_name} but log says #{log_name}"
+        puts "[action-validate] MISMATCH tick #{tick} player #{player}: wire #{wire_type}=#{wire_name} but log says #{log_name}#{offset_note}"
       end
     end
   end
