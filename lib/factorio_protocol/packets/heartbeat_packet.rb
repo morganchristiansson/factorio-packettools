@@ -150,16 +150,21 @@ module FactorioProtocol
       last_index = 0xFFFF
       count.times do |i|
         break if offset >= data.bytesize || tc[:hit_unknown]
-        # In S→C echoes, the closure can end with a trailing 8-byte per-closure
-        # tick (the previous tick, i.e. closure_tick - 1) that `count` also
-        # counts: if the last "action" reads exactly as that trailing tick, it
-        # is the closure trailer, not an action — consume it and stop, or it
-        # becomes a phantom action (Player_44 send_stack_to_trash / Player_78
-        # cursor_split after a real selected_entity_cleared echo).
-        if is_server && (count - i) == 1 && offset + 8 <= data.bytesize
-          tail_tick = data.unpack1('Q<', offset: offset)
+        # In S→C echoes, the closure ends with a trailer: an optional
+        # selection-echo `[55 ff ff ff ff][u32 ref]` followed by an 8-byte
+        # per-closure tick (the previous tick, i.e. closure_tick - 1) that
+        # `count` also counts. When the final bytes are that trailer it is NOT
+        # an action — consume only from the trailer's start (the last
+        # `55 ffffffff` marker, else just the trailing tick) so the real
+        # echoed actions before it survive, and stop. Without this the
+        # selection-echo/previous-tick become phantom actions (Player_44
+        # send_stack_to_trash, Player_78 cursor_split, Player_86
+        # paste_entity_settings after the real build/cleared echo).
+        if is_server && i > 0 && (count - i) == 1 && offset + 8 <= data.bytesize
+          tail_tick = data.unpack1('Q<', offset: data.bytesize - 8)
           if tail_tick == (tc[:tick] || 0) - 1 || tail_tick == (tc[:tick] || 0)
-            offset += 8
+            marker = data.index("\x55\xff\xff\xff\xff".b, offset)
+            offset = marker || data.bytesize - 8
             break
           end
         end
