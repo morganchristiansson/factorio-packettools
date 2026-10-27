@@ -540,7 +540,7 @@ class FactorioPacketTools
   def start_log_watcher
     return if @options[:pcap] # -r replay is offline — no log tailing
     @log_path = ServerDetect.log_path if @log_path.nil?
-    path = @log_path
+    path = @log_path && File.expand_path(@log_path) # expand ~; YAML keeps it literal
     if path && File.file?(path)
       return if @log_thread&.alive?
       @log_thread = Thread.new do
@@ -1803,7 +1803,7 @@ class FactorioPacketTools
   # or a save that refuses to merge is a warn, not a crash. Runs on every
   # run (boot and in-place reload) so a new autosave re-seeds it.
   def seed_roster_from_disk_save
-    spec = @options[:roster_save]
+    spec = File.expand_path(@options[:roster_save]) # expand ~; YAML keeps it literal
     save = File.directory?(spec) ? latest_save(spec) : spec
     return unless save
     puts "[roster-save] seeding from #{save}"
