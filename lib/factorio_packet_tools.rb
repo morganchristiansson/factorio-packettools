@@ -1033,26 +1033,29 @@ class FactorioPacketTools
         return " #{state} #{gname} tick=#{tick}"
       end
     when "selected_entity_changed_very_close",
-         "selected_entity_changed_very_close_precise",
-         "selected_entity_changed_relative"
+         "selected_entity_changed_very_close_precise"
       # Payload opens with the selected ENTITY's prototype id (u16v), then a
       # per-entity unit/position structure that varies with the entity's
       # content (a chest's items, a patch's resource…), so the bytes past the
-      # proto aren't a fixed layout and there is no single tick offset. Show
-      # the resolved proto name + the first bytes; the old code guessed a
-      # tick at d[plen] which printed garbage (0xffffff55 -> 4294967125) for
-      # S→C echoes.
-      pid, plen2 = FactorioProtocol.decode_uint16v(d, 0)
+      # proto aren't a fixed layout and there is no single tick offset. The
+      # old code guessed a tick at d[plen] which printed garbage
+      # (0xffffff55 -> 4294967125) for S→C echoes.
+      plen2, pid = FactorioProtocol.decode_uint16v(d, 0)
       if pid && plen2
         name = @entity_db ? @entity_db.name(pid) : nil
         extra = d.bytesize > plen2 ? " +#{d.bytesize - plen2}B" : ''
         return " proto=#{pid}#{name ? "(#{name})" : ''}#{extra} #{d[0, 18].unpack1('H*')}"
       end
+    when "selected_entity_changed_relative"
+      # Relative variant carries a cursor-relative offset, not a proto ref.
+      return " #{d[0, 18].unpack1('H*')}"
     when "selected_entity_cleared"
-      # Client: [tick(4)][pad(4)]; server echo: [ref(4)][token(4)]
-      if d.bytesize >= 8 && d.getbyte(0) == 0x54
-        tok = d.unpack1('V', offset: 4)
-        return " tok=#{tok}"
+      # Client: [tick(4)][pad(4)]; server echo: [55 ff ff ff][token(4)] (or
+      # [41 ff ff ff]). The 0x54-echo heuristic the old code used was wrong —
+      # real echoes start 55 ff ff ff — so unconsumed S→C echoes printed the
+      # ref as if it were a tick (0xffffff55 -> 4294967125).
+      if d.bytesize >= 8 && d.getbyte(0) == 0x55
+        return " tok=#{d.unpack1('V', offset: 5)}"
       elsif d.bytesize >= 8
         tick = d.unpack1('V', offset: 0)
         return " tick=#{tick}"
