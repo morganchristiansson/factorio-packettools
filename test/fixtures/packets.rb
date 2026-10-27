@@ -526,4 +526,60 @@ REAL_PACKET_FIXTURES = [
     ],
   },
 
+  {
+    # S→C echo of a selected_entity_cleared: the closure's `count` includes the
+    # trailing 8-byte previous-tick (closure_tick - 1, here d0 7f = 0x7fd0 =
+    # 98256 = 98257 - 1). Regression: that tick was misread as a second action
+    # (Player_448 send_stack_to_trash / Player_152 selected_entity_cleared).
+    name: 's2c_cleared_echo_trailer',
+    description: 'S→C selected_entity_cleared echo (client-20261027-195346.pcap) — trailing previous-tick consumed, no phantom action',
+    hex: '0706d37f0100d17f01000000000004090155ffffff290c4973d07f010000000000',
+    actions: [
+      { type: 9, name: 'selected_entity_cleared', game_player: 1,
+        data: '55ffffff290c4973' },
+    ],
+  },
+
+  {
+    # S→C echo of a selected_entity_changed_very_close: proto + echo marker +
+    # ref + trailing previous-tick all inside the 17-byte echo (+16 family
+    # tail), `count` = real actions + 1. Regression: a phantom stop_walking /
+    # cursor_split was spawned after the real echo.
+    name: 's2c_very_close_echo',
+    description: 'S→C selected_entity_changed_very_close echo (client-20261027-195346.pcap), 17-byte payload, no trailing phantom',
+    hex: '27063b7f0100397f01000000000004ff0a01015655ffffff44e1d160387f010000000000',
+    actions: [
+      { type: 266, name: 'selected_entity_changed_very_close', game_player: 1,
+        data: '5655ffffff44e1d160387f010000000000' },
+    ],
+  },
+
+  {
+    # S→C echo of a build (placing an entity): the echoed build is followed by
+    # a selection-echo `[55 ff ff ff ff][u32 ref]` then the previous-tick, all
+    # counted by `count`. Regression: the selection-echo/previous-tick were
+    # misread as Player_86 paste_entity_settings.
+    name: 's2c_build_echo',
+    description: 'S→C build echo (client-20261027-200449.pcap, infinity-chest placement) — selection-echo + previous-tick trailer consumed, no paste_entity_settings phantom',
+    hex: '2706222c0200202c02000000000004450180f2ffff800800000000001055ffffff68eef8101f2c020000000000',
+    actions: [
+      { type: 69, name: 'build', game_player: 1,
+        data: '80f2ffff80080000000000' },
+    ],
+  },
+
+  {
+    # C→S build_terrain (2.1 wire 181) placing one tile: 10-byte record +
+    # 3-byte closure tail = 13-byte payload, then the [tick][pad] trailer.
+    # Regression: only 2.0's wire 171 had the record-list parser, so 181 read
+    # 0 bytes and desynced into Player_243 change_train_wait_condition.
+    name: 'client_build_terrain_181',
+    description: 'C→S build_terrain (181, single stone/concrete tile, 13B) from client-20261027-200842.pcap',
+    hex: '0606048cfa75f17702000000000002b501edf0ffff9a0a00000002000000f077020000000000',
+    actions: [
+      { type: 181, name: 'build_terrain', game_player: 1,
+        data: 'edf0ffff9a0a00000002000000' },
+    ],
+  },
+
 ].freeze
