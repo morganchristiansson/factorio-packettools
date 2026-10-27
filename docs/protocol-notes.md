@@ -187,6 +187,17 @@ that is NOT what the tables expect:
   /toggle-action-logging joins. After the fold: 30 undecoded of 90,456
   actions, 24 desynced packets across the full 11-capture replay (was
   170 undecoded / 6,717 desynced).
+- **2026-10-27 batch (from client-20261027-064717, --type verdicts):**
+  set_logistic_filter_item/102=23 (6 closures), quick_bar_set_selected_page/247=2
+  (20 closures) — two long-nil entries the wire finally settled. Re-verified
+  this batch that the rest of the fixed table is sound: --check passes for
+  all 277 wire-decidable lengths, and --type re-confirms zoom_around_point/129=24
+  (125 closures), selected_entity_cleared/9=0 (79, the C→S non-last base the
+  parser already uses), selected_entity_changed_relative/268=4 (15),
+  render_mode_changed/310=1. Residual first-action desyncs are dominated by
+  selected_entity_changed_very_close/266 (~15.7k closures): its payload is a
+  VARIABLE-length record (C→S seen as `88 ff 0a 01 00 …` repeats / entity refs)
+  — no scalar length, needs the structural entity decode, out of scope.
 - **The /toggle-action-logging player index is 0-BASED on stable 2.1.23**
   (`Action performed [tick 2 SelectedEntityCleared]` = wire game_player 3);
   the 2.0-era log was 1-based. tools/validate_actions.rb scans the offset;
