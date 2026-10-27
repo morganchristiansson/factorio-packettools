@@ -386,15 +386,17 @@ module FactorioProtocol
       # taken when 171 is the last action: otherwise those zero bytes are the
       # header of the `nothing` that follows it, and eating them desyncs the
       # rest of the closure (685 of the tail's flagged packets).
-      # Matched on the 2.0 wire ID, not the name: 2.1 also has a
-      # build_terrain (180) and this is not its layout.
-      if type == 171 && name == 'build_terrain'
+      # Matched on the 2.0 wire ID, not the name: 2.1 has the same layout at
+      # wire 181 (0xB5) — the separator that follows each record re-uses the
+      # action's own id as its marker byte.
+      if (type == 171 || type == 181) && name == 'build_terrain'
+        mark = ([0, 0, 0, type].pack('C4') + "\x00").b
         o = offset
         alen = 0
         while o + BT_RECORD <= data.bytesize
           alen += BT_RECORD
           o += BT_RECORD
-          break unless data[o, 5] == BT_RECORD_MARK
+          break unless data[o, 5] == mark
           alen += 5
           o += 5
         end
