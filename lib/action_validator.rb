@@ -154,19 +154,17 @@ class ActionValidator
     @log.keys.each { |t| @log.delete(t) if t < tick - TICK_TOLERANCE }
   end
 
-  # Log ticks evicted without ever being correlated — the wire actions at
-  # that tick never found a matching log line (or vice versa). A real
-  # desync (wrong action length, tick misread, player delta off) lands
-  # here: the wire parsed at tick T but the log line is elsewhere, so both
-  # sit unmatched until evicted. Counted here, reported in the periodic
-  # summary (not printed per-tick to avoid spam from the 600-tick window
-  # flush on startup).
+  # Report only wire-side unattributed entries (wire actions that never found
+  # a matching log line — potential tick misread or unlogged action).
+  # Log-side unattributed entries are noise in client mode (remote players'
+  # log lines have no matching C→S wire actions).
   def log_unattributed(buf, tick)
     return unless @unattributed_enabled
+    return unless buf.equal?(@wire)
     entries = buf[tick]
     return unless entries && !entries.empty?
     @stats[:unattributed] += entries.size
-    @unattributed_samples[buf.equal?(@wire) ? :wire : :log] << [tick, entries.size]
+    @unattributed_samples[:wire] << [tick, entries.size]
   end
 
   def record_pair(tick, player, wire_type, log_name, log_tick = 0, actual_log_tick = nil)
@@ -218,13 +216,12 @@ class ActionValidator
                 '%<seq>d sequence-length mismatches, %<un>d unattributed ticks ' \
                 '(actions correlated so far)',
                 ok: s[:ok], mis: s[:mismatch], nit: s[:not_in_table], seq: s[:seq_len_mismatch], un: s[:unattributed])
-    # Show a few unattributed tick samples (wire or log) to point at the gap.
-    @unattributed_samples.each do |label, samples|
-      next if samples.empty?
+    # Show a few unattributed wire-tick samples to point at the gap.
+    samples = @unattributed_samples[:wire]
+    if samples.any?
       samples.sort_by! { |tick, _| tick }
       tick, count = samples.first
-      puts "  sample: #{label} tick #{tick}: #{count} wire actions with no log line" if label == :wire
-      puts "  sample: #{label} tick #{tick}: #{count} log lines with no wire action" if label == :log
+      puts "  sample: wire tick #{tick}: #{count} wire actions with no log line"
     end
     disagreements = @votes.reject { |id, names| names.any? { |name, _| normalize(name) == normalize(table_name(id)) } }
     disagreements.sort.each do |id, names|
