@@ -131,6 +131,7 @@ class ActionValidator
     lplayers.each do |player, entries|
       lseq = entries.map(&:last)
       wseq = wseqs.select { |(p, _t)| p == player }.map(&:last)
+      next if wseq.empty? # log-only player (remote, not on this client's C→S)
       if lseq.size != wseq.size
         # Sequence lengths differ: the log and the wire disagree on how
         # many actions this player performed this tick — a lost or
