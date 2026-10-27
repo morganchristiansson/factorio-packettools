@@ -150,6 +150,19 @@ module FactorioProtocol
       last_index = 0xFFFF
       count.times do |i|
         break if offset >= data.bytesize || tc[:hit_unknown]
+        # In S→C echoes, the closure can end with a trailing 8-byte per-closure
+        # tick (the previous tick, i.e. closure_tick - 1) that `count` also
+        # counts: if the last "action" reads exactly as that trailing tick, it
+        # is the closure trailer, not an action — consume it and stop, or it
+        # becomes a phantom action (Player_44 send_stack_to_trash / Player_78
+        # cursor_split after a real selected_entity_cleared echo).
+        if is_server && (count - i) == 1 && offset + 8 <= data.bytesize
+          tail_tick = data.unpack1('Q<', offset: offset)
+          if tail_tick == (tc[:tick] || 0) - 1 || tail_tick == (tc[:tick] || 0)
+            offset += 8
+            break
+          end
+        end
         # The C→S [tick][pad] closure trailer sits after the LAST action of
         # the LAST closure in the heartbeat (or after the segments when
         # present). Only that action may consume it — see parse_action.
