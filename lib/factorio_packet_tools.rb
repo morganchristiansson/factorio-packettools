@@ -1277,7 +1277,8 @@ class FactorioPacketTools
     # and invalid/missing-decode warnings) prints regardless; this is only
     # the per-action dump, shown when inspecting decodes.
     return unless @debug
-    puts "#{log_ts(ts)}  #{arrow} #{pname.ljust(16)} #{act[:name].ljust(28)}#{data_str}#{suffix}"
+    name = pname || "Player_#{act[:game_player]}"
+    puts "#{log_ts(ts)}  #{arrow} #{name.ljust(16)} #{act[:name].ljust(28)}#{data_str}#{suffix}"
   end
 
   # Console timestamp. Built at the PRINT sites only: formatting it per
