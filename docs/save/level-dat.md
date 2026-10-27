@@ -119,8 +119,9 @@ Each record stores the name as a bare optim-string (no type tag):
   bytes `00 80 3f` — a 24-bit signature over the whole stream. Outside the
   roster it only ever matches item/planet/recipe prototype names (`coal`,
   `Gleba`, `copper-ore`), never a player: Factorio rejects spaces and other
-  punctuation in names, so `[A-Za-z0-9_.-]{3,32}` is a real filter (it drops
-  the only two false positives in this save, chat/GUI strings with spaces).
+  punctuation in names, so `[A-Za-z0-9_.-]{2,32}` is a real filter (it drops
+  the only two false positives in this save, chat/GUI strings with spaces; the
+  minimum is 2, not 3, because Factorio accepts 2-char names like `cd`).
 - **The index is the record's position in the run**, so the run's absolute
   position is unknown — anchor it with players-cache.json: for every known
   name, `index - position` is a constant (269 for the first record here).
@@ -168,7 +169,11 @@ Each record stores the name as a bare optim-string (no type tag):
   Their distance from the name is NOT fixed (-61 for 189 records, -67 for
   147 — two record layouts), and a play time under 2^24 ticks also forms a
   byte-shifted decoy pair out of the value's own zero padding, so read the
-  offset most records agree on (see `stat_slots` in the tool).
+  offset most records agree on (see `stat_slots` in the tool). A player
+  ONLINE at save time has last-online == the live tick, a few ticks past the
+  stored game tick (the save lags the query, measured 0-4), so the roster
+  caps last-online at `save_tick + TICK_LAG` rather than at it — an offline
+  player's last-online is always in the past.
 - After the name come the 2.0 **player tags** (`07 Foundry 07 djimbro 07 Q`
   for morganc) — what `SetPlayerTag` writes — then the rest of the record
   (variable size: 8 KB … 2.4 MB, mostly the player's own mod storage).

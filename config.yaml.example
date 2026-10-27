@@ -60,6 +60,15 @@ plugins:
 # OPTIONAL — server mode only: skip RCON entirely
 no_rcon: false
 
+# OPTIONAL — seed the player roster from a save file on startup, so a
+# restart immediately knows everyone (client mode has no RCON, and this is
+# the up-to-date roster without waiting to rejoin). Accepts EITHER a path to
+# a specific save (.zip) OR a directory from which the most recently written
+# save is read (auto-detected). Merged into players-cache.json; a save from
+# another world refuses to merge and is warned about.
+# roster_save: /factorio/saves/atraps.zip
+# roster_save: /factorio/saves
+
 # Capture settings
 
 # What lands in the pcap: normal (filtered — no keepalive-only

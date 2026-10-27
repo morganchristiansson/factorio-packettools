@@ -65,7 +65,9 @@ module FactorioSave
   # recipe prototype names, and never a player name (Factorio rejects spaces
   # and other punctuation in names, so the charset below is a real filter).
   NAME_MAX = 32
-  NAME_RE = /\x00\x80\x3f([\x03-\x20])([A-Za-z0-9_.\-]{3,32})/n
+  # `[\x02-\x20]` / `{2,32}`: the length byte may be 0x02 — Factorio accepts
+  # 2-char names (`cd`, `c-`, …), whose length byte is below the old `\x03`.
+  NAME_RE = /\x00\x80\x3f([\x02-\x20])([A-Za-z0-9_.\-]{2,32})/n
   # The locale field: 01 00, the string, then 00 00 00 00 ff ff ff. Unique
   # inside a record (290 of 338 records carry it, ZERO wrong values).
   LOCALE_RE = /\x01\x00([\x02-\x08])([a-z]{2}(?:-[A-Za-z]{2,4})?)\x00\x00\x00\x00\xff\xff\xff/n
@@ -75,6 +77,11 @@ module FactorioSave
   LOCALE_WINDOW = 65_536
   # How far in front of the name the play-time / last-online u64 pair sits.
   STAT_WINDOW = 140
+  # How far past the stored game tick a last-online may legitimately land: a
+  # player ONLINE at save has last_online == the live tick, a few ticks past
+  # the stored tick (measured 0-4). Far below the garbage last values (2^26+)
+  # the @save_tick cap exists to reject.
+  TICK_LAG = 600
 
   # One record as found in the stream. `pairs`/`locales` are raw candidates
   # (offsets + values); #roster picks between them.
@@ -289,7 +296,7 @@ module FactorioSave
     def pick_pairs(pairs)
       slots = pairs.select { |(rel, _, _)| @slots.include?(rel) }
       slots = pairs if slots.empty? # unusual layout: fall back to all of them
-      slots = slots.select { |(_, _, last)| last <= @save_tick } if @save_tick
+      slots = slots.select { |(_, _, last)| last <= @save_tick + TICK_LAG } if @save_tick
       slots.max_by { |(_, _, last)| last } || [nil, nil, nil]
     end
   end

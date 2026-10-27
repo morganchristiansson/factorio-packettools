@@ -419,6 +419,10 @@ class FactorioPacketTools
       # reload — see load_roster for why that re-seed matters.
       load_roster if @rcon
       load_player_attrs if @rcon
+      # A configured save (roster_save:) seeds the roster from disk — the
+      # up-to-date roster on restart without RCON (client mode) or as a
+      # complement to it (server mode, e.g. players who are offline now).
+      seed_roster_from_disk_save if @options[:roster_save]
       on_start if @rcon || log_consumers?
       # The single log-tailer thread (emits :on_log_line to the plugin bus).
       # Started after on_start so consumers are built first; idempotent, revived
@@ -1784,17 +1788,59 @@ class FactorioPacketTools
   # shells out to it and reloads the in-memory cache afterwards — otherwise
   # the names would only reach the file, not the running session.
   def seed_roster_from_save(zip, blocks)
-    tool = File.expand_path('../tools/extract_players_from_save.rb', __dir__)
-    out = IO.popen([RbConfig.ruby, tool, zip, @options[:player_db], '--merge'], err: [:child, :out], &:read)
-    if $?.success?
-      @player_db.reload!
-      puts out.lines.grep(/\A(?:roster|new|play time):/).map { |l| "[map-download] #{l}" }
-      File.delete(zip) # the roster was the point; the pcap keeps the blocks if wanted
-    else
-      warn "[map-download] roster seeding failed, save kept at #{zip}:\n#{out}"
-    end
+    roster_from_save(zip, verbose: true, label: 'map-download')
+    # the roster was the point; the pcap keeps the blocks if wanted
+    File.delete(zip)
   rescue StandardError => e
     warn "[map-download] roster seeding failed: #{e.class}: #{e.message}"
+  end
+
+  # Startup roster seed from a configured save path (config.yaml
+  # `roster_save:`): either a path to a save file directly, or a directory
+  # from which the most recently written save is read. Gives the up-to-date
+  # roster on restart without RCON (client mode) or as a complement to it
+  # (server mode — players offline now are still in the save). Missing path
+  # or a save that refuses to merge is a warn, not a crash. Runs on every
+  # run (boot and in-place reload) so a new autosave re-seeds it.
+  def seed_roster_from_disk_save
+    spec = @options[:roster_save]
+    save = File.directory?(spec) ? latest_save(spec) : spec
+    return unless save
+    puts "[roster-save] seeding from #{save}"
+    roster_from_save(save, verbose: true, label: 'roster-save')
+  end
+
+  # Latest save (by mtime) in a directory. Factorio autosaves compress a
+  # lot, so a directory is a useful default target; the newest is the one
+  # that reflects the current roster.
+  def latest_save(dir)
+    zips = Dir.glob(File.join(dir, '*.zip')).sort_by { |f| File.mtime(f) }
+    if zips.empty?
+      warn "[roster-save] no .zip saves in #{dir}"
+      return nil
+    end
+    zips.last
+  end
+
+  # Read a save (zip or a directory whose latest save is picked) and merge
+  # its whole roster into players-cache.json via the extract tool, then
+  # reload the in-memory cache. Shared by the live map-download seed and the
+  # startup save-seed. Returns false (and warns) on any failure; never raises.
+  def roster_from_save(save, verbose: false, label: 'roster-save')
+    tool = File.expand_path('../tools/extract_players_from_save.rb', __dir__)
+    out = IO.popen([RbConfig.ruby, tool, save, @options[:player_db], '--merge'], err: [:child, :out], &:read)
+    unless $?.success?
+      warn "[#{label}] seeding failed for #{save}:\n#{out}"
+      return false
+    end
+    @player_db.reload!
+    if verbose
+      puts out.lines.grep(/\A(?:roster|new|play time):/).map { |l| "[#{label}] #{l}" }
+    end
+    true
+  rescue StandardError => e
+    warn "[#{label}] seeding failed: #{e.class}: #{e.message}"
+    false
   end
 
   # ── Always-on auto-named capture ────────────────────────────────

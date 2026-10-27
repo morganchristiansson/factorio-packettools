@@ -158,4 +158,59 @@ class TestMapDownload < Minitest::Test
     assert_equal %w[alice bob carol], JSON.parse(File.read(cache)).values.map { |v| v['name'] }
     assert_includes output, '[map-download] roster: 3 players'
   end
+
+  # roster_save: startup disk-seed — a directory picks the newest save, an
+  # explicit file path is used as-is, and the running session's DB reloads.
+  # Writes real save-like zips (one zlib-compressed level.dat entry, the
+  # shape Factorio's archive uses) so the extract tool's unzip path is used.
+  def save_zip(path, *records)
+    require 'zip'
+    content = ('coal'.ljust(300).b + records.join).b
+    buf = Zip::OutputStream.write_buffer do |zos|
+      # real saves nest level.dat under a dir; the extract tool greps for `/level.dat`
+      zos.put_next_entry('save/level.dat')
+      zos.write(Zlib::Deflate.deflate(content))
+    end
+    File.binwrite(path, buf.string)
+  end
+
+  def test_roster_save_seeds_from_a_file_or_latest_in_a_directory
+    saves = File.join(@dir, 'saves')
+    Dir.mkdir(saves)
+    old = File.join(saves, 'old.zip')
+    new = File.join(saves, 'new.zip')
+    save_zip(old, record('alice', 1000, 90_000), record('bob', 2000, 91_000))
+    save_zip(new, record('carol', 3000, 92_000))
+    File.utime(Time.now + 5, Time.now + 5, new) # make `new` clearly the newest
+    cache = File.join(@dir, 'players-cache.json')
+
+    # directory: picks the newest (new.zip -> carol only)
+    Dir.chdir(@dir) do
+      sniffer = FactorioPacketTools.new({player_db: cache}, pcap_writer: FakeWriter.new)
+      sniffer.instance_variable_get(:@options)[:roster_save] = saves
+      sniffer.send(:seed_roster_from_disk_save)
+      db = sniffer.instance_variable_get(:@player_db)
+      assert_equal %w[carol], db.players.transform_values { |p| p[:name] }.values
+    end
+
+    # explicit file: uses old.zip as-is (alice + bob) into a fresh cache
+    cache2 = File.join(@dir, 'players-cache2.json')
+    Dir.chdir(@dir) do
+      sniffer = FactorioPacketTools.new({player_db: cache2}, pcap_writer: FakeWriter.new)
+      sniffer.instance_variable_get(:@options)[:roster_save] = old
+      sniffer.send(:seed_roster_from_disk_save)
+      db = sniffer.instance_variable_get(:@player_db)
+      assert_equal %w[alice bob], db.players.transform_values { |p| p[:name] }.values
+    end
+
+    # empty directory: warns, no crash, cache unchanged
+    empty = File.join(@dir, 'empty')
+    Dir.mkdir(empty)
+    Dir.chdir(@dir) do
+      sniffer = FactorioPacketTools.new({player_db: cache}, pcap_writer: FakeWriter.new)
+      sniffer.instance_variable_get(:@options)[:roster_save] = empty
+      _, err = capture_io { sniffer.send(:seed_roster_from_disk_save) }
+      assert_includes err, 'no .zip saves'
+    end
+  end
 end
