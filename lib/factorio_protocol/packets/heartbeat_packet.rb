@@ -310,6 +310,16 @@ module FactorioProtocol
         if is_drag && !is_server && offset + 21 <= data.bytesize &&
            data.getbyte(offset + 9) == 0x01 && data.getbyte(offset + 10) == 0x01
           alen = 21
+        elsif is_server && is_drag && offset + 21 <= data.bytesize &&
+              data.getbyte(offset + 9) == 0x01 && data.getbyte(offset + 10) == 0x01
+          # S→C echo of a drag build: TWO records (the placed tile + the drag
+          # endpoint), 21 bytes total like the C→S drag form. Reading 11
+          # bytes left the second record to be misparsed and a following
+          # chat SEGMENT was then read from mid-record (client-20261027-201904
+          # pkt 101714: "do we have large mining drills?" came out as a
+          # phantom/garbage instead of EMB_music's chat). The drag marker
+          # `01 01` sits at bytes 9/10 of the first record, same as C→S.
+          alen = 21
         elsif is_drag && offset + 11 <= data.bytesize
           alen = 11  # drag: 01 01 marker
         elsif offset + 10 <= data.bytesize && data.getbyte(offset + 9) == 0x00 && offset + 10 < data.bytesize
@@ -334,13 +344,15 @@ module FactorioProtocol
       end
 
       # open_character_gui (2.0: 6 / 2.1: 61) / open_blueprint_library_gui
-      # (2.0: 63 / 2.1: 64): direction-dependent like open_gui. C→S carries
-      # only the 1-byte GUI type; the S→C echo appends 14 bytes of metadata
-      # (15 total). Reading 15 bytes for C→S swallowed the following
-      # hover/266 actions and re-parsed their headers as phantom actions
-      # (e.g. gui_inventory_bar_changed Player_267, alt_select_blueprint_entities).
+      # (2.0: 63 / 2.1: 64): the 1-byte GUI type in BOTH directions. Unlike
+      # open_gui, the S→C echo appends NO entity/token/tick metadata — measured
+      # on clean S→C echoes (client-20261027-201904 pkt 2250 ends `3e 24 01`:
+      # type+delta+1 body byte, packet complete). The old `is_server ? 15 : 1`
+      # over-consumed 14 bytes, overran the closure, and the unconditional
+      # `tc[:hit_unknown] = false` reset then read the packet tail as a phantom
+      # PeerDisconnect sync (giant peer_id → bogus "Player_49xxx left the game").
       if name == 'open_character_gui' || name == 'open_blueprint_library_gui'
-        alen = is_server ? 15 : 1
+        alen = 1
       end
 
       # selected_entity_cleared (2.0/2.1 both 9): the 8 bytes ACTIONS lists are
@@ -348,9 +360,24 @@ module FactorioProtocol
       # data of its own, and the closure trailer follows the LAST action (hb
       # tick - 8 in captures). Intermediate actions carry no bytes; consuming 8
       # here used to eat the next action's header (phantom Player_192/etc.).
-      # S→C echo: [ref(4)][token(4)] = 8 bytes (tail follows separately).
+      # S→C echo is 0 bytes like the C→S form (empirically 13917/16346 echoes
+      # at 0, the rest short packets) — the [ref(4)][token(4)] "selection echo"
+      # is a separate closure trailer handled by the `55 ff ff ff ff` detection,
+      # not part of this action. Assuming 8 overruns the closure into a phantom
+      # sync action (selected_entity_cleared → bogus "Player_34177 left the
+      # game", client-20261027-211335 pkt 8568).
+      # S→C echo: 8 bytes [ref(4)][token(4)] when it carries the selection echo
+      # (leading 0x55 marker, fixture s2c_cleared_echo_trailer), else 0 — the
+      # same marker the per-closure trailer detection looks for. A blanket 8
+      # (or blanket 0) is wrong: assuming 8 overruns a short leave broadcast
+      # into a phantom sync action (→ bogus "Player_34177 left the game",
+      # client-20261027-211335 pkt 8568).
       if name == 'selected_entity_cleared'
-        alen = is_server ? 8 : (is_last ? 8 : 0)
+        alen = if is_server
+          (data.getbyte(offset) == 0x55 && offset + 8 <= data.bytesize) ? 8 : 0
+        else
+          is_last ? 8 : 0
+        end
       end
 
       # Hover/selection/zoom family (2.0/2.1 IDs differ; matched by name): the
@@ -361,14 +388,26 @@ module FactorioProtocol
       # payload bytes as phantom actions (zoom→swap_tile_slots Player_192,
       # selected_entity_changed→drag_train_wait_condition Player_64).
       # S→C echoes append [ref(4)][token(4)][tick-1(4)][pad(4)] = +16.
+      # render_mode_changed is NOT in this family: its S→C echo carries the
+      # same 1-byte payload as C→S. Adding +16 here over-consumed a render
+      # mode echo (client-20261027-201904 pkt 6174) so the trailer's `02`
+      # byte was skipped and the following well-formed sync
+      # `01 0f <closure_tick> 0000` (SkippedTickClosure) read, one byte in,
+      # as `count=2` + a phantom PeerDisconnect with peer_id=0xAE60=44640
+      # ("Player_44641 left the game").
       if alen && %w[close_gui zoom_around_point move_on_pan close_remote_view
                     change_picking_state selected_entity_changed_very_close
                     selected_entity_changed_very_close_precise
                     selected_entity_changed_relative
                     selected_entity_changed_based_on_unit_number
-                    render_mode_changed].include?(name)
+                    set_use_inserter_filters].include?(name)
         alen = if is_server
-          alen + 16
+          # +16 S→C echo metadata is only appended when there IS an entity to
+          # echo. In short leave broadcasts the echo is the bare C→S body —
+          # assuming +16 overruns the closure and the tail is then read as a
+          # phantom sync action (e.g. PeerDisconnect → bogus "Player_49xxx
+          # left the game"). Use the +16 form only when enough bytes remain.
+          (offset + alen + 16 <= data.bytesize) ? alen + 16 : alen
         else
           is_last ? alen + 8 : alen
         end

@@ -741,13 +741,27 @@ class FactorioPacketTools
       end
       if sa[:name] == 'PeerDisconnect'
         if sa[:peer_id]
-          # S→C broadcast form (client mode): names the departed peer.
+          # S→C broadcast form (client mode): the departed peer by NETWORK peer
+          # id. Learned names win (@peer_names from our own connection_accept +
+          # NewPeerInfo); then the fresh-joiner fallback (peer_id == small game
+          # index → @player_db[peer_id+1]). The @player_db fallback must NOT be
+          # trusted for a returning player / misparsed id — it would fabricate
+          # "Player_<peer_id+1>", a name for no game index (e.g. a peer id that
+          # is no index becomes "Player_49311"). When no real name is known we
+          # STILL announce the genuine quit, but by peer id — a real event is
+          # never hidden, and no fake player name is invented.
           pname = @peer_names[sa[:peer_id]] || @player_db.lookup(sa[:peer_id] + 1)
+          unnamed = pname.nil? || pname.start_with?('Player_')
+          pname = nil if unnamed
           @attrs.disconnect(pname, @game_tick) if pname
           @plugins.emit(:on_player_event, :left, pname) if pname
           @plugins.emit(:on_player_left, pname, @attrs.online_time_ticks(pname, nil)) if pname
           ts_str = Time.at(ts).strftime('%H:%M:%S.%L')
-          puts "#{ts_str}  #{pname} left the game" if player_visible?(pname)
+          if pname
+            puts "#{ts_str}  #{pname} left the game" if player_visible?(pname)
+          else
+            puts "#{ts_str}  [peer #{sa[:peer_id]}] left the game"
+          end
         else
           # C→S form (server mode): the SENDER announces its own disconnect
           # in its FINAL heartbeat — capture-verified (reason=0, no peer_id;
@@ -1722,18 +1736,27 @@ class FactorioPacketTools
   # or nil while the group is incomplete (skip printing/feeding until the
   # full message arrives). Buffers older than 15s are dropped (UDP loss
   # may strand a fragment).
+  #
+  # The (player, total_segs) key is reused across DIFFERENT messages from
+  # the same player, so a stale partial group must be discarded before a
+  # new message's first fragment lands in it — otherwise the old fragment
+  # merges into the new message (client-20261027-201904: a 30s-old S→C
+  # echo of "at hitting the bots" merged into a later
+  # "uranium will be back…"). Age the group from its FIRST fragment and
+  # prune BEFORE writing: refreshing `ts` on every write fed the eviction
+  # gate its own stamp and a reused key escaped it.
   def chat_action_data(act, pname, ts)    total = act[:total_segs]
     data = act[:data]
     return data unless total && total > 1
 
-    key = [pname, total]
-    group = (@chat_segments[key] ||= {})
-    group[:ts] = ts
-    group[act[:seg_no]] = data
-
     @chat_segments.delete_if do |_k, g|
       g[:ts] && (ts - g[:ts]) > 15
     end
+
+    key = [pname, total]
+    group = (@chat_segments[key] ||= {})
+    group[:ts] ||= ts  # creation time of the group, NOT refreshed per fragment
+    group[act[:seg_no]] = data
 
     return nil unless (0...total).all? { |n| group.key?(n) }
     merged = (0...total).map { |n| group[n] }.join

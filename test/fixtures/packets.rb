@@ -569,6 +569,36 @@ REAL_PACKET_FIXTURES = [
   },
 
   {
+    # S→C echo of open_character_gui: the echoed body is the SAME 1-byte GUI
+    # type as the C→S form — it does NOT append open_gui's 14-byte entity/
+    # token/tick metadata. Regression: assuming 15 bytes overran the closure
+    # and the packet tail was read as a phantom PeerDisconnect with a huge
+    # peer_id (bogus "Player_49xxx left the game", client-20261027-211335
+    # pkt 8676/8635). The packet ends right after the 1-byte body — clean.
+    name: 's2c_open_character_gui_echo_1byte',
+    description: 'S→C open_character_gui echo (client-20261027-201904.pcap pkt 2250) — 1-byte GUI body, packet complete, no phantom PeerDisconnect',
+    hex: '270613434c01929f4b0100000000045501e93ca32c919f4b01000000003e2401',
+    actions: [
+      { type: 62, name: 'open_character_gui', game_player: 36,
+        data: '01' },
+    ],
+  },
+  {
+    # S→C echo of set_use_inserter_filters: a selected-entity action whose
+    # echo carries a 1-byte parameter (C→S len was wrongly 0). Regression:
+    # reading 0 bytes overran the closure and the tail was read as a phantom
+    # PeerDisconnect (bogus "Player_49311 left the game", client-20261027-211335
+    # pkt 9625). Packet ends right after the body byte — clean.
+    name: 's2c_set_use_inserter_filters_echo_1byte',
+    description: 'S→C set_use_inserter_filters echo (client-20261027-201904.pcap) — 1-byte parameter, packet complete, no phantom PeerDisconnect',
+    hex: '270693754c0112d24b01000000000455014275f85211d24b0100000000ff12010c01',
+    actions: [
+      { type: 274, name: 'set_use_inserter_filters', game_player: 12,
+        data: '01' },
+    ],
+  },
+
+  {
     # C→S build_terrain (2.1 wire 181) placing one tile: 10-byte record +
     # 3-byte closure tail = 13-byte payload, then the [tick][pad] trailer.
     # Regression: only 2.0's wire 171 had the record-list parser, so 181 read
@@ -579,6 +609,90 @@ REAL_PACKET_FIXTURES = [
     actions: [
       { type: 181, name: 'build_terrain', game_player: 1,
         data: 'edf0ffff9a0a00000002000000' },
+    ],
+  },
+  {
+    # S→C echo of render_mode_changed followed by a SkippedTickClosure sync.
+    # Regression: render_mode_changed was in the S→C "+16 byte trailer" family
+    # (client-20261027-201904.pcap pkt 6174), so it over-consumed, the trailer's
+    # one-byte `02` payload was skipped, and the well-formed sync
+    # `01 0f <closure_tick> 0000` was read, one byte in, as `count=2` + a phantom
+    # PeerDisconnect with peer_id=0xAE60=44640 → bogus "Player_44641 left the game".
+    name: 's2c_render_mode_changed_sync_not_phantom_peer',
+    description: 'S→C render_mode_changed (gp107, 1-byte mode=02) + SkippedTickClosure sync (tick 21737056), NOT a phantom PeerDisconnect (client-20261027-201904.pcap pkt 6174)',
+    hex: '0716e1514c0160ae4b01000000000455018eefa06e5fae4b0100000000ff36016b02010f60ae4b01000000000000',
+    actions: [
+      { type: 310, name: 'render_mode_changed', game_player: 107,
+        data: '02' },
+    ],
+  },
+  {
+    # Real segments from the cross-message chat-corruption bug
+    # (client-20261027-201904.pcap, 2026-10-27): three write_to_console
+    # segments of split 2.1 chat from Player_8, all sharing the
+    # (player, total=2) reassembly key. The S→C echo of the EARLIER message
+    # strands a continuation-only group (its seg0 was never parsed); 30s later
+    # the next message starts under the same key. chat_action_data must drop
+    # the stale group (>15s) rather than merge it into the new message.
+    # See test_stale_chat_segment_not_merged_into_next_message (client mode,
+    # replays these real bytes).
+    name: 's2c_chat_hittingbots_stale_seg1',
+    description: 'S→C echo of the earlier message\'s split chat, continuation-only segment 1/2 (a stranded orphan: its seg0 never arrived). Keys [Player_8, 2], must be aged out before the next Player_8 total=2 message. client-20261027-201904.pcap pkt 69632.',
+    version: '2.1',
+    hex: '0706fe454d01dba14c0100000000035501685bbcecdaa14c0100000000016b240000000702011361742068697474696e672074686520626f7473',
+    actions: [
+      { type: 107, name: 'write_to_console', game_player: 8, total_segs: 2, seg_no: 1,
+        data: '61742068697474696e672074686520626f7473' },
+    ],
+  },
+  {
+    name: 'client_chat_uranium_seg0',
+    description: 'C→S split chat seg 0/2 (header + first 18 chars) — the real message "uranium will be back soon patience". client-20261027-201904.pcap pkt 71563.',
+    version: '2.1',
+    hex: '06066b0d784307a94c010000000001016b250000000702001407227572616e69756d2077696c6c206265206261fea84c0100000000',
+    actions: [
+      { type: 107, name: 'write_to_console', game_player: 8, total_segs: 2, seg_no: 0,
+        data: '07227572616e69756d2077696c6c206265206261' },
+    ],
+  },
+  {
+    name: 'client_chat_uranium_seg1',
+    description: 'C→S split chat seg 1/2 (raw continuation, last 16 chars) of the same message. client-20261027-201904.pcap pkt 71565.',
+    version: '2.1',
+    hex: '26066c0d784308a94c010000000001016b2500000007020110636b20736f6f6e2070617469656e6365ffa84c0100000000',
+    actions: [
+      { type: 107, name: 'write_to_console', game_player: 8, total_segs: 2, seg_no: 1,
+        data: '636b20736f6f6e2070617469656e6365' },
+    ],
+  },
+  {
+    # S→C echo of a drag build (two tile records) followed by a chat segment.
+    # Regression: the drag-build echo read only 11 of its 21 bytes, so the
+    # second record was misparsed and the following chat SEGMENT was read from
+    # mid-record — "do we have large mining drills?" (EMB_music, scenario-log
+    # tick 21830506) came out as a phantom instead. client-20261027-201904
+    # pkt 101714/101715.
+    name: 's2c_drag_build_then_chat_seg0',
+    description: 'S→C echo of a drag build + the first half (seg 0/2) of EMB_music\'s chat. Segment must be extracted after the 21-byte drag-build echo. client-20261027-201904.pcap pkt 101714.',
+    version: '2.1',
+    hex: '2706d5c04d01691b4d01000000000555012fa10294681b4d010000000045678029000080e7ffff0c01018020000080e7ffff0010016b0100000058020014581f646f2077652068617665206c61726765206d',
+    actions: [
+      { type: 69, name: 'build', game_player: 103,
+        data: '8029000080e7ffff0c01018020000080e7ffff0010' },
+      { type: 107, name: 'write_to_console', game_player: 89, total_segs: 2, seg_no: 0,
+        data: '581f646f2077652068617665206c61726765206d' },
+    ],
+  },
+  {
+    name: 's2c_drag_build_then_chat_seg1',
+    description: 'S→C echo of the same drag build + the second half (seg 1/2) of the chat. client-20261027-201904.pcap pkt 101715.',
+    version: '2.1',
+    hex: '2706d6c04d016a1b4d010000000005550199c4440a691b4d01000000004567802a000080e7ffff0c01018020000080e7ffff0010016b010000005802010d696e696e67206472696c6c733f',
+    actions: [
+      { type: 69, name: 'build', game_player: 103,
+        data: '802a000080e7ffff0c01018020000080e7ffff0010' },
+      { type: 107, name: 'write_to_console', game_player: 89, total_segs: 2, seg_no: 1,
+        data: '696e696e67206472696c6c733f' },
     ],
   },
 

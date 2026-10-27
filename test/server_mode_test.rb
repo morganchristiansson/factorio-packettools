@@ -697,6 +697,37 @@ class TestServerMode < Minitest::Test
     FactorioProtocol.reset_version
   end
 
+  # A stale partial group must not contaminate a later message that reuses
+  # the same (player, total_segs) key. Replays REAL segments from the
+  # client-20261027-201904.pcap bug (fixtures s2c_..._stale_seg1 and
+  # client_..._uranium_seg0/seg1): a 30s-old stranded S→C continuation
+  # must be dropped, not merged into the later Player_8 total=2 message.
+  # Regression: chat_action_data refreshed `ts` on every fragment write, so
+  # the eviction gate saw its own stamp and a reused key kept stale bytes
+  # ("at hitting the bots" merged into "uranium will be back…"). Client mode
+  # so the S→C echo is analyzed (server mode drops S→C entirely).
+  def test_stale_chat_segment_not_merged_into_next_message
+    FactorioProtocol.select_version('2.1')
+    output, = run_sniffer(player_db: nil) do |sniffer|
+      ts = 1_700_000_000.0
+      # Stranded S→C continuation of an earlier message (never completes).
+      sniffer.send(:process_packet, 1, ts, SERVER_IP, CLIENT_IP, 34197, 34197,
+                   fixture_packet('s2c_chat_hittingbots_stale_seg1'))
+      # Next Player_8 total=2 message, 30s later: with the old ts-refresh bug
+      # its seg0 merged with the stale 'at hitting the bots' continuation.
+      sniffer.send(:process_packet, 2, ts + 30, CLIENT_IP, SERVER_IP, 34197, 34197,
+                   fixture_packet('client_chat_uranium_seg0'))
+      sniffer.send(:process_packet, 3, ts + 30.1, CLIENT_IP, SERVER_IP, 34197, 34197,
+                   fixture_packet('client_chat_uranium_seg1'))
+    end
+    assert_includes output, 'uranium will be back soon patience',
+                    'stale segment dropped, new message merged cleanly'
+    refute_includes output, 'baat hitting the bots', 'stale continuation not merged into new message'
+    refute_includes output, '"uranium', 'seg0 header bytes not leaked into text'
+  ensure
+    FactorioProtocol.reset_version
+  end
+
   # ── Test 11: always-on auto-named captures ────────────────────────────
 
   def test_always_on_auto_named_captures

@@ -127,6 +127,63 @@ class TestPacketFixtures < Minitest::Test
     refute acts[0][:hit_unknown], 'translate_string must consume exactly count entries + 9-byte argument block'
   end
 
+  # S→C render_mode_changed carries its 1-byte payload (not a +16 trailer), so
+  # the packet's well-formed SkippedTickClosure sync is NOT misread as a phantom
+  # PeerDisconnect (peer_id 0xAE60=44640 → bogus "Player_44641 left the game").
+  # The fixture above pins the actions; this pins the sync section, which the
+  # fixture harness does not check.
+  def test_s2c_render_mode_changed_sync_is_skipped_tick_closure
+    FactorioProtocol.select_version('2.1')
+    fx = REAL_PACKET_FIXTURES.find { |f| f[:name] == 's2c_render_mode_changed_sync_not_phantom_peer' }
+    hb = FactorioProtocol.parse_udp_payload([fx[:hex]].pack('H*'))[:heartbeat]
+    sync = hb[:sync_actions]
+    assert_equal 1, sync.size
+    assert_equal 'SkippedTickClosure', sync[0][:name]
+    assert_equal 21737056, sync[0][:tick]
+    assert_equal 0, sync[0][:peer_id]
+    refute sync.any? { |s| s[:name] == 'PeerDisconnect' }, 'no phantom PeerDisconnect from the desynced sync read'
+  end
+
+  # S→C echo length regressions: open_character_gui and set_use_inserter_filters
+  # echoes carry a 1-byte body (not the +metadata/+15/+0 forms that overran),
+  # so their packet tails are NOT read as a phantom PeerDisconnect (→ bogus
+  # "Player_49xxx left the game").
+  def test_s2c_short_echo_not_phantom_peer
+    {
+      's2c_open_character_gui_echo_1byte' => 62,
+      's2c_set_use_inserter_filters_echo_1byte' => 274,
+    }.each do |fxname, type|
+      fx = REAL_PACKET_FIXTURES.find { |f| f[:name] == fxname }
+      FactorioProtocol.select_version('2.1')
+      hb = FactorioProtocol.parse_udp_payload([fx[:hex]].pack('H*'))[:heartbeat]
+      refute hb[:sync_actions].any? { |s| s[:name] == 'PeerDisconnect' },
+             "#{fxname}: no phantom PeerDisconnect"
+      act = hb[:tick_closures].first[:actions].find { |a| a[:type] == type }
+      assert_equal '01', act[:data]&.unpack1('H*'), "#{fxname}: echoed body is the 1-byte parameter"
+    end
+  end
+
+  # S→C drag-build echo + the chat segment after it: the drag build is TWO
+  # records (21 bytes), and the write_to_console segment lands right after.
+  # Regression: the echo read 11 bytes, so the segment was read from inside
+  # the second record — "do we have large mining drills?" came out as garbage
+  # (phantom Player_460). The fixtures pin the parse; this reassembles the two
+  # segments back into the full message as the sniffer would.
+  def test_s2c_drag_build_chat_reassembles_full_text
+    %w[s2c_drag_build_then_chat_seg0 s2c_drag_build_then_chat_seg1].each do |name|
+      fx = REAL_PACKET_FIXTURES.find { |f| f[:name] == name }
+      FactorioProtocol.select_version(fx[:version])
+      result = FactorioProtocol.parse_udp_payload([fx[:hex]].pack('H*'))
+      @split ||= []
+      wts = (result[:heartbeat][:tick_closures] || []).flat_map { |tc| tc[:actions] }
+        .select { |a| a[:name] == 'write_to_console' }
+      @split.concat(wts)
+    end
+    joined = reassemble(@split)
+    assert_equal 1, joined.size
+    assert_equal 'do we have large mining drills?', FactorioProtocol.decode_chat(joined.first)
+  end
+
   # A translate_string whose entries run past the end of the payload used to
   # raise out of the decode (the key length was added to 3 BEFORE the nil
   # check), which killed the whole packet on the capture thread — the
