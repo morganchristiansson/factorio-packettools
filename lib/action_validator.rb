@@ -199,7 +199,10 @@ class ActionValidator
       note_wire_actions_for_state(wire.size)
       return if @logging_on == false # no log lines to join — don't buffer
       wire.each { |a| @unknown_seen[a[:type]] += 1 if a[:name].to_s.start_with?('Unknown') }
-      entries = wire.map { |a| [a[:game_player], a[:type]] }
+      # Segment payloads (chat, blueprint-shelf updates) are not input actions
+      # and never appear as `Action performed` lines — keep them out of the
+      # wire sequence or every shelf update becomes a phantom mismatch.
+      entries = wire.reject { |a| a[:total_segs] }.map { |a| [a[:game_player], a[:type]] }
       if append && @wire[tick]
         # The other direction echoes the same closure: drop actions already
         # present at this tick (multiset), keeping only genuinely new ones.

@@ -985,4 +985,273 @@ REAL_PACKET_FIXTURES = [
         data: '0000000000000080000000000000f03f' },
     ],
   },
+  {
+    name: 'c2s_open_logistics_gui_28b',
+    description: 'C→S OpenLogisticsGui 28B body (same as S→C) then StopWalking (tick 25292236).',
+    hex: '06069a59bd32cced810100000000044008ffffffffffffffffffffffff7fffffff7f00000000000000000000010100c4ed810100000000',
+    actions: [
+      { type: 64, name: 'open_logistics_gui', game_player: 8, data: 'ffffffffffffffffffffffff7fffffff7f0000000000000000000001' },
+      { type: 1, name: 'stop_walking', game_player: 8, data: '' },
+    ],
+  },
+  {
+    name: 's2c_change_train_wait_condition_data_33b',
+    description: 'S→C ChangeTrainWaitConditionData 33B body then 266 (tick 25154820). Regression: length 0 parsed its body as nothing/Unknown(255).',
+    hex: '07061ba6800104d57f01000000000a5501423bd59c03d57f0100000000ff0a010788ff0a010547b9ff010100000000ffffffff0100000003010000000000c4000101000000000000bb040000ff0a0100bb',
+    actions: [
+      { type: 266, name: 'selected_entity_changed_very_close', game_player: 8, data: '88' },
+      { type: 266, name: 'selected_entity_changed_very_close', game_player: 13, data: '47' },
+      { type: 185, name: 'change_train_wait_condition_data', game_player: 270, data: '00000000ffffffff0100000003010000000000c4000101000000000000bb040000' },
+      { type: 266, name: 'selected_entity_changed_very_close', game_player: 270, data: 'bb' },
+    ],
+  },
+  {
+    name: 's2c_change_train_wait_condition_19b',
+    description: 'S→C ChangeTrainWaitCondition 19B body then StopWalking (tick 25153690).',
+    hex: '0706b1a180019ad07f010000000006550166b6eaf799d07f0100000000b8ff0d01000300000000ffffffff0100000000bb0400000139',
+    actions: [
+      { type: 184, name: 'change_train_wait_condition', game_player: 270, data: '000300000000ffffffff0100000000bb040000' },
+      { type: 1, name: 'stop_walking', game_player: 327, data: '' },
+    ],
+  },
+  {
+    name: 's2c_remove_train_station_13b',
+    description: 'S→C RemoveTrainStation 13B body then 266 (tick 25224698).',
+    hex: '2706b6b78101fae5800100000000065501c1f21fcff9e5800100000000ba0c00000000ffffffff00bd040000ff0a01ff010189',
+    actions: [
+      { type: 186, name: 'remove_train_station', game_player: 13, data: '00000000ffffffff00bd040000' },
+      { type: 266, name: 'selected_entity_changed_very_close', game_player: 270, data: '89' },
+    ],
+  },
+  {
+    name: 's2c_set_inventory_bar_5b',
+    description: 'S→C SetInventoryBar 5B echo (C→S table is 6) then SelectedEntityChangedRelative (tick 25155618).',
+    hex: '270639a9800122d87f010000000006550125e8115e21d87f01000000007f070001010004ff0c019a34088503',
+    actions: [
+      { type: 127, name: 'set_inventory_bar', game_player: 8, data: '0001010004' },
+      { type: 268, name: 'selected_entity_changed_relative', game_player: 162, data: '34088503' },
+    ],
+  },
+  {
+    name: 's2c_start_research_2b',
+    description: 'S→C StartResearch 2B echo then 266 (tick 25164485).',
+    hex: '270630cc8001c5fa7f01000000000655010cef36ebc4fa7f01000000006458fb00ff0a018e78',
+    actions: [
+      { type: 100, name: 'start_research', game_player: 89, data: 'fb00' },
+      { type: 266, name: 'selected_entity_changed_very_close', game_player: 231, data: '78' },
+    ],
+  },
+  {
+    name: 's2c_remove_pin_4b',
+    description: 'S→C RemovePin 4B body then SelectedEntityCleared (tick 25259132).',
+    hex: '2706943e82017c6c810100000000065501dbb3be4e7b6c810100000000ff50010714000000091d',
+    actions: [
+      { type: 336, name: 'remove_pin', game_player: 8, data: '14000000' },
+      { type: 9, name: 'selected_entity_cleared', game_player: 37, data: '' },
+    ],
+  },
+  {
+    name: 's2c_edit_display_panel_var',
+    description: 'S→C EditDisplayPanel [len][title] then CloseGui (tick 25336031).',
+    hex: '07069d6b8301df98820100000000065501d0463b2cde98820100000000ff4301a10c41726d6f722043686573740a3d000000',
+    actions: [
+      { type: 323, name: 'edit_display_panel', game_player: 162, data: '0c41726d6f722043686573740a' },
+      { type: 61, name: 'close_gui', game_player: 162, data: '0000' },
+    ],
+  },
+  {
+    name: 'c2s_copy_22b',
+    description: 'C→S Copy 22B body then SelectedEntityChangedRelative (tick 25296770).',
+    hex: '0606516bbd3282ff810100000000048608371c07003a7efeff791c07008593feff000001800000ff0c01000515f9ff7bff810100000000',
+    actions: [
+      { type: 134, name: 'copy', game_player: 8, data: '371c07003a7efeff791c07008593feff000001800000' },
+      { type: 268, name: 'selected_entity_changed_relative', game_player: 8, data: '0515f9ff7bff810100000000' },
+    ],
+  },
+  {
+    name: 's2c_achievement_gained_2b',
+    description: 'S→C AchievementGained 2B body then SelectedEntityChangedRelative (tick 25329637). Pins wire 345.',
+    hex: '2706a3528301e57f820100000000065501409e4d18e47f820100000000ff5901a14c00ff0c0100f907120c',
+    actions: [
+      { type: 345, name: 'achievement_gained', game_player: 162, data: '4c00' },
+      { type: 268, name: 'selected_entity_changed_relative', game_player: 162, data: 'f907120c' },
+    ],
+  },
+  {
+    name: 's2c_set_hide_locked_prototypes',
+    description: 'S→C SetHideLockedPrototypesInFactoriopedia 1B (tick 25347989). Pins wire 354.',
+    hex: '0706539a830195c7820100000000045501ba97d74694c7820100000000ff62013901',
+    actions: [
+      { type: 354, name: 'set_hide_locked_prototypes_in_factoriopedia', game_player: 58, data: '01' },
+    ],
+  },
+  {
+    name: 's2c_move_research_10b',
+    description: 'S→C MoveResearch 10B body then 266 (tick 25356400).',
+    hex: '07062ebb830170e8820100000000065501f4cf5ed86fe8820100000000cfa1fb000000000000000000ff0a01a587',
+    actions: [
+      { type: 207, name: 'move_research', game_player: 162, data: 'fb000000000000000000' },
+      { type: 266, name: 'selected_entity_changed_very_close', game_player: 327, data: '87' },
+    ],
+  },
+  {
+    name: 'c2s_cycle_clipboard_forwards',
+    description: 'C→S CycleClipboardForwards type 30 (tick 25242025).',
+    hex: '06061595bc32a929810100000000021e08a029810100000000',
+    actions: [
+      { type: 30, name: 'cycle_clipboard_forwards', game_player: 8, data: '' },
+    ],
+  },
+  {
+    name: 's2c_build_rail_20b',
+    description: 'S→C BuildRail 20B body then SelectedEntityCleared (tick 25345526).',
+    hex: '2706b4908301f6bd820100000000065501c7e6d59bf5bd820100000000cd58000000a7ffff006affff080122000cb0080000040949',
+    actions: [
+      { type: 205, name: 'build_rail', game_player: 89, data: '000000a7ffff006affff080122000cb008000004' },
+      { type: 9, name: 'selected_entity_cleared', game_player: 162, data: '' },
+    ],
+  },
+  {
+    name: 's2c_cursor_15b_close_gui',
+    description: 'S→C CursorTransfer 15B, CloseGui 2B, then 266 (tick 25267182).',
+    hex: '2706065e8201ee8b8101000000000a55013123ebc4ed8b810100000000810c000000000000f0bf00000000000052c00000000000a06a404f180000000000000000000000020000043d430001ff0a010078',
+    actions: [
+      { type: 129, name: 'zoom_around_point', game_player: 13, data: '000000000000f0bf00000000000052c00000000000a06a40' },
+      { type: 79, name: 'cursor_transfer', game_player: 37, data: '000000000000000000000002000004' },
+      { type: 61, name: 'close_gui', game_player: 104, data: '0001' },
+      { type: 266, name: 'selected_entity_changed_very_close', game_player: 104, data: '78' },
+    ],
+  },
+  {
+    name: 's2c_modify_decider_19b',
+    description: 'S→C ModifyDeciderCombinatorCondition 19B body then 266 (tick 25152492).',
+    hex: '2706039d8001eccb7f0100000000065501f77f18bdebcb7f0100000000a6a101000000024c00010100050001000000010101ff0a0100bd',
+    actions: [
+      { type: 166, name: 'modify_decider_combinator_condition', game_player: 162, data: '01000000024c00010100050001000000010101' },
+      { type: 266, name: 'selected_entity_changed_very_close', game_player: 162, data: 'bd' },
+    ],
+  },
+  {
+    name: 's2c_set_circuit_mode_2b',
+    description: 'S→C SetCircuitModeOfOperation 2B echo then ZoomAroundPoint + 266 (tick 25164261). Regression: C→S table length 12 read the body as nothing/phantom players.',
+    hex: '070650cb8001e5f97f010000000008550187c04162e4f97f0100000000685804008113000000000000f03f0000000000707bc00000000000e06340ff0a01368f',
+    actions: [
+      { type: 104, name: 'set_circuit_mode_of_operation', game_player: 89, data: '0400' },
+      { type: 129, name: 'zoom_around_point', game_player: 108, data: '000000000000f03f0000000000707bc00000000000e06340' },
+      { type: 266, name: 'selected_entity_changed_very_close', game_player: 162, data: '8f' },
+    ],
+  },
+  {
+    name: 'c2s_request_missing_materials_1b',
+    description: 'C→S RequestMissingConstructionMaterials 1B then 269 (tick 25170701).',
+    hex: '070678e480010d138001000000000655019e0d7f2d0c13800100000000ff1b01e601ff0d0127a440870200000000',
+    actions: [
+      { type: 283, name: 'request_missing_construction_materials', game_player: 231, data: '01' },
+      { type: 269, name: 'selected_entity_changed_based_on_unit_number', game_player: 270, data: 'a440870200000000' },
+    ],
+  },
+  {
+    name: 's2c_cursor_split_16b',
+    description: 'S→C CursorSplit 16B echo then SelectedEntityChangedRelative + StartWalking (tick 25256936).',
+    hex: '270600368201e8638101000000000a5501920ea310e763810100000000ff0a0167a8503a44000100000000000000000001000004ff0c016cd00fd00f46000000000000000080000000000000f03f',
+    actions: [
+      { type: 266, name: 'selected_entity_changed_very_close', game_player: 104, data: 'a8' },
+      { type: 80, name: 'cursor_split', game_player: 162, data: '44000100000000000000000001000004' },
+      { type: 268, name: 'selected_entity_changed_relative', game_player: 270, data: 'd00fd00f' },
+      { type: 70, name: 'start_walking', game_player: 270, data: '0000000000000080000000000000f03f' },
+    ],
+  },
+  {
+    name: 's2c_music_string_then_zoom',
+    description: 'S→C PlayerMusicChanged [len][track] ("fulgora-3") then ZoomAroundPoint (tick 25215473). Regression: fixed 1B ate the track string.',
+    hex: '07065a938101f1c18001000000000c5501ab3ce6b9f0c18001000000008139000000000000f0bf00000000008049400000000000806640ff0a011f87ff0a014984ff5c01a50966756c676f72612d338100000000000000f03f0000000000f072c00000000000c05340',
+    actions: [
+      { type: 129, name: 'zoom_around_point', game_player: 58, data: '000000000000f0bf00000000008049400000000000806640' },
+      { type: 266, name: 'selected_entity_changed_very_close', game_player: 89, data: '87' },
+      { type: 266, name: 'selected_entity_changed_very_close', game_player: 162, data: '84' },
+      { type: 348, name: 'player_music_changed', game_player: 327, data: '0966756c676f72612d33' },
+      { type: 129, name: 'zoom_around_point', game_player: 327, data: '000000000000f03f0000000000f072c00000000000c05340' },
+    ],
+  },
+  {
+    name: 's2c_select_mapper_slot_9b',
+    description: 'S→C SelectMapperSlotTo 9B then SelectedEntityChangedRelative + 266 (tick 25239991).',
+    hex: '0706cff38101b7218101000000000855013080f29fb621810100000000f267007900030000000000ff0c013ab70fc5feff0a01a598',
+    actions: [
+      { type: 242, name: 'select_mapper_slot_to', game_player: 104, data: '007900030000000000' },
+      { type: 268, name: 'selected_entity_changed_relative', game_player: 162, data: 'b70fc5fe' },
+      { type: 266, name: 'selected_entity_changed_very_close', game_player: 327, data: '98' },
+    ],
+  },
+  {
+    name: 'c2s_set_circuit_mode_2b',
+    description: 'C→S SetCircuitModeOfOperation 2B body (tick 25346446). Regression: table length 12 made hit_unknown.',
+    hex: '0606562dbe328ec1820100000000026808010184c1820100000000',
+    actions: [
+      { type: 104, name: 'set_circuit_mode_of_operation', game_player: 8, data: '0101' },
+    ],
+  },
+  {
+    name: 'c2s_trash_not_requested_1b',
+    description: 'C→S TrashNotRequestedItems 1B bool (tick 25155889).',
+    hex: '0606e443bb3231d97f010000000002ff1d01080125d97f0100000000',
+    actions: [
+      { type: 285, name: 'trash_not_requested_items', game_player: 8, data: '01' },
+    ],
+  },
+  {
+    name: 'c2s_cancel_deconstruct_23b',
+    description: 'C→S CancelDeconstruct 23B body then 266 (tick 25202678).',
+    hex: '2606b0fabb32f68f80010000000004a108d3d30600848efeffd3d30600848efeff00000180000002ff0a010088ee8f800100000000',
+    actions: [
+      { type: 161, name: 'cancel_deconstruct', game_player: 8, data: 'd3d30600848efeffd3d30600848efeff00000180000002' },
+      { type: 266, name: 'selected_entity_changed_very_close', game_player: 8, data: '88ee8f800100000000' },
+    ],
+  },
+  {
+    name: 'c2s_spawn_item_2b',
+    description: 'C→S SpawnItem 2B then 266 (tick 25297679).',
+    hex: '2606d86ebd320f038201000000000495084e00ff0a0100890b03820100000000',
+    actions: [
+      { type: 149, name: 'spawn_item', game_player: 8, data: '4e00' },
+      { type: 266, name: 'selected_entity_changed_very_close', game_player: 8, data: '890b03820100000000' },
+    ],
+  },
+  {
+    name: 'c2s_set_circuit_condition_11b',
+    description: 'C→S SetCircuitCondition 11B body (tick 25347067). Regression: nil table length made hit_unknown.',
+    hex: '2606c72fbe32fbc38201000000000262080300bb0001010000000000f2c3820100000000',
+    actions: [
+      { type: 98, name: 'set_circuit_condition', game_player: 8, data: '0300bb0001010000000000' },
+    ],
+  },
+  {
+    name: 's2c_build_terrain_zero_separator',
+    description: 'S→C BuildTerrain two records with 00 00 00 <id> 00 separators and a 00 00 00 tail, then StopWalking (tick 27122863).',
+    hex: '2706dad09e01afdc9d01000000000a55014516b057aedc9d01000000000958b54950d8ffffc01a00000002000000b500f0d7ffffc91a000000020000000100',
+    actions: [
+      { type: 9, name: 'selected_entity_cleared', game_player: 89, data: '' },
+      { type: 181, name: 'build_terrain', game_player: 162, data: '50d8ffffc01a00000002000000b500f0d7ffffc91a00000002000000' },
+      { type: 1, name: 'stop_walking', game_player: 162, data: '' },
+    ],
+  },
+  {
+    name: 'c2s_set_entity_color_three',
+    description: 'C→S SetEntityColor x3 (RGBA 4B each) then StopWalking (tick 27275854). Regression: length 0 invented Player_9479.',
+    hex: '060654bcdb324e32a0010000000006ff240108ff0000ffff240100ff0000ffff240100ff0000ff3d32a00100000000',
+    actions: [
+      { type: 292, name: 'set_entity_color', game_player: 8, data: 'ff0000ff' },
+      { type: 292, name: 'set_entity_color', game_player: 8, data: 'ff0000ff' },
+      { type: 292, name: 'set_entity_color', game_player: 8, data: 'ff0000ff' },
+    ],
+  },
+  {
+    name: 'c2s_remote_view_entity_19b',
+    description: 'C→S RemoteViewEntity 19B body then the +8 closure trailer (tick 27418705). Regression: nil length made hit_unknown.',
+    hex: '0606ddeadd325160a20100000000043d080100ff0501000259f3000000000000000000000000f03f00004660a20100000000',
+    actions: [
+      { type: 61, name: 'close_gui', game_player: 8, data: '0100' },
+      { type: 261, name: 'remote_view_entity', game_player: 8, data: '0259f3000000000000000000000000f03f0000' },
+    ],
+  },
 ].freeze

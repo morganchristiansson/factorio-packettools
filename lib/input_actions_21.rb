@@ -39,7 +39,8 @@ ACTIONS_21 = {
     # 2.0 had cycle_clipboard_forwards/backwards at 32/33; 2.1's inserted
     # stop_movement sits at 32, and the log pins backwards here at 31
     # (client-20261028-102801 pkt 8606 / factorio-current.log tick 24783389).
-    31 => ["cycle_clipboard_backwards", 0],
+    30 => ["cycle_clipboard_forwards", 0],
+  31 => ["cycle_clipboard_backwards", 0],
     32 => ["stop_movement_in_the_next_tick", 0],
     33 => ["toggle_enable_vehicle_logistics_while_moving", 0],
     34 => ["selected_entity_cleared", 0],
@@ -334,12 +335,14 @@ ACTIONS_21 = {
    343 => ["adjust_blueprint_snapping", 0],
    344 => ["set_train_stop_priority", nil],
    346 => ["land_at_planet", 0],
-   347 => ["player_visited_planet", 2], # S→C echo body (log-pinned, client-20261028-101422 pkt 45817)
+   345 => ["achievement_gained", 2],
+  347 => ["player_visited_planet", 2], # S→C echo body (log-pinned, client-20261028-101422 pkt 45817)
    348 => ["player_music_changed", 1],
    349 => ["parametrise_blueprint", 0],
    350 => ["player_locale_changed", nil], # [uint32v len][locale] on the wire
    351 => ["set_rocket_silo_send_to_orbit_automated_mode", 0],
-   355 => ["set_control_behavior_input_networks", 0],
+   354 => ["set_hide_locked_prototypes_in_factoriopedia", 1],
+  355 => ["set_control_behavior_input_networks", 0],
    356 => ["set_control_behavior_output_networks", nil],
 }.freeze
 

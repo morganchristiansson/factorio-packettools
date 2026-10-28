@@ -665,7 +665,12 @@ class FactorioPacketTools
         # A join appends to the per-connection peer list: the next peer id is
         # max + 1. A different id is stream damage, not a player (and the
         # peer id is not a game index anyway — the save/RCON owns that map).
-        if sa[:peer_id] && @max_peer_id && sa[:peer_id] != @max_peer_id + 1
+        # Peer ids are sequential per server lifetime, but the peers list we
+        # seed from only contains CURRENTLY online peers: if the capture starts
+        # late, the next real join can legitimately jump (803 -> 833). A real
+        # join is therefore any id ABOVE the last one we saw, not exactly +1.
+        # Going backwards is the misdecode (or a reused/duplicate peer).
+        if sa[:peer_id] && @max_peer_id && sa[:peer_id] <= @max_peer_id
           join_misdecode = true
           note_invalid_join(:peer_id, sa[:peer_id], sa[:username], @max_peer_id + 1)
           next

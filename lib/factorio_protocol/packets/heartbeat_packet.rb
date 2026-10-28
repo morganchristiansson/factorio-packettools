@@ -362,10 +362,8 @@ module FactorioProtocol
       # (client-20261028-102801 pkt 13792, 14067, 23175).
       if name == 'remote_view_surface'
         alen = 24
-      elsif is_server && name == 'open_logistics_gui'
-        alen = 28
-      elsif is_server && name == 'copy'
-        alen = 22
+      elsif name == 'open_logistics_gui'
+        alen = 28 # same body in both directions (C→S pkt 153329)
       elsif is_server && name == 'send_stacks_to_trash'
         alen = 17
       elsif is_server && name == 'deconstruct'
@@ -385,17 +383,72 @@ module FactorioProtocol
         alen = 13 # S→C echo body (station reference)
       elsif is_server && name == 'set_ghost_cursor'
         alen = 3 # S→C echo body
-      elsif is_server && name == 'set_circuit_condition'
-        alen = 11 # S→C echo body (condition record)
+      elsif name == 'set_circuit_condition'
+        alen = 11 # condition record, both directions (C→S pkt 212842)
       elsif is_server && name == 'cancel_upgrade'
         alen = 22 # S→C echo body (upgrade record)
       elsif is_server && name == 'cursor_transfer'
         # S→C echo is 16B (C→S table length), except when the 16th byte is
         # the 0xFF escape that starts the next action header: then it is 15B
         # (pkt 36236 cursor + 268 vs pkt 11188 cursor + 266).
-        alen = (offset + 16 <= data.bytesize && data.getbyte(offset + 15) == 0xFF) ? 15 : 16
+        # 15 when the 16th byte starts the next action: a 0xFF escape (266)
+        # or a bare close_gui type 0x3d (pkt 126774).
+        nxt = offset + 16 <= data.bytesize ? data.getbyte(offset + 15) : nil
+        alen = (nxt == 0xFF || nxt == 0x3D) ? 15 : 16
       elsif is_server && name == 'inventory_transfer'
         alen = 17 # S→C echo body (C→S table is 16)
+      elsif is_server && name == 'change_train_wait_condition'
+        alen = 19 # S→C echo body (pkt 4353, next action at +19)
+      elsif is_server && name == 'change_train_wait_condition_data'
+        alen = 33 # S→C echo body (pkt 3692/5583)
+      elsif is_server && name == 'remove_train_station'
+        alen = 13 # S→C echo body (pkt 81262, next 266 at +13)
+      elsif is_server && name == 'set_inventory_bar'
+        alen = 5 # S→C echo body (C→S table is 6; pkt 6437)
+      elsif is_server && name == 'start_research'
+        alen = 2 # S→C echo body (pkt 15831)
+      elsif is_server && name == 'remove_pin'
+        alen = 4 # S→C echo body (pkt 118232)
+      elsif is_server && name == 'move_research'
+        alen = 10 # S→C echo body (pkt 222493)
+      elsif is_server && name == 'build_rail'
+        alen = 20 # S→C echo body (pkt 211190/216116)
+      elsif is_server && name == 'modify_decider_combinator_condition'
+        alen = 19 # S→C echo body (pkt 2989, next 266 at +19)
+      elsif name == 'set_circuit_mode_of_operation'
+        alen = 2 # both directions (C→S table 12 is wrong; S→C pkt 15607, C→S pkt 212212)
+      elsif is_server && name == 'request_missing_construction_materials'
+        alen = 1 # S→C echo body (pkt 22665)
+      elsif is_server && name == 'cursor_split'
+        alen = 16 # S→C echo body (C→S table is 5; pkt 115862)
+      elsif name == 'set_entity_color'
+        alen = 4 # RGBA bytes, repeated per action (C→S pkt 171, no cache entry at +4)
+      elsif name == 'remote_view_entity'
+        alen = 19 # C→S body (pkt 27418705; next is the +8 closure trailer)
+      elsif is_server && name == 'select_mapper_slot_to'
+        alen = 9 # S→C echo body (pkt 97857)
+      elsif name == 'cancel_deconstruct'
+        alen = 23 # C→S body (pkt 57175, next 266 at +23)
+      elsif name == 'spawn_item'
+        alen = 2 # C→S body (pkt 159065, next 266 at +2)
+      elsif name == 'trash_not_requested_items'
+        alen = 1 # C→S bool body (pkt 6714)
+      elsif name == 'player_music_changed'
+        if is_server
+          # S→C echo: [u8 length][track id string] ("fulgora-3", "gleba-10");
+          # a zero length is the bare 1-byte form (pkt 13977).
+          len = data.getbyte(offset)
+          alen = (len && offset + 1 + len <= data.bytesize) ? 1 + len : 1
+        else
+          alen = 1
+        end
+      elsif name == 'edit_display_panel'
+        # [u8 string length][string] — the panel title/path (pkt 200908:
+        # 0x0c + "Armor Chest\n", then CloseGui).
+        len = data.getbyte(offset)
+        alen = (len && offset + 1 + len <= data.bytesize) ? 1 + len : nil
+      elsif name == 'copy'
+        alen = 22 # echo body in BOTH directions (C→S pkt 158050, S→C pkt 158058)
       elsif is_server && name == 'select_item_filter'
         alen = 6 # S→C echo body (filter slot record)
       elsif name == 'player_locale_changed'
@@ -515,15 +568,30 @@ module FactorioProtocol
       # wire 181 (0xB5) — the separator that follows each record re-uses the
       # action's own id as its marker byte.
       if (type == 171 || type == 181) && name == 'build_terrain'
-        mark = is_server ? (BT_RECORD_MARK_SC + [type].pack('C') + "\x00").b
-                         : ([0, 0, 0, type].pack('C4') + "\x00").b
-        tail = is_server ? BT_TAIL_SC : BT_TAIL
+        mark = ([0, 0, 0, type].pack('C4') + "\x00").b
         o = offset
         alen = 0
         while o + BT_RECORD <= data.bytesize
           alen += BT_RECORD
           o += BT_RECORD
-          break unless data[o, 5] == mark
+          if is_server
+            # S→C separators appear in both shapes: `01 ?? 00 <id> 00` (the
+            # early echo form) and `00 00 00 <id> 00` (pkt 27122863). The
+            # middle byte of the 01 form is the echo flag (00 or 01).
+            b0 = data.getbyte(o)
+            ok = if b0 == 0x00
+                   data[o, 5] == mark
+                 else
+                   b0 == 0x01 &&
+                     (data.getbyte(o + 1) || 0) <= 0x01 &&
+                     data.getbyte(o + 2).zero? &&
+                     data.getbyte(o + 3) == type &&
+                     data.getbyte(o + 4).zero?
+                 end
+            break unless ok
+          else
+            break unless data[o, 5] == mark
+          end
           alen += 5
           o += 5
         end
@@ -532,8 +600,11 @@ module FactorioProtocol
         # zero tail on the last action (otherwise the zeros ARE the next
         # `nothing` header).
         if is_server
-          alen += 3 if data[o, 3] == tail
-        elsif is_last && data[o, 3] == tail && (data.getbyte(o + 3) || 0) != 0x00
+          b0 = data.getbyte(o)
+          tail_ok = b0 == 0x00 ? data[o, 3] == BT_TAIL
+                               : b0 == 0x01 && (data.getbyte(o + 1) || 0) <= 0x01 && data.getbyte(o + 2).zero?
+          alen += 3 if tail_ok
+        elsif is_last && data[o, 3] == BT_TAIL && (data.getbyte(o + 3) || 0) != 0x00
           alen += 3
         end
       end

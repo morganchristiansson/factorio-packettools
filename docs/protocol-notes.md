@@ -851,8 +851,8 @@ direction-specific lengths by action NAME (IDs move between versions):
 | Action | S→C body | Evidence |
 |---|---|---|
 | `remote_view_surface` | 24 (both directions) | pkt 13792, 23175, C→S pkt 2665 |
-| `open_logistics_gui` | 28 | pkt 14067 |
-| `copy` | 22 | pkt 8209, 14954 |
+| `open_logistics_gui` | 28 (both directions) | pkt 14067, C→S pkt 153329 |
+| `copy` | 22 (both directions) | pkt 8209, 14954, C→S pkt 158050 |
 | `send_stacks_to_trash` | 17 | pkt 30089 |
 | `deconstruct` | 23 (16 area + 7 tail) | pkt 28272 |
 | `selected_entity_changed_based_on_unit_number` | 8 | pkt 33567 |
@@ -863,7 +863,7 @@ direction-specific lengths by action NAME (IDs move between versions):
 | `set_ghost_cursor` | 3 | pkt 3630 (client-20261028-105637) |
 | `set_circuit_condition` | 11 | pkt 968 (client-20261028-110751) |
 | `cancel_upgrade` | 22 | pkt 5718 (client-20261028-110947) |
-| `cursor_transfer` | 15/16 | pkt 36236 / 11188 |
+| `cursor_transfer` | 15/16 (16th byte starts next action ⇒ 15) | pkt 36236, 126774 / 11188 |
 | `inventory_transfer` | 17 | pkt 53964 |
 | `select_item_filter` | 6 | pkt 42274 |
 | `player_locale_changed` | variable `[len][locale]` | pkt 6767 |
@@ -871,6 +871,29 @@ direction-specific lengths by action NAME (IDs move between versions):
 | `set_logistic_filter_item` | 22 + optional 1B tail | pkt 37042 / 53819 |
 | `open_gui` | 0 | pkt 21540, 41860 |
 | `player_music_changed` | 1 (same as C→S) | pkt 13977 |
+| `set_inventory_bar` | 5 (C→S table 6) | pkt 6437 |
+| `start_research` | 2 | pkt 15831 |
+| `remove_pin` | 4 | pkt 118232 |
+| `move_research` | 10 | pkt 222493 |
+| `change_train_wait_condition` | 19 | pkt 4353 |
+| `change_train_wait_condition_data` | 33 | pkt 5583, 3692 |
+| `remove_train_station` | 13 | pkt 81262 |
+| `build_rail` | 20 | pkt 211190, 216116 |
+| `modify_decider_combinator_condition` | 19 | pkt 2989 |
+| `edit_display_panel` | variable `[u8 len][title]` | pkt 200908 |
+| `achievement_gained` (wire 345) | 2 | pkt 193983 |
+| `set_hide_locked_prototypes_in_factoriopedia` (wire 354) | 1 | pkt 213779 |
+| `set_circuit_mode_of_operation` | 2 (both directions; C→S table 12) | pkt 15607, C→S 212212 |
+| `set_circuit_condition` | 11 (both directions) | pkt 212842 |
+| `request_missing_construction_materials` | 1 | pkt 22665 |
+| `cursor_split` | 16 (C→S table 5) | pkt 115862 |
+| `select_mapper_slot_to` | 9 | pkt 97857 |
+| `player_music_changed` | variable `[u8 len][track]` | pkt 71377 |
+| `set_entity_color` | 4 (RGBA, both directions) | pkt 171 |
+| `trash_not_requested_items` | 1 | pkt 6714 |
+| `cancel_deconstruct` | 23 | pkt 57175 |
+| `spawn_item` | 2 | pkt 159065 |
+| `remote_view_entity` | 19 | pkt 27418705 (client-20261028-221233) |
 
 Two other S→C stream rules:
 
@@ -883,10 +906,17 @@ Two other S→C stream rules:
   S→C tail for non-drag echoes (`00 10` / `02 10`). A multi-action closure
   does NOT imply a drag build; the old fallback read 11 and ate the next
   action's type byte.
+- **Wire 30 = `cycle_clipboard_forwards`** (stable 2.1): type 31 is
+  `cycle_clipboard_backwards`; both are 0-byte actions.
+- **Segment payloads are not input actions**: heartbeat segments (chat,
+  blueprint-shelf updates such as type 151) never get `Action performed` log
+  lines, so the action validator skips actions carrying `total_segs`.
 - **`build_terrain` S→C separators use `01 01 00 <id> 00`** between records
   and always end with `01 01 00` (C→S uses `00 00 00 <id> 00` and a
   last-action `00 00 00` tail). pkt 13 has two records; reading only the
-  C→S marker stopped after record one.
+  C→S marker stopped after record one. A later S→C form uses the C→S-style
+  `00 00 00 <id> 00` separator and a `00 00 00` tail (pkt 27122863), so both
+  shapes are accepted.
 
 2.1 wire IDs pinned by the live log: `31 = cycle_clipboard_backwards`
 (2.0 had it at 33), `347 = player_visited_planet` (2B echo).
