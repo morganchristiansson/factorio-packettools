@@ -869,10 +869,14 @@ class FactorioPacketTools
       # "Action performed" lines by (tick, player). Server mode has only C→S;
       # client mode feeds the S→C echo too (deduped above), which is what the
       # log actually contains for every player.
-      # Client mode sees actions twice (our C→S and the server's S→C echo);
-      # feed BOTH like the offline validator, deduping exact repeats and
-      # appending genuinely different fragments. Server mode has only C→S.
-      if tc[:tick] && (hdr[:msg_type] == 6 || (!@options[:server] && hdr[:msg_type] == 7))
+      # The log's tick is the tick the SERVER processed the action, which is
+      # the S→C echo's tick. Our C→S closure carries the LOCAL tick, often 1-2
+      # ticks earlier, so feeding both makes the C→S copy consume the log line
+      # first and shifts every later echo (266 precise/very-close chain). In
+      # client mode the S→C echo already carries every player's action, so
+      # feed it alone; server mode has only C→S.
+      if tc[:tick] && ((@options[:server] && hdr[:msg_type] == 6) ||
+                       (!@options[:server] && hdr[:msg_type] == 7))
         feed_action_validation(tc[:tick], tc[:actions])
       end
     end

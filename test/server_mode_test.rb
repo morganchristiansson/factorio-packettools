@@ -1560,10 +1560,9 @@ class TestServerMode < Minitest::Test
     assert_equal({ 'Pipette' => 1 }, validator.votes[91])
   end
 
-  # Client mode sees the same tick from BOTH directions: our C→S closure and
-  # the server's S→C echo. Both are fed (the offline validator does the same),
-  # while an exact repeat is deduped so nothing correlates twice.
-  def test_client_mode_feeds_both_directions_to_action_validator
+  # In client mode the S→C echo is the server-processed tick the log names;
+  # our C→S copy carries the local tick and must not consume the log line.
+  def test_client_mode_feeds_s2c_echo_to_action_validator
     sniffer = make_test_sniffer(server: false, host_ips: [SERVER_IP], plugins: [:action_validator])
     validator = sniffer.instance_variable_get(:@plugins)[:action_validator]
     validator.record_log_line('Info InputActionHandler.cpp:672: Action performed [0 0 StartWalking]')
@@ -1579,7 +1578,7 @@ class TestServerMode < Minitest::Test
     )
     sniffer.send(:process_packet, 2, 1_700_000_000.0, CLIENT_IP, SERVER_IP,
                  34197, 34197, cs)
-    assert_equal 1, validator.stats[:ok], 'the identical C→S copy is deduped'
+    assert_equal 1, validator.stats[:ok], 'the C→S copy is not fed a second time'
   end
 
   # ── Centralized game-log tailer ─────────────────────────────────
