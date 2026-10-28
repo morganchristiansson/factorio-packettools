@@ -345,12 +345,13 @@ module FactorioProtocol
                else
                  9  # plain
                end
-        # S→C echoes append a 2-byte tail after a non-drag build body (the
-        # bytes are 00 10 / 02 10 before the next action; pkt 1270, 7509).
-        # Reading only the build body left them as a phantom `nothing` or
-        # begin_mining and shifted the following action. Drag echoes already
-        # carry their tail inside the 21-byte two-record form.
-        alen += 2 if is_server && alen < 21
+        # S→C echoes append a tail after a non-drag build body: 2 bytes for
+        # a ghost build (base 10, `00 10`-style; pkt 1270/7509) and 4 bytes
+        # for a normal build (base 9, `01 00 01 00`-style; pkt 17876 tick
+        # 27602342 — the old +2 left `01 00` as a phantom StopWalking and
+        # swallowed SelectedEntityChanged). Drag echoes already carry their
+        # tail inside the 21-byte two-record form.
+        alen += (alen == 10 ? 2 : 4) if is_server && alen < 21
       end
 
       # S→C-only echo bodies for actions whose C→S form is empty. The echo
@@ -371,7 +372,11 @@ module FactorioProtocol
       elsif is_server && name == 'selected_entity_changed_based_on_unit_number'
         alen = 8 # S→C echo carries the unit-number reference
       elsif is_server && name == 'player_join_game'
-        alen = 16 # join echo: peer/mode/name block
+        # Join echo: 6-byte peer/mode header, [u8 name len], the name, then
+        # 2 trailing bytes => 9 + name length (16 for a 7-char name, pkt
+        # 17772; 19 for a 10-char name, pkt 30236).
+        name_len = offset + 6 < data.bytesize ? data.getbyte(offset + 6) : 0
+        alen = 9 + name_len
       elsif is_server && name == 'set_logistic_filter_item'
         # S→C echo body is 22B, plus a 1B zero tail when present (the next
         # byte is 0; pkt 53819: 22B body + 00, then StopMovement type 32).
@@ -420,11 +425,16 @@ module FactorioProtocol
       elsif is_server && name == 'request_missing_construction_materials'
         alen = 1 # S→C echo body (pkt 22665)
       elsif is_server && name == 'cursor_split'
-        alen = 16 # S→C echo body (C→S table is 5; pkt 115862)
+        # S→C echo body: 15 bytes, plus a 1-byte tail unless the next byte
+        # already starts an escaped action type (0xFF; pkt 38324 tick
+        # 27622321). The 16-byte form was pkt 115862.
+        alen = (offset + 15 < data.bytesize && data.getbyte(offset + 15) != 0xFF) ? 16 : 15
       elsif name == 'set_entity_color'
         alen = 4 # RGBA bytes, repeated per action (C→S pkt 171, no cache entry at +4)
       elsif name == 'remote_view_entity'
         alen = 19 # C→S body (pkt 27418705; next is the +8 closure trailer)
+      elsif is_server && name == 'quick_bar_pick_slot'
+        alen = 4 # S→C echo carries page/slot (f6 58 00 07 01 00; pkt 19200)
       elsif is_server && name == 'select_mapper_slot_to'
         alen = 9 # S→C echo body (pkt 97857)
       elsif name == 'cancel_deconstruct'

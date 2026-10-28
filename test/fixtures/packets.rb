@@ -1254,4 +1254,41 @@ REAL_PACKET_FIXTURES = [
       { type: 261, name: 'remote_view_entity', game_player: 8, data: '0259f3000000000000000000000000f03f0000' },
     ],
   },
+  {
+    name: 's2c_build_normal_4b_tail',
+    description: 'S→C Build (normal, 9B + 4B tail) then SelectedEntityChanged (type 90) (tick 27602342). Regression: the old +2 tail left 01 00 as a phantom StopWalking and swallowed the selection.',
+    hex: '27061c28a601a62da50100000000065501059c3235a52da501000000004558bc1f010005b9000004010001005a00bc1f010005b90000',
+    actions: [
+      { type: 69, name: 'build', game_player: 89, data: 'bc1f010005b900000401000100' },
+      { type: 90, name: 'selected_entity_changed', game_player: 89, data: 'bc1f010005b90000' },
+    ],
+  },
+  {
+    name: 's2c_quick_bar_pick_slot_4b',
+    description: 'S→C QuickBarPickSlot 4B echo (page/slot) then two ZoomAroundPoint echoes (tick 27603666). Regression: table length 0 exposed a phantom nothing/StopWalking.',
+    hex: '2706482da601d232a50100000000085501bcb6f699d132a50100000000f6580007010081ff0701000000000000f0bf0000000000c05d400000000000405d408100000000000000f0bf0000000000c05d400000000000405d40',
+    actions: [
+      { type: 246, name: 'quick_bar_pick_slot', game_player: 89, data: '00070100' },
+      { type: 129, name: 'zoom_around_point', game_player: 352, data: '000000000000f0bf0000000000c05d400000000000405d40' },
+      { type: 129, name: 'zoom_around_point', game_player: 352, data: '000000000000f0bf0000000000c05d400000000000405d40' },
+    ],
+  },
+  {
+    name: 's2c_player_join_game_var_name',
+    description: 'S→C PlayerJoinGame with a 10-char name (19B body) then MoveOnPan (tick 27614343). Regression: fixed 16B left the name tail as Unknown(51) and lost MoveOnPan.',
+    hex: '07166457a601875ca50100000000065501da8b014c865ca501000000009fa1ff4b03a100010a5065747269636b6f3933000082be6f05ffff8394f7ff526240a5fe65c93f000204a75ca501000000004b030aff4b03',
+    actions: [
+      { type: 159, name: 'player_join_game', game_player: 162, data: 'ff4b03a100010a5065747269636b6f39330000' },
+      { type: 130, name: 'move_on_pan', game_player: 352, data: '6f05ffff8394f7ff526240a5fe65c93f00' },
+    ],
+  },
+  {
+    name: 's2c_cursor_split_15b',
+    description: 'S→C CursorSplit 15B (next byte 0xFF starts type 268) then SelectedEntityChangedRelative (tick 27622321). Regression: fixed 16B ate the 0xFF and made Unknown(12).',
+    hex: '27068e76a601b17ba50100000000065501f7e8a2a6b07ba5010000000050a1000000000000000000000008030002ff0c01beb0fb160e',
+    actions: [
+      { type: 80, name: 'cursor_split', game_player: 162, data: '000000000000000000000008030002' },
+      { type: 268, name: 'selected_entity_changed_relative', game_player: 352, data: 'b0fb160e' },
+    ],
+  },
 ].freeze

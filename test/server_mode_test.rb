@@ -562,16 +562,39 @@ class TestServerMode < Minitest::Test
         _, sniffer = run_sniffer(server: true, host_ips: [SERVER_IP], player_db: nil,
                                  real_unknown_writer: true) do |s|
           s.instance_variable_set(:@roster_ready, true)
-          s.instance_variable_get(:@player_db)[1] = {name: 'known'}
+          # Known roster reaches id 1000, so player 12 is a GAP inside it.
+          s.instance_variable_get(:@player_db)[1000] = {name: 'known'}
           s.send(:process_packet, 1, 1_700_000_000.0, CLIENT_IP, SERVER_IP, 34_197, 34_197,
                    packet, "\x00" * 14 + packet)
         end
         assert_equal [12], sniffer.instance_variable_get(:@invalid_player_ids).keys,
-                     'player 12 is not in the roster'
+                     'player 12 is a gap inside the roster'
         assert_equal 1, sniffer.instance_variable_get(:@stats)[:invalid_player]
         writer = sniffer.instance_variable_get(:@unknown_writer)
         writer.close
         assert_operator File.binread(writer.path).bytesize, :>, 24, 'invalid player frame kept for audit'
+      end
+    end
+  end
+
+  # A player ABOVE the seeded roster is a new joiner (the save/RCON snapshot
+  # predates them), not a misdecode: allow the same window above the maximum.
+  def test_new_player_above_roster_is_not_flagged_live
+    Dir.mktmpdir do |dir|
+      Dir.chdir(dir) do
+        packet = fixture_packet('client_chat_message_0x0b')
+        _, sniffer = run_sniffer(server: true, host_ips: [SERVER_IP], player_db: nil,
+                                 real_unknown_writer: true) do |s|
+          s.instance_variable_set(:@roster_ready, true)
+          s.instance_variable_get(:@player_db)[1] = {name: 'known'}
+          s.send(:process_packet, 1, 1_700_000_000.0, CLIENT_IP, SERVER_IP, 34_197, 34_197,
+                   packet, "\x00" * 14 + packet)
+        end
+        assert_empty sniffer.instance_variable_get(:@invalid_player_ids),
+                     'player 12 is above the roster like a new joiner'
+        writer = sniffer.instance_variable_get(:@unknown_writer)
+        writer.close
+        refute File.exist?(writer.path), 'no unknown-packet frame kept'
       end
     end
   end

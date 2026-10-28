@@ -202,7 +202,17 @@ class ActionValidator
       # Segment payloads (chat, blueprint-shelf updates) are not input actions
       # and never appear as `Action performed` lines — keep them out of the
       # wire sequence or every shelf update becomes a phantom mismatch.
-      entries = wire.reject { |a| a[:total_segs] }.map { |a| [a[:game_player], a[:type]] }
+      entries = wire.flat_map do |a|
+        # Segment payloads (chat, blueprint shelf) never log, but a split
+        # write_to_console DOES get one `Action performed` line when its
+        # LAST segment arrives. Exclude everything else that is segmented.
+        if a[:total_segs] &&
+           !(a[:name] == 'write_to_console' && a[:seg_no].to_i == a[:total_segs] - 1)
+          next []
+        end
+        n = build_terrain_actions(a)
+        Array.new(n) { [a[:game_player], a[:type]] }
+      end
       if append && @wire[tick]
         # The other direction echoes the same closure: drop actions already
         # present at this tick (multiset), keeping only genuinely new ones.
@@ -449,6 +459,16 @@ class ActionValidator
     else
       @wire[tick] = kept_w
     end
+  end
+
+  # S→C build_terrain packs N terrain records into ONE wire action, while
+  # the log prints one BuildTerrain line per record. The payload is N*13
+  # bytes plus a 2-byte `b5 00` separator between records, i.e. 15N-2.
+  def build_terrain_actions(action)
+    return 1 unless action[:name] == 'build_terrain' && action[:data]
+    len = action[:data].bytesize
+    n = (len + 2) / 15
+    (n >= 1 && n * 15 - 2 == len) ? n : 1
   end
 
   # Wire type name vs log name under the case-normalizing comparison.

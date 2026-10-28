@@ -815,12 +815,21 @@ class FactorioPacketTools
     known_players = @player_db.players.keys
     known_players.concat(@attrs.roster_pairs.map { |p| p[:index] })
     decoded_players = decoded_player_ids(hb)
+    max_known_player = known_players.max.to_i
     invalid_players = if known_players.empty?
                         []
                       elsif @strict_player_ids && @roster_ready
-                        decoded_players.reject { |pid| known_players.include?(pid) }
+                        # Membership for ids INSIDE the roster (a gap there is
+                        # a misdecode). Ids ABOVE the last known player can be
+                        # new joiners the save/RCON seed predates — allow the
+                        # same small window as replay; a real desync lands
+                        # far outside it.
+                        decoded_players.reject do |pid|
+                          known_players.include?(pid) ||
+                            (pid > max_known_player && pid <= max_known_player + UNKNOWN_PLAYER_WINDOW)
+                        end
                       else
-                        roster_ceiling = known_players.max.to_i + UNKNOWN_PLAYER_WINDOW
+                        roster_ceiling = max_known_player + UNKNOWN_PLAYER_WINDOW
                         decoded_players.reject { |pid| known_players.include?(pid) || pid <= roster_ceiling }
                       end
     unless invalid_players.empty?

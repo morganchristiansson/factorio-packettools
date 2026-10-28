@@ -114,6 +114,30 @@ class TestActionValidator < Minitest::Test
     assert_empty @v.instance_variable_get(:@log)
   end
 
+  def test_last_write_to_console_segment_is_the_logged_action
+    log! 1000, 12, 'WriteToConsole'
+    first = { type: 107, name: 'write_to_console', game_player: 12,
+              total_segs: 2, seg_no: 0, data: 'x' }
+    last = { type: 107, name: 'write_to_console', game_player: 12,
+             total_segs: 2, seg_no: 1, data: 'y' }
+    capture_io { @v.on_input_actions(999, [first]) }
+    assert_equal 0, @v.stats[:ok], 'the first segment is not a logged action'
+    capture_io { @v.on_input_actions(1000, [last]) }
+    assert_equal 1, @v.stats[:ok], 'the final segment correlates with WriteToConsole'
+    assert_equal 0, @v.stats[:seq_len_mismatch]
+  end
+
+  def test_build_terrain_records_expand_to_one_action_each
+    log! 1000, 12, 'BuildTerrain'
+    log! 1000, 12, 'BuildTerrain'
+    data = ['5850ffff202100000002010000b500db4fffff4a2100000002010000'].pack('H*')
+    @v.on_input_actions(1000, [
+      { type: 181, name: 'build_terrain', game_player: 12, data: data }
+    ])
+    assert_equal 2, @v.stats[:ok], 'one wire action carries two logged terrain builds'
+    assert_equal 0, @v.stats[:seq_len_mismatch]
+  end
+
   def test_nothing_padding_stripped_from_wire_side
     log! 1000, 12, 'Build'
     capture_io { wire! 1000, [[0, 12], [69, 12]] }

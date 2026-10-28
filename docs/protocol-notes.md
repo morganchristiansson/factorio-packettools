@@ -856,7 +856,7 @@ direction-specific lengths by action NAME (IDs move between versions):
 | `send_stacks_to_trash` | 17 | pkt 30089 |
 | `deconstruct` | 23 (16 area + 7 tail) | pkt 28272 |
 | `selected_entity_changed_based_on_unit_number` | 8 | pkt 33567 |
-| `player_join_game` | 16 | pkt 17772 |
+| `player_join_game` | variable `9 + name_len` (16 pkt 17772, 19 pkt 30236) | 2-byte tail after the name |
 | `set_logistic_filter_item` | 22 | pkt 37042 |
 | `upgrade` | 23 | pkt 16083 |
 | `go_to_train_station` | 13 | pkt 58659 |
@@ -886,7 +886,7 @@ direction-specific lengths by action NAME (IDs move between versions):
 | `set_circuit_mode_of_operation` | 2 (both directions; C→S table 12) | pkt 15607, C→S 212212 |
 | `set_circuit_condition` | 11 (both directions) | pkt 212842 |
 | `request_missing_construction_materials` | 1 | pkt 22665 |
-| `cursor_split` | 16 (C→S table 5) | pkt 115862 |
+| `cursor_split` | 15, or 16 when the 16th byte is not `0xFF` (C→S table 5) | pkt 38324 / 115862 |
 | `select_mapper_slot_to` | 9 | pkt 97857 |
 | `player_music_changed` | variable `[u8 len][track]` | pkt 71377 |
 | `set_entity_color` | 4 (RGBA, both directions) | pkt 171 |
@@ -894,6 +894,9 @@ direction-specific lengths by action NAME (IDs move between versions):
 | `cancel_deconstruct` | 23 | pkt 57175 |
 | `spawn_item` | 2 | pkt 159065 |
 | `remote_view_entity` | 19 | pkt 27418705 (client-20261028-221233) |
+| `quick_bar_pick_slot` | 4 (page/slot echo; C→S table 0) | pkt 19200 |
+| `build` (normal) | 9 + a 4-byte tail (ghost is 10 + 2) | pkt 17876 |
+| `write_to_console` | segmented; only the LAST segment is one logged action | pkt 32555/32556 |
 
 Two other S→C stream rules:
 
