@@ -871,6 +871,7 @@ class FactorioPacketTools
         # NOT `keep_frame ||= track_quickbar(act)`: that would short-circuit
         # and skip the tracking itself on every action after the first hit.
         keep_frame = true if track_quickbar(act)
+        bind_player_join(act) if act[:name] == 'player_join_game'
         log_action(ts, act, hdr[:msg_type] == 7, ghost: @ghost_mode, raw_frame: raw_frame)
       end
       # Runtime action-ID validation (action_validator plugin): the decoded
@@ -1111,6 +1112,26 @@ class FactorioPacketTools
   # set_slot names the item and the slot but NOT the page, so the page the
   # slot lands on is the one the player last switched to.
   #
+  # S→C player_join_game carries the joining player's GAME INDEX as the
+  # action's player and their name in the body: 6-byte peer/mode header,
+  # [u8 name len], name, 2 trailing bytes. This is the client-mode
+  # id→name binding NewPeerInfo cannot provide (it only has the network
+  # peer id), so persist it. Example: sheburator joins at game index 352.
+  def bind_player_join(act)
+    data = act[:data]
+    idx = act[:game_player]
+    return unless data && idx.to_i.positive?
+    len = data.getbyte(6)
+    return unless len && len.positive? && len <= 64 && data.bytesize >= 7 + len
+    name = data.byteslice(7, len).to_s.force_encoding(Encoding::UTF_8)
+    return unless name.valid_encoding? && !name.strip.empty?
+    @player_db[idx] = { name: name, locale: nil }
+    @player_db.remove_other_entries_for(name, idx)
+    @attrs.set_index(name, idx)
+  rescue StandardError
+    nil
+  end
+
   # Returns TRUE when the action could not be decoded, or named a page/slot
   # outside the quickbar. Both mean an EARLIER action's length desynced the
   # closure — the quickbar action is merely the first to show it — and the

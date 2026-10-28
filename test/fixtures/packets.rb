@@ -1291,4 +1291,13 @@ REAL_PACKET_FIXTURES = [
       { type: 268, name: 'selected_entity_changed_relative', game_player: 352, data: 'b0fb160e' },
     ],
   },
+  {
+    name: 's2c_player_join_game_new_player',
+    description: 'S→C PlayerJoinGame for a NEW player: game index 352 = sheburator (tick 27602115). Regression: NewPeerInfo only carries the peer id, so the game index→name binding was never persisted.',
+    hex: '27163927a601c32ca50100000000065501e53f5d84c22ca50100000000206b9ff4ff4a035f01010a73686562757261746f7200000204e32ca501000000004a030aff4a03',
+    actions: [
+      { type: 32, name: 'stop_movement_in_the_next_tick', game_player: 108, data: '' },
+      { type: 159, name: 'player_join_game', game_player: 352, data: 'ff4a035f01010a73686562757261746f720000' },
+    ],
+  },
 ].freeze

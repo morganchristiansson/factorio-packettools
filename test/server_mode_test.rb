@@ -646,6 +646,23 @@ class TestServerMode < Minitest::Test
     refute replay.instance_variable_get(:@strict_player_ids), 'replay keeps the old distance rule'
   end
 
+  def test_player_join_game_binds_new_game_index_to_name_in_client_mode
+    Dir.mktmpdir do |dir|
+      Dir.chdir(dir) do
+        packet = fixture_packet('s2c_player_join_game_new_player')
+        _, sniffer = run_sniffer(server: false, host_ips: [SERVER_IP], player_db: nil) do |s|
+          s.instance_variable_set(:@roster_ready, true)
+          s.instance_variable_get(:@player_db)[1] = { name: 'known' }
+          s.send(:process_packet, 1, 1_700_000_000.0, SERVER_IP, CLIENT_IP,
+                   34197, 34197, packet, "\x00" * 14 + packet)
+        end
+        db = sniffer.instance_variable_get(:@player_db)
+        assert_equal 'sheburator', db[352][:name],
+                     'the S→C join action carries the new game index and name'
+      end
+    end
+  end
+
   # ── Test 9: C→S join/leave detection feeds the agent ──────────────────
 
   def test_server_mode_join_and_leave_events
