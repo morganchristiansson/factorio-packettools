@@ -119,7 +119,9 @@ class ActionValidator
   end
 
   # One tailed log line → [player1idx, log_name] on its tick. The log's
-  # player index is 1-based (same convention as the decoded game_player).
+  # player index is 0-based (the wire convention); +1 here makes the whole
+  # validator use the same 1-based player indexes as the decoded game_player,
+  # players-cache.json and every emitted event.
   def record_log_line(line)
     m = line.match(LOG_RE)
     return unless m
@@ -143,7 +145,7 @@ class ActionValidator
       id = @log.object_id
       counts[id] = (counts[id] || 0) + 1
       log_buf = @log
-      log_buf[tick] << [m[2].to_i, m[3]]
+      log_buf[tick] << [m[2].to_i + 1, m[3]]
       @newest_tick = tick if tick > (@newest_tick ||= tick)
       # Only evict by tick window when the capture replay has started
       # (@consume_tick is set in correlate). Before that, the log tailer
@@ -197,10 +199,7 @@ class ActionValidator
       note_wire_actions_for_state(wire.size)
       return if @logging_on == false # no log lines to join — don't buffer
       wire.each { |a| @unknown_seen[a[:type]] += 1 if a[:name].to_s.start_with?('Unknown') }
-      # Log player indexes are 0-based; the decoded game_player is the
-      # user-facing 1-based Lua index in BOTH directions. Normalize here so
-      # C→S and S→C pair with the same log convention.
-      entries = wire.map { |a| [a[:game_player] - 1, a[:type]] }
+      entries = wire.map { |a| [a[:game_player], a[:type]] }
       entries = @wire[tick].to_a + entries if append && @wire[tick]
       @buf_counts ||= {}
       @buf_counts[@wire.object_id] = (@buf_counts[@wire.object_id] || 0) + entries.size
