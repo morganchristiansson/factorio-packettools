@@ -382,6 +382,8 @@ module FactorioProtocol
         alen = 13 # S→C echo body (station reference)
       elsif is_server && name == 'set_ghost_cursor'
         alen = 3 # S→C echo body
+      elsif is_server && name == 'set_circuit_condition'
+        alen = 11 # S→C echo body (condition record)
       end
 
       # open_gui: variable length, depends on direction.

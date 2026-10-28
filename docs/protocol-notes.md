@@ -861,6 +861,7 @@ direction-specific lengths by action NAME (IDs move between versions):
 | `upgrade` | 23 | pkt 16083 |
 | `go_to_train_station` | 13 | pkt 58659 |
 | `set_ghost_cursor` | 3 | pkt 3630 (client-20261028-105637) |
+| `set_circuit_condition` | 11 | pkt 968 (client-20261028-110751) |
 | `open_gui` | 0 | pkt 21540, 41860 |
 | `player_music_changed` | 1 (same as C→S) | pkt 13977 |
 

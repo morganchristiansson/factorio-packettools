@@ -894,4 +894,15 @@ REAL_PACKET_FIXTURES = [
       { type: 266, name: 'selected_entity_changed_very_close', game_player: 327, data: '78' },
     ],
   },
+  {
+    name: 's2c_set_circuit_condition_11b',
+    description: 'S→C SetCircuitCondition (11B echo) then SelectedEntityChangedRelative (pkt 968, tick 24918934). Regression: nil table length stopped parsing, losing the relative action and reporting a sequence-length mismatch.',
+    hex: '07069d097d01963b7c0100000000065501f249068a953b7c010000000062e60100e50001010000000000ff0c0100c903480b',
+    actions: [
+      { type: 98, name: 'set_circuit_condition', game_player: 231,
+        data: '0100e50001010000000000' },
+      { type: 268, name: 'selected_entity_changed_relative', game_player: 231,
+        data: 'c903480b' },
+    ],
+  },
 ].freeze
