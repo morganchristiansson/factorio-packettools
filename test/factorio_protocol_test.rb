@@ -67,7 +67,8 @@ class TestFactorioProtocol < Minitest::Test
     # type=132 (deconstruct), delta=2, data=16 bytes
     pkt = build_server_tc_packet([
       { type: 132, delta: 2, data: [0x9d, 0x9f, 0xfe, 0xff, 0x1c, 0xae, 0x01, 0x00,
-                                      0xf5, 0xa2, 0xfe, 0xff, 0xcc, 0xcf, 0x01, 0x00] }
+                                      0xf5, 0xa2, 0xfe, 0xff, 0xcc, 0xcf, 0x01, 0x00,
+                                      0x00, 0x00, 0x01, 0x80, 0x00, 0x00, 0x01] }
     ])
     result = FactorioProtocol.parse_udp_payload(pkt)
     actions = extract_actions(result)
@@ -76,7 +77,7 @@ class TestFactorioProtocol < Minitest::Test
     assert_equal 2, actions[0][:game_player]
 
     d = actions[0][:data]
-    assert_equal 16, d.bytesize
+    assert_equal 23, d.bytesize
     rect = FactorioTypes::TileRect.from_data(d)
     refute_nil rect
     tx1, ty1 = rect.top_left.to_tiles
@@ -91,7 +92,8 @@ class TestFactorioProtocol < Minitest::Test
     # count_flagged=0x04 (2 elems), first is real action, second is metadata
     pkt = build_server_tc_packet([
       { type: 132, delta: 2, data: [0x9d, 0x9f, 0xfe, 0xff, 0x1c, 0xae, 0x01, 0x00,
-                                      0xf5, 0xa2, 0xfe, 0xff, 0xcc, 0xcf, 0x01, 0x00] },
+                                      0xf5, 0xa2, 0xfe, 0xff, 0xcc, 0xcf, 0x01, 0x00,
+                                      0x00, 0x00, 0x01, 0x80, 0x00, 0x00, 0x01] },
       { type: 245, delta: 162, data: [0xfe, 0xff] }
     ])
     result = FactorioProtocol.parse_udp_payload(pkt)
@@ -105,7 +107,8 @@ class TestFactorioProtocol < Minitest::Test
     pkt = build_server_tc_packet([
       { type: 85, delta: 1, data: Array.new(12, 0) },
       { type: 132, delta: 2, data: [0x9d, 0x9f, 0xfe, 0xff, 0x1c, 0xae, 0x01, 0x00,
-                                      0xf5, 0xa2, 0xfe, 0xff, 0xcc, 0xcf, 0x01, 0x00] }
+                                      0xf5, 0xa2, 0xfe, 0xff, 0xcc, 0xcf, 0x01, 0x00,
+                                      0x00, 0x00, 0x01, 0x80, 0x00, 0x00, 0x01] }
     ])
     result = FactorioProtocol.parse_udp_payload(pkt)
     actions = extract_actions(result)

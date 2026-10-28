@@ -527,6 +527,24 @@ REAL_PACKET_FIXTURES = [
   },
 
   {
+    # S→C closure with SEVERAL bare echo actions. The +16 selection-echo
+    # trailer only exists on an echo that carries the 55 ff ff ff ff marker;
+    # testing "enough bytes remain" instead made the first zoom consume the
+    # following action headers and invent cheat/set_logistic_filter_item
+    # players (client-20261028-101422.pcap pkt 5794, tick 24731737).
+    name: 's2c_zoom_then_bare_266_and_walk',
+    description: 'S→C multi-action closure: zoom_around_point (24B, NO +16) then selected_entity_changed_very_close (1B) then start_walking (16B). Regression: every family action was given +16 when bytes remained, swallowing the next headers and fabricating players 190/348',
+    hex: '0706632c7a01596079010000000008550143826ee65860790100000000813f000000000000f03f00000000008070c00000000000c061c0ff0a01068746c8cc3b7f669ea0e63fcc3b7f669ea0e63f',
+    actions: [
+      { type: 129, name: 'zoom_around_point', game_player: 63,
+        data: '000000000000f03f00000000008070c00000000000c061c0' },
+      { type: 266, name: 'selected_entity_changed_very_close', game_player: 69,
+        data: '87' },
+      { type: 70, name: 'start_walking', game_player: 269,
+        data: 'cc3b7f669ea0e63fcc3b7f669ea0e63f' },
+    ],
+  },
+  {
     # S→C echo of a selected_entity_cleared: the closure's `count` includes the
     # trailing 8-byte previous-tick (closure_tick - 1, here d0 7f = 0x7fd0 =
     # 98256 = 98257 - 1). Regression: that tick was misread as a second action
@@ -564,7 +582,7 @@ REAL_PACKET_FIXTURES = [
     hex: '2706222c0200202c02000000000004450180f2ffff800800000000001055ffffff68eef8101f2c020000000000',
     actions: [
       { type: 69, name: 'build', game_player: 1,
-        data: '80f2ffff80080000000000' },
+        data: '80f2ffff8008000000000010' },
     ],
   },
 
@@ -696,4 +714,184 @@ REAL_PACKET_FIXTURES = [
     ],
   },
 
+  # ── S→C echo lengths that the C→S table cannot express (2026-10-28) ──
+  # Every body below is a real client-20261028-102801.pcap packet, log-verified:
+  # the echo body length is what makes the NEXT action's type/delta land.
+  {
+    name: 's2c_build_tail_two_266',
+    description: 'S→C Build + 2x selected_entity_changed_very_close (pkt 1270, tick 24776126). Build echo is a 10B body plus its 2B S→C tail; it is NOT 11B just because the closure has >1 action. Regression: Build ate the next type byte, then the tail delta shifted 266 from players 269/326 to 285/342 (invalid Player_496/679).',
+    hex: '0706d1da7a01be0d7a0100000000085501de39bb31bd0d7a010000000045e68030ffff80fb00000c000010ff0a0127b7ff0a013987',
+    actions: [
+      { type: 69, name: 'build', game_player: 230, data: '8030ffff80fb00000c000010' },
+      { type: 266, name: 'selected_entity_changed_very_close', game_player: 269, data: 'b7' },
+      { type: 266, name: 'selected_entity_changed_very_close', game_player: 326, data: '87' },
+    ],
+  },
+  {
+    name: 's2c_build_terrain_two_records',
+    description: 'S→C build_terrain with TWO 10-byte records separated by 01 01 00 b5 00 and ending 01 01 00, then a 266 (pkt 13, tick 24774869). Regression: only the C→S 00 00 00 b5 00 separator was known, so parsing stopped after one record and invented stop_walking/nothing actions.',
+    hex: '2706e8d57a01d5087a0100000000085501b4605616d4087a0100000000b5e6942e00003d2700000008010100b5002c2f00003d2700000008010100ff0a010098',
+    actions: [
+      { type: 181, name: 'build_terrain', game_player: 230,
+        data: '942e00003d2700000008010100b5002c2f00003d2700000008010100' },
+      { type: 266, name: 'selected_entity_changed_very_close', game_player: 230, data: '98' },
+    ],
+  },
+  {
+    name: 's2c_remote_view_surface_two_echoes',
+    description: 'S→C two RemoteViewSurface echoes (24B each) then 266 (pkt 13792, tick 24788457). Regression: table length 0 for C→S read the body as nothing/destroy phantoms and ended on Unknown(255) Player_43052.',
+    hex: '27064d0b7b01e93d7a010000000008550161cbaa19e83d7a0100000000ff04010700001126ffffffa72f000000a01b8cf9a228044000000000ff04010000001126ffffffa72f000000a01b8cf9a228044000000000ff0a01dfb9',
+    actions: [
+      { type: 260, name: 'remote_view_surface', game_player: 7,
+        data: '00001126ffffffa72f000000a01b8cf9a228044000000000' },
+      { type: 260, name: 'remote_view_surface', game_player: 7,
+        data: '00001126ffffffa72f000000a01b8cf9a228044000000000' },
+      { type: 266, name: 'selected_entity_changed_very_close', game_player: 230, data: 'b9' },
+    ],
+  },
+  {
+    name: 's2c_open_logistics_gui_then_zoom',
+    description: 'S→C OpenLogisticsGui (28B echo body) then zoom_around_point (pkt 14067, tick 24788696). Regression: the 28B body was read as Unknown(255) player 62 instead of the following zoom at player 230.',
+    hex: '07063c0c7b01d83e7a0100000000065501cbabfab7d73e7a0100000000403fffffffffffffffffffffffff7fffffff7f000000000000000000000181a7000000000000f0bf00000000004050c00000000000c05fc0',
+    actions: [
+      { type: 64, name: 'open_logistics_gui', game_player: 63,
+        data: 'ffffffffffffffffffffffff7fffffff7f0000000000000000000001' },
+      { type: 129, name: 'zoom_around_point', game_player: 230,
+        data: '000000000000f0bf00000000004050c00000000000c05fc0' },
+    ],
+  },
+  {
+    name: 's2c_copy_22b_then_266',
+    description: 'S→C Copy (22B echo body) then 266 (pkt 8209, tick 24782992). Regression: table length 0 decoded the body as craft Player_472 and lost the 269 selection echo.',
+    hex: '2706a3f57a0190287a01000000000655016a39e6598f287a010000000086ff0d0156cb0000b53400009fc8000075310000000001800000ff0a010043',
+    actions: [
+      { type: 134, name: 'copy', game_player: 269,
+        data: '56cb0000b53400009fc8000075310000000001800000' },
+      { type: 266, name: 'selected_entity_changed_very_close', game_player: 269, data: '43' },
+    ],
+  },
+  {
+    name: 's2c_cycle_clipboard_backwards_31',
+    description: 'S→C Copy then CycleClipboardBackwards (wire 31) (pkt 8606, tick 24783389, factorio-current.log). Pins 2.1 wire 31 to cycle_clipboard_backwards (2.0 had it at 33). Regression: Unknown(31) Player_269.',
+    hex: '070630f77a011d2a7a0100000000065501f6d80ccf1c2a7a0100000000863fa75d00004356ffff9f5b00002b58ffff0000018000001fce',
+    actions: [
+      { type: 134, name: 'copy', game_player: 63,
+        data: 'a75d00004356ffff9f5b00002b58ffff000001800000' },
+      { type: 31, name: 'cycle_clipboard_backwards', game_player: 269, data: '' },
+    ],
+  },
+  {
+    name: 's2c_send_stacks_to_trash_17b',
+    description: 'S→C SendStacksToTrash (17B echo body) then 266 (pkt 30089, tick 24803956). Regression: table length 0 read the body as Unknown(250) Player_230.',
+    hex: '0706d8477b01747a7a0100000000065501b89eff11737a7a010000000053e6fa000146622502000000000001c2020400ff0a01278c',
+    actions: [
+      { type: 83, name: 'send_stacks_to_trash', game_player: 230,
+        data: 'fa000146622502000000000001c2020400' },
+      { type: 266, name: 'selected_entity_changed_very_close', game_player: 269, data: '8c' },
+    ],
+  },
+  {
+    name: 's2c_deconstruct_23b_then_hovers',
+    description: 'S→C Deconstruct (16B area + 7B echo tail) then 266/266/267 (pkt 28272, tick 24802238). Regression: taking only the 16B table length read the tail as stop_walking/nothing and shifted the three hovers to invalid Player_457.',
+    hex: '270622417b01be737a01000000000a5501e56d2dfabd737a01000000008407e6e3050041c30000e6e3050041c3000000000180000001ff0a010088ff0a01388dff0b01ff07018882',
+    actions: [
+      { type: 132, name: 'deconstruct', game_player: 7,
+        data: 'e6e3050041c30000e6e3050041c3000000000180000001' },
+      { type: 266, name: 'selected_entity_changed_very_close', game_player: 7, data: '88' },
+      { type: 266, name: 'selected_entity_changed_very_close', game_player: 63, data: '8d' },
+      { type: 267, name: 'selected_entity_changed_very_close_precise', game_player: 326, data: '8882' },
+    ],
+  },
+  {
+    name: 's2c_unit_number_then_precise',
+    description: 'S→C SelectedEntityChangedBasedOnUnitNumber (8B echo body) then 267 (pkt 33567, tick 24807275). Regression: the 8B body was read as change_active_item_group_for_crafting Player_452, losing the 326 precise echo.',
+    hex: '0706cf547b016b877a01000000000655016845429c6a877a0100000000ff0d01ff0d016eb75e0200000000ff0b01397882',
+    actions: [
+      { type: 269, name: 'selected_entity_changed_based_on_unit_number', game_player: 269,
+        data: '6eb75e0200000000' },
+      { type: 267, name: 'selected_entity_changed_very_close_precise', game_player: 326, data: '7882' },
+    ],
+  },
+  {
+    name: 's2c_open_gui_no_body',
+    description: 'S→C open_gui echo carries NO body (pkt 21540, tick 24747243): next action starts right after the delta. Regression: the old "14 bytes if enough remain" read stop_drag_build/zoom headers as entity/token metadata and produced Unknown(160) Player_378.',
+    hex: '2706a3697a01eb9c7901000000000a5501bdeb1187ea9c790100000000093f05193100818e000000000000f0bf00000000000050c00000000000a062c0',
+    actions: [
+      { type: 9, name: 'selected_entity_cleared', game_player: 63, data: '' },
+      { type: 5, name: 'open_gui', game_player: 88, data: '' },
+      { type: 49, name: 'stop_drag_build', game_player: 88, data: '' },
+      { type: 129, name: 'zoom_around_point', game_player: 230,
+        data: '000000000000f0bf00000000000050c00000000000a062c0' },
+    ],
+  },
+  {
+    name: 's2c_player_join_game_16b',
+    description: 'S→C PlayerJoinGame (16B echo: peer/mode/name block) then 266 (pkt 17772, tick 24743475). Regression: table length 0 left the name block to be read as Unknown(255) Player_230 instead of the following 269 hover.',
+    hex: '2716eb5a7a01338e7901000000000655015fac448d328e7901000000009fe6ff0003e60001076e65756d6173740000ff0a01272f0204538e79010000000000030aff0003',
+    actions: [
+      { type: 159, name: 'player_join_game', game_player: 230,
+        data: 'ff0003e60001076e65756d6173740000' },
+      { type: 266, name: 'selected_entity_changed_very_close', game_player: 269, data: '2f' },
+    ],
+  },
+  {
+    name: 's2c_music_then_relative_zoom',
+    description: 'S→C PlayerMusicChanged (1B) then SelectedEntityChangedRelative then ZoomAroundPoint (pkt 13977, tick 24739759). Regression: treating the music echo as 15B swallowed the relative/zoom headers and invented Player_446.',
+    hex: '07060c4c7a01af7f790100000000085501e57b88f9ae7f790100000000ff5c013f00ff0c0106d5227ceb8113000000000000f0bf00000000000066c00000000000c05640',
+    actions: [
+      { type: 348, name: 'player_music_changed', game_player: 63, data: '00' },
+      { type: 268, name: 'selected_entity_changed_relative', game_player: 69, data: 'd5227ceb' },
+      { type: 129, name: 'zoom_around_point', game_player: 88,
+        data: '000000000000f0bf00000000000066c00000000000c05640' },
+    ],
+  },
+  {
+    name: 's2c_set_logistic_filter_item_22b',
+    description: 'S→C SetLogisticFilterItem (22B echo) then ZoomAroundPoint + 266 (pkt 37042, tick 24810583). Regression: the 22B body was read as build/nothing/Unknown(224).',
+    hex: '0706bb617b0157947a01000000000855012225231b56947a010000000066a10000000001000000ffffffff000000000000010001008145000000000000f0bf0000000000e06c400000000000a067c0ff0a016078',
+    actions: [
+      { type: 102, name: 'set_logistic_filter_item', game_player: 161,
+        data: '0000000001000000ffffffff00000000000001000100' },
+      { type: 129, name: 'zoom_around_point', game_player: 230,
+        data: '000000000000f0bf0000000000e06c400000000000a067c0' },
+      { type: 266, name: 'selected_entity_changed_very_close', game_player: 326, data: '78' },
+    ],
+  },
+  {
+    name: 's2c_upgrade_23b',
+    description: 'S→C Upgrade (23B echo) then 266 (pkt 16083, tick 24790483). Regression: the body was read as gui_confirmed Player_470 instead of the 269 hover.',
+    hex: '070637137b01d3457a01000000000a55014b13c1acd2457a01000000000507310085ff06016ac900007f3900006ac900007f39000000000180000000ff0a010088',
+    actions: [
+      { type: 5, name: 'open_gui', game_player: 7, data: '' },
+      { type: 49, name: 'stop_drag_build', game_player: 7, data: '' },
+      { type: 133, name: 'upgrade', game_player: 269,
+        data: '6ac900007f3900006ac900007f39000000000180000000' },
+      { type: 266, name: 'selected_entity_changed_very_close', game_player: 269, data: '88' },
+    ],
+  },
+  {
+    name: 's2c_go_to_train_station_13b',
+    description: 'S→C GoToTrainStation (13B echo) then StartWalking + precise 267 (pkt 58659, tick 24831720). Regression: table length 0 read the station body as nothing/Unknown(255) Player_160.',
+    hex: '07064cb47b01e8e67a01000000000a5501b8951246e7e67a0100000000463f000000000000f03f0000000000000000c26200000000ffffffff0147000000466c0000000000000000000000000000f0bfff0b01398882',
+    actions: [
+      { type: 70, name: 'start_walking', game_player: 63,
+        data: '000000000000f03f0000000000000000' },
+      { type: 194, name: 'go_to_train_station', game_player: 161,
+        data: '00000000ffffffff0147000000' },
+      { type: 70, name: 'start_walking', game_player: 269,
+        data: '0000000000000000000000000000f0bf' },
+      { type: 267, name: 'selected_entity_changed_very_close_precise', game_player: 326,
+        data: '8882' },
+    ],
+  },
+  {
+    name: 's2c_set_ghost_cursor_3b',
+    description: 'S→C SetGhostCursor (3B echo) then CloseGui + 266 (pkt 3630, tick 24881281). Regression: table length 0 read the cursor body as copy_entity_settings/stop_walking and lost the CloseGui + 326 hover.',
+    hex: '270637767c0181a87b0100000000085501f6615bd980a87b010000000096a10f00013d000000ff0a01a578',
+    actions: [
+      { type: 150, name: 'set_ghost_cursor', game_player: 161, data: '0f0001' },
+      { type: 61, name: 'close_gui', game_player: 161, data: '0000' },
+      { type: 266, name: 'selected_entity_changed_very_close', game_player: 326, data: '78' },
+    ],
+  },
 ].freeze

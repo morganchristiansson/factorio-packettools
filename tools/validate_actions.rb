@@ -99,7 +99,9 @@ def report_wire_ids(votes, table, options)
   known = table.each_with_object({}) { |(id, (name, _)), h| h[id] = name }
   best_name = {}
   votes.each do |wire, names|
+    next if wire.nil? || names.nil? || names.empty?
     name, n = names.max_by { |_, c| c }
+    next if name.nil?
     best_name[wire] = [name, n]
   end
 

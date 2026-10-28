@@ -32,13 +32,14 @@ class FactorioPacketTools
   HEARTBEAT_TIMEOUT = 20.0
 
   # How far past the known roster a player index may sit before it counts as
-  # a desync rather than a player we have no name for. The DISTANCE decides,
-  # not membership: on the 2026-10-03 set, 10,036 packets were flagged for
-  # index 357 and 736 for 360 — both real players (both chatting under their
-  # Player_N placeholders), just past the last index this cache names. That
-  # made `packets with a suspected desync` a false-positive machine (11 196
-  # of 11 265 flags) and buried the corpus under 1.4 MB of nothing. A real
-  # desync throws the index thousands of places away (33024, 53354).
+  # a desync rather than a player we have no name for. Used only when strict
+  # player-id checking is OFF (offline replay by default): on the 2026-10-03
+  # set, 10,036 packets were flagged for index 357 and 736 for 360 — both
+  # real players (both chatting under their Player_N placeholders), just past
+  # the last index this cache names. A real desync throws the index thousands
+  # of places away (33024, 53354). Live capture uses membership instead
+  # (config `strict_player_ids:`): the roster is seeded from RCON or the save,
+  # so an id with no cache entry is real evidence of a misdecode.
   UNKNOWN_PLAYER_WINDOW = 100
 
   # Always-on capture rotation defaults (hardcoded — config.yaml can
@@ -63,9 +64,24 @@ class FactorioPacketTools
       %w[normal full save].include?(@capture_mode)
     @options = options
     @player_db = PlayerDatabase.new(options[:player_db])
+    # A decoded player index with no players-cache entry is a misdecode when
+    # the roster is authoritative (live server RCON / a save seed). Offline
+    # replay defaults to the old far-outside-the-roster rule because an old
+    # capture and today's cache need not describe the same world; set
+    # `strict_player_ids: true` there when the roster IS known to match.
+    @strict_player_ids = options.key?(:strict_player_ids) ? !!options[:strict_player_ids] : !options[:pcap]
+    # Until a roster source has actually spoken, an empty cache is not a
+    # reason to call every player invalid (client mode learns the roster from
+    # the map download after joining).
+    @roster_ready = @player_db.players.any?
     @stats = { packets: 0, factorio_packets: 0, actions: 0, outgoing_skipped: 0, capture_skipped: 0,
-               bad_string: 0, unknown: 0, desync: 0, decode_error: 0 }
+               bad_string: 0, unknown: 0, desync: 0, decode_error: 0, invalid_player: 0,
+               invalid_join: 0 }
     @unknown_names = {} # undecoded action type -> how often we saw it
+    @invalid_player_ids = {} # invalid player index -> how often we flagged it
+    @invalid_join_keys = {} # misdecoded join (kind:id) -> already warned
+    @max_peer_id = nil # highest S→C peer id, for NewPeerInfo validation
+    @fed_action_sigs = {} # tick => action signature already sent to the validator
     # log_path: explicit factorio-current.log from config.yaml (nil = auto-detect
     # in #start_log_watcher). The host keeps ONE tailer thread that emits
     # :on_log_line to the plugin bus instead of each feature tailing the file.
@@ -604,18 +620,22 @@ class FactorioPacketTools
 
     # ConnectionAcceptOrDeny carries the server's player list: serverUsername
     # (host) + clientPeerInfo (peer_id + name for every online player). These
-    # ids are NETWORK peer ids, which equal the game player index for new
-    # joiners but NOT for returning players. We register them as candidate
-    # mappings; the true index is confirmed/learned from heartbeat actions.
+    # ids are NETWORK peer ids, NOT game indexes (they only coincide for brand
+    # new players), so they map names for disconnect events and seed the
+    # sequential peer-id counter — never players-cache.json. Game indexes come
+    # from the save/RCON roster and from heartbeat actions.
     if parsed[:connection_accept]
       ca = parsed[:connection_accept]
       ts_str = Time.at(ts).strftime('%H:%M:%S.%L')
       puts "#{ts_str}  [server]  game=\"#{ca[:game_name]}\" host=#{ca[:server_username]}"
       ca[:peers].each do |p|
+        # Peer ids are a per-connection counter, NOT game indexes. Keep them
+        # only for the disconnect name map; the save/RCON roster is what
+        # gives id -> name. Storing peer_id+1 here is how stale high ids
+        # (Player_749-style duplicates) got into players-cache.json.
         @peer_names[p[:peer_id]] = p[:name]
-        pid = p[:peer_id] + 1
-        @player_db[pid] = {name: p[:name], locale: nil}
-        puts "#{ts_str}  [server]  online peer #{p[:peer_id]} -> #{p[:name]} (candidate index #{pid})"
+        @max_peer_id = p[:peer_id] if @max_peer_id.nil? || p[:peer_id] > @max_peer_id
+        puts "#{ts_str}  [server]  online peer #{p[:peer_id]} -> #{p[:name]}"
       end
     end
 
@@ -639,19 +659,27 @@ class FactorioPacketTools
     end
 
     # synchronizer actions
+    join_misdecode = false
     hb[:sync_actions]&.each do |sa|
       if sa[:username]  # NewPeerInfo — a player joined (or is this client)
+        # A join appends to the per-connection peer list: the next peer id is
+        # max + 1. A different id is stream damage, not a player (and the
+        # peer id is not a game index anyway — the save/RCON owns that map).
+        if sa[:peer_id] && @max_peer_id && sa[:peer_id] != @max_peer_id + 1
+          join_misdecode = true
+          note_invalid_join(:peer_id, sa[:peer_id], sa[:username], @max_peer_id + 1)
+          next
+        end
+        @max_peer_id = sa[:peer_id] if sa[:peer_id] && (@max_peer_id.nil? || sa[:peer_id] > @max_peer_id)
         @peer_names[sa[:peer_id]] = sa[:username]
-        pid = sa[:peer_id] ? sa[:peer_id] + 1 : 0
-        @player_db[pid] = {name: sa[:username], locale: nil}
-        # Join = liveness proof (connect stamps hb); index bound once a
-        # C→S heartbeat confirms it.
+        # Join = liveness proof (connect stamps hb); the game index is bound
+        # once a C→S heartbeat (server mode) or the map-download roster confirms it.
         @attrs.connect(sa[:username], @game_tick)
         ts_str = Time.at(ts).strftime('%H:%M:%S.%L')
         # Don't print our own join as "joined the game" (we know we connected)
         unless @self_name == sa[:username]
           @plugins.emit(:on_player_event, :joined, sa[:username])
-          puts "#{ts_str}  #{sa[:username]} joined the game (peer #{sa[:peer_id]}, index #{pid})" if player_visible?(sa[:username])
+          puts "#{ts_str}  #{sa[:username]} joined the game (peer #{sa[:peer_id]})" if player_visible?(sa[:username])
         end
       end
       if sa[:name] == 'PeerDisconnect'
@@ -721,39 +749,51 @@ class FactorioPacketTools
         entry = @ip_names[src_ip]
         name = entry && !entry[1] ? entry[0] : nil  # unconfirmed only
         if name
-          entry[1] = true  # confirmed — never re-fire the join event
-          @player_db[idx] = {name: name, locale: nil}
-          @player_db.remove_other_entries_for(name, idx)
-          @attrs.set_index(name, idx)  # confirming heartbeat = liveness proof
-          # src_ip → name for connected players: lets the clean-quit
-          # signals (C→S PeerDisconnect sync action, msg 14 fallback)
-          # resolve the leaver on C→S alone. Server mode has no S→C
-          # analysis (NewPeerInfo/PeerDisconnect broadcasts are dropped),
-          # so joins are detected here and leaves via the final
-          # heartbeat's PeerDisconnect sync action.
-          @plugins.emit(:on_player_event, :joined, name)
-          # One targeted RCON query for everything only the server knows
-          # about a joiner: their locale and their whole quickbar (the C→S
-          # actions report it as deltas, so a join is the one moment the
-          # bar is knowable). Rare event, off the capture thread.
-          enrich_joined_player(name, idx)
-          ts_str = Time.at(ts).strftime('%H:%M:%S.%L')
-          puts "#{ts_str}  #{name} confirmed as game player ##{idx}"
+          # Only check with an authoritative roster (live by default; replay
+          # needs `strict_player_ids: true`), else every index would look
+          # like it is past an empty/stale max.
+          if !(@strict_player_ids && @roster_ready) || join_index_valid?(name, idx)
+            entry[1] = true  # confirmed — never re-fire the join event
+            @player_db[idx] = {name: name, locale: nil}
+            @player_db.remove_other_entries_for(name, idx)
+            @attrs.set_index(name, idx)  # confirming heartbeat = liveness proof
+            # src_ip → name for connected players: lets the clean-quit
+            # signals (C→S PeerDisconnect sync action, msg 14 fallback)
+            # resolve the leaver on C→S alone. Server mode has no S→C
+            # analysis (NewPeerInfo/PeerDisconnect broadcasts are dropped),
+            # so joins are detected here and leaves via the final
+            # heartbeat's PeerDisconnect sync action.
+            @plugins.emit(:on_player_event, :joined, name)
+            # One targeted RCON query for everything only the server knows
+            # about a joiner: their locale and their whole quickbar (the C→S
+            # actions report it as deltas, so a join is the one moment the
+            # bar is knowable). Rare event, off the capture thread.
+            enrich_joined_player(name, idx)
+            ts_str = Time.at(ts).strftime('%H:%M:%S.%L')
+            puts "#{ts_str}  #{name} confirmed as game player ##{idx}"
+          else
+            join_misdecode = true
+            note_invalid_join(:player_index, idx, name, max_known_player_index + 1)
+          end
         end
       elsif @self_name && src_ip == @self_ip
         # ONCE per binding: this block runs for every heartbeat that carries
         # an action, and re-stating the same index wrote the whole cache
-        # (and printed the line) thousands of times in a 5h capture. The
-        # attrs index is (re)stated either way — it is in-memory and needed
-        # for the session's own stats.
-        @attrs.set_index(@self_name, idx)
-        if @player_db.id_for(@self_name) != idx
-          @player_db[idx] = {name: @self_name, locale: nil}
-          # Peer-id-based guess (peer_id+1) may differ for returning players;
-          # remove any other slot claiming our name.
-          @player_db.remove_other_entries_for(@self_name, idx)
-          ts_str = Time.at(ts).strftime('%H:%M:%S.%L')
-          puts "#{ts_str}  [self]  #{@self_name} confirmed as game player ##{idx}"
+        # (and printed the line) thousands of times in a 5h capture. A
+        # validated index is also restated in attrs for the session's stats.
+        if !(@strict_player_ids && @roster_ready) || join_index_valid?(@self_name, idx)
+          @attrs.set_index(@self_name, idx)
+          if @player_db.id_for(@self_name) != idx
+            @player_db[idx] = {name: @self_name, locale: nil}
+            # Stale cache entries may have this name at another slot; the
+            # confirmed heartbeat index wins.
+            @player_db.remove_other_entries_for(@self_name, idx)
+            ts_str = Time.at(ts).strftime('%H:%M:%S.%L')
+            puts "#{ts_str}  [self]  #{@self_name} confirmed as game player ##{idx}"
+          end
+        else
+          join_misdecode = true
+          note_invalid_join(:player_index, idx, @self_name, max_known_player_index + 1)
         end
       end
     end
@@ -769,14 +809,19 @@ class FactorioPacketTools
     #
     known_players = @player_db.players.keys
     known_players.concat(@attrs.roster_pairs.map { |p| p[:index] })
-    roster_ceiling = known_players.max.to_i + UNKNOWN_PLAYER_WINDOW
+    decoded_players = decoded_player_ids(hb)
     invalid_players = if known_players.empty?
                         []
+                      elsif @strict_player_ids && @roster_ready
+                        decoded_players.reject { |pid| known_players.include?(pid) }
                       else
-                        hb[:tick_closures]&.filter_map do |tc|
-                          tc[:actions]&.map { |a| a[:game_player] }&.uniq
-                        end&.flatten&.reject { |pid| known_players.include?(pid) || pid <= roster_ceiling } || []
+                        roster_ceiling = known_players.max.to_i + UNKNOWN_PLAYER_WINDOW
+                        decoded_players.reject { |pid| known_players.include?(pid) || pid <= roster_ceiling }
                       end
+    unless invalid_players.empty?
+      @stats[:invalid_player] += 1
+      invalid_players.each { |pid| note_invalid_player(pid) }
+    end
     @desync_before = @stats[:desync]
     if hb[:hit_unknown] || invalid_players.any?
       # A desync: an action type with no length (or one before it desynced),
@@ -794,7 +839,7 @@ class FactorioPacketTools
     # a suspected desync (above), an action type we have no name/layout for,
     # or a quickbar action whose payload implies a desync. One frame per
     # packet, no matter how many actions in it are affected.
-    keep_frame = false
+    keep_frame = join_misdecode
     hb[:tick_closures]&.each do |tc|
       tc[:actions]&.each do |act|
         @stats[:actions] += 1
@@ -815,11 +860,16 @@ class FactorioPacketTools
         log_action(ts, act, hdr[:msg_type] == 7, ghost: @ghost_mode, raw_frame: raw_frame)
       end
       # Runtime action-ID validation (action_validator plugin): the decoded
-      # C→S actions of one tick closure, joined against the server log's
-      # "Action performed" lines by (tick, player). S→C echoes are never
-      # correlated — the log names the SERVER's processed actions, and
-      # those are what the C→S stream carries.
-      @plugins.emit(:on_input_actions, tc[:tick], tc[:actions]) if hdr[:msg_type] == 6 && tc[:tick]
+      # actions of one tick closure, joined against the server log's
+      # "Action performed" lines by (tick, player). Server mode has only C→S;
+      # client mode feeds the S→C echo too (deduped above), which is what the
+      # log actually contains for every player.
+      # Client mode sees actions twice (our C→S and the server's S→C echo);
+      # feed BOTH like the offline validator, deduping exact repeats and
+      # appending genuinely different fragments. Server mode has only C→S.
+      if tc[:tick] && (hdr[:msg_type] == 6 || (!@options[:server] && hdr[:msg_type] == 7))
+        feed_action_validation(tc[:tick], tc[:actions])
+      end
     end
     keep_frame ||= @stats[:desync] > @desync_before
     @unknown_writer&.write_frame(raw_frame, Time.at(ts)) if keep_frame && raw_frame
@@ -1124,6 +1174,69 @@ class FactorioPacketTools
     s
   end
 
+  # Send one closure to the action validator, merging the two directions the
+  # way tools/validate_actions.rb does: an exact echo is ignored, a different
+  # fragment appends. Keeps the per-tick signature ring bounded.
+  def feed_action_validation(tick, actions)
+    sig = Array(actions).map { |a| [a[:game_player], a[:type]] }
+    return if sig.empty?
+    prev = @fed_action_sigs[tick]
+    if prev.nil?
+      @fed_action_sigs[tick] = sig
+      @plugins.emit(:on_input_actions, tick, actions)
+    elsif prev == sig
+      # Already fed from the other direction.
+    else
+      @fed_action_sigs[tick] = prev + sig
+      @plugins.emit(:on_input_actions_append, tick, actions)
+    end
+    @fed_action_sigs.shift while @fed_action_sigs.size > 4096
+  end
+
+  # Player indexes named by this heartbeat's real actions (type 0 is padding,
+  # never a player event). Only indexes, not peer ids: peer ids live in a
+  # different namespace and are not game indexes.
+  def decoded_player_ids(hb)
+    Array(hb[:tick_closures]).flat_map do |tc|
+      Array(tc[:actions]).reject { |a| a[:type].to_i.zero? }.map { |a| a[:game_player] }
+    end.compact.uniq
+  end
+
+  # The highest game player index we know from any authoritative source:
+  # cache entries, RCON's full player dump (offline included), and attrs.
+  def max_known_player_index
+    ids = @player_db.players.keys
+    ids.concat(Array(@attrs_query).map { |a| a[:index] })
+    ids.concat(@attrs.roster_pairs.map { |p| p[:index] })
+    ids.map(&:to_i).max.to_i
+  end
+
+  # A join appends to the player list: either the name already owns that
+  # index (a returning player) or the index is exactly max + 1. Anything
+  # else is a misdecoded heartbeat/join, and must not enter the cache.
+  def join_index_valid?(name, idx)
+    return false unless idx.is_a?(Integer) && idx.positive?
+    @player_db.lookup(idx) == name || idx == max_known_player_index + 1
+  end
+
+  def note_invalid_join(kind, id, name, expected)
+    key = "#{kind}:#{id}"
+    first = !@invalid_join_keys.key?(key)
+    @invalid_join_keys[key] = true
+    @stats[:invalid_join] += 1
+    return unless first
+    warn "[WARN] misdecoded join #{kind} #{id} for #{name.inspect} (expected #{expected}) — frame kept in unknown.packets"
+  end
+
+  # One warning per bad id per run: the same misdecode repeats every packet,
+  # and the summary carries the total.
+  def note_invalid_player(pid)
+    first = !@invalid_player_ids.key?(pid)
+    @invalid_player_ids[pid] = @invalid_player_ids.fetch(pid, 0) + 1
+    return unless first
+    warn "[WARN] invalid player id #{pid} has no players-cache entry — possible misdecoded packet; frame kept in unknown.packets"
+  end
+
   def log_action(ts, act, is_server, ghost: false, raw_frame: nil)
     pid = act[:game_player]
     arrow = is_server ? '<-' : '->'
@@ -1297,7 +1410,9 @@ class FactorioPacketTools
     # load_player_attrs (same startup call site, back-to-back) reuses this
     # exact dump instead of re-querying RCON.
     @attrs_query = attrs
-    return if attrs.nil? || attrs.empty?
+    return if attrs.nil?
+    @roster_ready = true # RCON answered: membership is authoritative now
+    return if attrs.empty?
     connected = attrs.select { |a| a[:connected] }
     return if connected.empty?
     connected.each do |a|
@@ -1557,8 +1672,13 @@ class FactorioPacketTools
     puts "[summary] outgoing broadcasts skipped (server mode)=#{@stats[:outgoing_skipped]}" if @options[:server]
     puts "[summary] packets kept for a failed string decode=#{@stats[:bad_string]}" if @stats[:bad_string]&.positive?
     puts "[summary] packets whose decode RAISED (saved to unknown.packets)=#{@stats[:decode_error]}" if @stats[:decode_error]&.positive?
-    return if @unknown_names.empty?
     puts "[summary] packets with a suspected desync: #{@stats[:desync]}" if @stats[:desync]&.positive?
+    if @stats[:invalid_player]&.positive?
+      ids = @invalid_player_ids.sort_by { |_, n| -n }.first(12).map { |id, n| "#{id}=#{n}" }.join(', ')
+      puts "[summary] packets with an invalid player id (no players-cache entry): #{@stats[:invalid_player]} — ids: #{ids}"
+    end
+    puts "[summary] misdecoded join ids: #{@stats[:invalid_join]}" if @stats[:invalid_join]&.positive?
+    return if @unknown_names.empty?
     puts "[summary] undecoded actions: #{@stats[:unknown]}/#{@stats[:actions]} " \
          "(#{@unknown_names.size} type(s)) — top: " \
          "#{@unknown_names.sort_by { |_, v| -v }.first(12).map { |k, v| "#{k}=#{v}" }.join(', ')}"
@@ -1742,6 +1862,7 @@ class FactorioPacketTools
       return false
     end
     @player_db.reload!
+    @roster_ready = true # the save's roster is authoritative now
     if verbose
       puts out.lines.grep(/\A(?:roster|new|play time):/).map { |l| "[#{label}] #{l}" }
     end
@@ -1807,6 +1928,7 @@ class FactorioPacketTools
     path = capture_path(@pending_capture, id)
     @pcap_writer = new_pcap_writer(path)
     @pending_capture = nil
-    puts "capturing to #{path}#{retention_hint}"
+    # The writer timestamps the stem on open; print the file it actually made.
+    puts "capturing to #{@pcap_writer.path}#{retention_hint}"
   end
 end

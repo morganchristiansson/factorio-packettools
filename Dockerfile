@@ -24,6 +24,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ripgrep \
     git \
     python3-pip \
+    python3-venv \
     ddgr pandoc \
     && rm -rf /var/lib/apt/lists/*
 
@@ -36,8 +37,7 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
 
 
 # ── npm global packages ─────────────────────────────────────────────────────
-RUN npm install -g @earendil-works/pi-coding-agent@1.0.3 && \
-    pi --version
+RUN npm install -g @earendil-works/pi-coding-agent@1.4.0 @opencode/cli@
 
 # ── Ruby gems ──────────────────────────────────────────────
 # Only bundler here (the bootstrap tool itself); ALL project deps come from

@@ -29,7 +29,9 @@ class TestActionValidator < Minitest::Test
   # A decoded C→S tick closure: hashes with the fields the sniffer's emit
   # carries (the validator only reads :type, :game_player).
   def wire!(tick, list)
-    @v.on_input_actions(tick, list.map { |t, player| { type: t, game_player: player } })
+    @v.on_input_actions(tick, list.map { |t, player|
+      { type: t, name: FactorioProtocol.action_name(t), game_player: player }
+    })
   end
 
   # ── cases ────────────────────────────────────────────────────────
@@ -80,6 +82,15 @@ class TestActionValidator < Minitest::Test
     assert_equal 1, @v.stats[:seq_len_mismatch]
   end
 
+  def test_exact_tick_wins_over_tied_lag_candidate
+    log! 1000, 12, 'Build'
+    log! 1001, 12, 'Build'
+    capture_io { wire! 1000, [[69, 12]] }
+    assert_equal 1, @v.stats[:ok], 'the exact tick joins instead of deferring to the +1 tie'
+    refute @v.instance_variable_get(:@wire).key?(1000)
+    assert @v.instance_variable_get(:@log).key?(1001), 'the lagged line stays for its own tick'
+  end
+
   def test_tick_tolerance_joins_lagged_log_line
     log! 1002, 12, 'Build'        # log tick leads by 2
     capture_io { wire! 1000, [[69, 12]] }
@@ -90,6 +101,23 @@ class TestActionValidator < Minitest::Test
     log! 1000, 12, 'Build'
     capture_io { wire! 1000, [[0, 12], [69, 12]] }
     assert_equal 1, @v.stats[:ok], "padding action must not pair with the log's Build"
+  end
+
+  # A live tail that reads an old log from the top must not count that
+  # pre-capture history as a misdecode: only lines inside the capture's tick
+  # window can ever join.
+  def test_out_of_order_higher_tick_does_not_drop_lower_log_line
+    log! 1000, 12, 'Build'
+    capture_io { wire! 1003, [[70, 12]] } # higher tick arrives first (C→S vs S→C)
+    capture_io { wire! 1000, [[69, 12]] } # lower tick still has its log line
+    assert_equal 1, @v.stats[:ok]
+  end
+
+  def test_stale_log_history_is_skipped_not_counted_as_unmatched
+    capture_io { wire! 2000, [[69, 12]] }
+    @v.record_log_line('Action performed [1000 11 Build]')
+    assert_equal 0, @v.stats[:log_unmatched]
+    assert_equal 1, @v.stats[:log_stale]
   end
 
   def test_unrelated_players_do_not_pair
@@ -129,6 +157,13 @@ class TestActionValidator < Minitest::Test
     log! 2002, 12, 'Build'
     capture_io { wire! 2000, [[69, 12]] }
     assert_equal 2, @v.stats[:ok]
+  end
+
+  def test_summary_lists_unknown_wire_ids_and_log_candidates
+    log! 1000, 12, 'StartWalking'
+    out, = capture_io { wire! 1000, [[999, 12]] }
+    assert_includes out, 'unknown wire IDs seen: 999=1'
+    assert_includes out, 'candidate: wire 999 table=(absent) but log says StartWalking (x1)'
   end
 
   def test_summary_lists_table_disagreements
@@ -178,6 +213,40 @@ class TestActionValidator < Minitest::Test
     assert_equal 0, @v.stats[:unattributed]
     @v.finish_accounting
     assert_equal 1, @v.stats[:unattributed]
+  end
+
+  def test_logging_off_detected_and_buffering_paused
+    # Pretend the wire activity started long enough ago to trip the detector.
+    @v.instance_variable_set(:@first_wire_at,
+                             Process.clock_gettime(Process::CLOCK_MONOTONIC) - ActionValidator::LOGGING_OFF_SECONDS - 1)
+    out, = capture_io do
+      ActionValidator::LOGGING_OFF_ACTIONS.times do |i|
+        @v.on_input_actions(1000 + i, [{ type: 70, game_player: 12 }])
+      end
+    end
+    assert_includes out, '/toggle-action-logging appears OFF'
+    assert_empty @v.instance_variable_get(:@wire), 'wire buffer released when logging is off'
+
+    # Still off: later wire actions must not refill the buffer.
+    out2, = capture_io { @v.on_input_actions(2000, [{ type: 70, game_player: 12 }]) }
+    assert_empty out2
+    assert_empty @v.instance_variable_get(:@wire)
+  end
+
+  def test_logging_enabled_during_run_resumes_correlation
+    @v.instance_variable_set(:@first_wire_at,
+                             Process.clock_gettime(Process::CLOCK_MONOTONIC) - ActionValidator::LOGGING_OFF_SECONDS - 1)
+    capture_io do
+      ActionValidator::LOGGING_OFF_ACTIONS.times do |i|
+        @v.on_input_actions(1000 + i, [{ type: 70, game_player: 12 }])
+      end
+    end
+    # The operator enables /toggle-action-logging mid-run: the next log line
+    # re-opens buffering, and the following wire tick correlates normally.
+    out, = capture_io { log! 3000, 12, 'StartWalking' }
+    assert_includes out, 'resuming correlation'
+    capture_io { wire! 3000, [[70, 12]] }
+    assert_equal 1, @v.stats[:ok]
   end
 
   def test_buffers_evict_old_ticks_and_cap_size

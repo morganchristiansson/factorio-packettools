@@ -89,12 +89,34 @@ class TestExtractPlayersFromSave < Minitest::Test
     end
   end
 
-  def test_refuses_to_merge_a_save_from_another_world
-    cache = {'2' => {'name' => 'bob', 'locale' => 'de'}, '9' => {'name' => 'alice'}}
-    run_tool(cache) do |merged, _roster, out, err, status|
-      refute_predicate status, :success?
-      assert_includes out + err, 'disagree'
-      assert_equal cache, merged # untouched
+  # The save is authoritative for id -> name: flag a disagreement, then
+  # replace the cache entry instead of refusing the whole roster.
+  def test_flags_mismatched_ids_and_replaces_them_from_the_save
+    cache = {'1' => {'name' => 'alice'}, '2' => {'name' => 'bob', 'locale' => 'de'},
+             '9' => {'name' => 'carol'}}
+    run_tool(cache) do |merged, _roster, out, _err, status|
+      assert_predicate status, :success?, out
+      assert_includes out, 'disagree'
+      assert_includes out, 'replacing'
+      assert_equal({'1' => 'alice', '2' => 'bob', '3' => 'carol'},
+                   merged.transform_values { |v| v['name'] })
+      refute merged.key?('9'), 'the old carol id is gone'
+      assert_equal 'de', merged['2']['locale']
+    end
+  end
+
+  # A stale duplicate name id (old world / bad join) must not anchor the run
+  # when the save has that player at another index. The save wins, and the
+  # old entry's fields move to the new id.
+  def test_stale_duplicate_name_id_is_replaced_not_kept
+    cache = {'1' => {'name' => 'alice'}, '2' => {'name' => 'bob'},
+             '90' => {'name' => 'carol', 'locale' => 'pt'}, '100' => {'name' => 'later'}}
+    run_tool(cache) do |merged, _roster, out, _err, status|
+      assert_predicate status, :success?, out
+      assert_includes out, 'carol@2 (cache index 90, run says 3)'
+      assert_equal({'1' => 'alice', '2' => 'bob', '3' => 'carol', '100' => 'later'},
+                   merged.transform_values { |v| v['name'] })
+      assert_equal 'pt', merged['3']['locale'], 'fields follow the player to the save id'
     end
   end
 end

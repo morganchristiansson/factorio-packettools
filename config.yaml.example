@@ -90,6 +90,13 @@ max_size: 512             # total budget for the rotated files (oldest
 # only for pcap analysis with no RCON
 # protocol_version: 2.1
 
+# OPTIONAL (auto) — flag a decoded player id that has no entry in
+# players-cache.json as a likely misdecode (warned once per id, frame kept in
+# unknown.packets). Default: ON for live capture (the roster comes from RCON
+# or the save), OFF for -r replay (an old capture and the current cache may
+# be different worlds). Force it on for a replay whose roster is known to match.
+# strict_player_ids: true
+
 dump_raw_types: false     # print raw type ids for unknown action types
 validate: false           # verify decoded actions against the game
 

@@ -72,9 +72,10 @@ sudo tcpdump -i eth0 -w session.pcap 'udp port 34197'
   for 290 of 338 records, zero wrong), and optionally `--merge` the names
   (and any locale the cache lacks) into players-cache.json. Needs no cache —
   a player record is a name with a play-time pair in front of it — and when
-  players-cache.json does have names it also validates them (refuses a save
-  from another world). `admin` is server state (adminlist.json), not in the
-  save.
+  players-cache.json does have names it anchors the run. A name at a different
+  index is flagged and replaced by the save's index (the save is authoritative;
+  the stale duplicate id is dropped and its fields move to the new id).
+  `admin` is server state (adminlist.json), not in the save.
 
 ## Client mode: seed the roster from the map download
 

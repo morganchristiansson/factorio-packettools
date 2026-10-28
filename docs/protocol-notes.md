@@ -841,6 +841,48 @@ metadata (15 total). Reading 15B for C→S swallowed following hover actions
 (`Player_267 gui_inventory_bar_changed` phantom). Locked in by fixture
 `client_open_character_gui_then_hover_stream`.
 
+## S→C echo body lengths that differ from the C→S table (2026-10-28)
+
+S→C tick closures echo the same action IDs but some bodies are NOT the C→S
+length: the echo carries the state other clients need (entity refs, names,
+filter records). The table stays the C→S authority; the parser adds these
+direction-specific lengths by action NAME (IDs move between versions):
+
+| Action | S→C body | Evidence |
+|---|---|---|
+| `remote_view_surface` | 24 | client-20261028-102801 pkt 13792, 23175 |
+| `open_logistics_gui` | 28 | pkt 14067 |
+| `copy` | 22 | pkt 8209, 14954 |
+| `send_stacks_to_trash` | 17 | pkt 30089 |
+| `deconstruct` | 23 (16 area + 7 tail) | pkt 28272 |
+| `selected_entity_changed_based_on_unit_number` | 8 | pkt 33567 |
+| `player_join_game` | 16 | pkt 17772 |
+| `set_logistic_filter_item` | 22 | pkt 37042 |
+| `upgrade` | 23 | pkt 16083 |
+| `go_to_train_station` | 13 | pkt 58659 |
+| `set_ghost_cursor` | 3 | pkt 3630 (client-20261028-105637) |
+| `open_gui` | 0 | pkt 21540, 41860 |
+| `player_music_changed` | 1 (same as C→S) | pkt 13977 |
+
+Two other S→C stream rules:
+
+- **`nothing` (type 0) is padding**: consume its header but do NOT use a
+  counted slot and do NOT move `last_index` (its delta is not a player
+  change). pkt 1270: Build + nothing + 2x266 — treating the padding as a
+  real action lost the second 266 and shifted both players by 16.
+- **`build` length comes from its own bytes, not `count > 1`**: marker
+  `01 01` => 21 (drag), byte 9 `00` => 10 (ghost), else 9, plus a 2-byte
+  S→C tail for non-drag echoes (`00 10` / `02 10`). A multi-action closure
+  does NOT imply a drag build; the old fallback read 11 and ate the next
+  action's type byte.
+- **`build_terrain` S→C separators use `01 01 00 <id> 00`** between records
+  and always end with `01 01 00` (C→S uses `00 00 00 <id> 00` and a
+  last-action `00 00 00` tail). pkt 13 has two records; reading only the
+  C→S marker stopped after record one.
+
+2.1 wire IDs pinned by the live log: `31 = cycle_clipboard_backwards`
+(2.0 had it at 33), `347 = player_visited_planet` (2B echo).
+
 ## Server Echo Action Data Lengths (Verified)
 
 | Type | Name | Client Len | Server Echo Len | Notes |

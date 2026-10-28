@@ -42,9 +42,25 @@ class ActionValidator
   # Ticks scanned around an exact match when it misses (the closure tick
   # can lag the processing tick — tools/validate_actions.rb scans ±2 too).
   TICK_TOLERANCE = 2
+  # How far BELOW the newest wire tick a log line is kept before it is
+  # declared dead. Client mode receives our own C→S packet a few ticks
+  # before the server's S→C broadcasts for the intervening ticks, so ticks
+  # arrive slightly out of order; evicting at tick - TICK_TOLERANCE threw
+  # away log lines for the lower ticks that were still about to be fed and
+  # made them pair with the next tick (+2) instead (client-20261028-104957
+  # tick 24860861..864: 266/stop_walking/cleared mismatches). One second
+  # (64 ticks) covers network reordering and still bounds the buffer.
+  REORDER_WINDOW = 64
   # Seconds between summary lines (and the rate limit on mismatch spam:
   # one detail line per distinct (wire, log) pair until the next summary).
   REPORT_INTERVAL = 300.0
+  # Action logging is per-process and off after a restart. With it off the
+  # wire side alone fills the correlation buffers and can never join. After
+  # this much activity with no `Action performed` line at all, report it
+  # once, release the buffers and stop buffering until a log line proves the
+  # operator turned it back on.
+  LOGGING_OFF_ACTIONS = 100
+  LOGGING_OFF_SECONDS = 30.0
 
   def initialize(host)
     @host = host
@@ -58,6 +74,15 @@ class ActionValidator
     @unattributed_enabled = true
     @unattributed_samples = { wire: [], log: [] }
     @join_memo = {}      # "tick:player" => joined once — packets can FEED the same closure again
+    @unknown_seen = Hash.new(0) # wire id => occurrences, table has no name
+    # nil = not proven either way yet, true = a log line has arrived,
+    # false = enough wire activity with no log lines (buffering paused).
+    @logging_on = nil
+    @logging_off_reported = false
+    @first_wire_at = nil
+    @last_log_at = nil
+    @wire_actions_since_log = 0
+    @stale_log_reported = false
   end
 
   # Register the final cumulative report. Called by the sniffer at startup
@@ -100,6 +125,20 @@ class ActionValidator
     return unless m
     tick = m[1].to_i
     @mutex.synchronize do
+      note_log_line_for_state
+      # A live tail can read from the top when the log is replaced/rotated;
+      # that history is already older than the capture's correlation window
+      # and can never join. Skip it instead of counting it as a misdecode
+      # (offline validation skips pre-capture history the same way).
+      if @consume_tick && tick < @consume_tick - TICK_WINDOW
+        @stats[:log_stale] += 1
+        unless @stale_log_reported
+          @stale_log_reported = true
+          puts "[action-validate] skipping stale log history (tick #{tick} < capture tick " \
+               "#{@consume_tick - TICK_WINDOW}) — the tail is behind; correlation resumes when it catches up"
+        end
+        return
+      end
       counts = (@buf_counts ||= {})
       id = @log.object_id
       counts[id] = (counts[id] || 0) + 1
@@ -145,10 +184,19 @@ class ActionValidator
   # packets (and echo them from S→C). The caller deduplicates identical
   # repeats; a genuinely different later fragment APPENDS to what this
   # tick already holds, like the offline join's accumulation.
+  # The sniffer's append event: the same tick arrived from the other
+  # direction with a different fragment (client mode feeds C→S + S→C).
+  def on_input_actions_append(tick, actions)
+    on_input_actions(tick, actions, append: true)
+  end
+
   def on_input_actions(tick, actions, append: false)
     wire = actions&.reject { |a| a[:type].zero? } # 'nothing' padding is never logged
     return if !tick || wire.nil? || wire.empty?
     @mutex.synchronize do
+      note_wire_actions_for_state(wire.size)
+      return if @logging_on == false # no log lines to join — don't buffer
+      wire.each { |a| @unknown_seen[a[:type]] += 1 if a[:name].to_s.start_with?('Unknown') }
       entries = wire.map { |a| [a[:game_player], a[:type]] }
       entries = @wire[tick].to_a + entries if append && @wire[tick]
       @buf_counts ||= {}
@@ -158,6 +206,46 @@ class ActionValidator
       correlate(tick)
       maybe_report
     end
+  end
+
+  # ── Action-logging state ─────────────────────────────────────────
+
+  # Called under @mutex for every `Action performed` line. The first line
+  # proves logging is on; a line after an OFF report means the operator just
+  # enabled it, so resume buffering/correlation.
+  def note_log_line_for_state
+    now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    @last_log_at = now
+    @first_wire_at = nil
+    @wire_actions_since_log = 0
+    @logging_on = true
+    return unless @logging_off_reported
+    @logging_off_reported = false
+    puts '[action-validate] action logging detected — resuming correlation'
+  end
+
+  # Called under @mutex for each wire tick. No log line despite sustained
+  # action traffic means /toggle-action-logging is off (it does not persist
+  # across restarts). Report once and release the buffers; #note_log_line_for_state
+  # turns it back on if the operator enables it during the run.
+  def note_wire_actions_for_state(count)
+    return if @logging_on == false
+    now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    @first_wire_at ||= now
+    @wire_actions_since_log += count
+    return if @wire_actions_since_log < LOGGING_OFF_ACTIONS
+    return if now - (@last_log_at || @first_wire_at) < LOGGING_OFF_SECONDS
+
+    @logging_on = false
+    @logging_off_reported = true
+    @wire.clear
+    @log.clear
+    @buf_counts = {}
+    @join_memo.clear
+    puts format('[action-validate] no Action performed log lines after %<n>d actions — ' \
+                '/toggle-action-logging appears OFF. Enable it on the server (RCON) to ' \
+                'validate actions; correlation buffering paused.',
+                n: @wire_actions_since_log)
   end
 
   # ── Correlation ──────────────────────────────────────────────────
@@ -193,7 +281,7 @@ class ActionValidator
     # were already consumed by attempt_join, so anything still here is an
     # uncorrelated misdecode remainder (see drop_log_unmatched), which is
     # counted, not silently dropped. O(1) amortized from the front.
-    floor = tick - TICK_TOLERANCE
+    floor = tick - REORDER_WINDOW
     while (t = @log.keys.first) && t < floor
       drop_log_unmatched(t, @log[t].size)
       @log.delete(t)
@@ -258,8 +346,15 @@ class ActionValidator
     scored.sort_by! { |(_o, _po, _plan, agrees, pairs_total)| [-agrees, -pairs_total, _o, _po] }
     o, player_off, plan, agrees, pairs_total = scored.first
     if scored.size > 1
-      _, _, _, agrees2, pairs2 = scored[1]
-      return if agrees == agrees2 && pairs_total == pairs2 # ambiguous — defer, don't guess
+      o2, _, _, agrees2, pairs2 = scored[1]
+      # An EXACT-tick candidate is never ambiguous against a lagged one: the
+      # log line at the wire tick is the authoritative pairing. Deferring on
+      # a 0-vs+1 agreement tie let the exact tick stay buffered while the +1
+      # sibling joined first, cascading into whole runs of 266/cleared/zoom
+      # mismatches (client-20261028-104957 tick 24855904). Keep deferring
+      # when the best is itself a lag candidate (the action-logged-later
+      # case this rule exists for).
+      return if o.positive? && o2.positive? && agrees == agrees2 && pairs_total == pairs2
     end
     actual_log_tick = tick + o
 
@@ -417,6 +512,9 @@ class ActionValidator
                 '(actions correlated so far)',
                 ok: s[:ok], mis: s[:mismatch], nit: s[:not_in_table], seq: s[:seq_len_mismatch],
                 un: s[:unattributed], lun: s[:log_unmatched])
+    if s[:log_stale].positive?
+      puts "  #{s[:log_stale]} stale log line(s) skipped (older than the capture window)"
+    end
     # Show a few unattributed wire-tick samples to point at the gap.
     samples = @unattributed_samples[:wire]
     if samples.any?
@@ -430,7 +528,24 @@ class ActionValidator
       tick, count = lsamples.first
       puts "  sample: log tick #{tick}: #{count} log actions that never correlated (misdecode)"
     end
-    disagreements = @votes.reject { |id, names| names.any? { |name, _| normalize(name) == normalize(table_name(id)) } }
+    if @unknown_seen.any?
+      puts '  unknown wire IDs seen: ' +
+           @unknown_seen.sort.map { |id, n| "#{id}=#{n}" }.join(', ')
+      unknown_votes = @unknown_seen.keys.select { |id| @votes.key?(id) && @votes[id].any? }
+      unknown_votes.sort.each do |id|
+        winner, n = @votes[id].max_by { |_, c| c }
+        puts format('  candidate: wire %<id>d table=(absent) but log says %<wn>s (x%<n>d)',
+                    id: id, wn: winner, n: n)
+      end
+      unmatched = @unknown_seen.keys - unknown_votes
+      if unmatched.any?
+        puts '  unknown wire IDs not yet matched to a log line: ' +
+             unmatched.sort.map { |id| "#{id}=#{@unknown_seen[id]}" }.join(', ')
+      end
+    end
+    disagreements = @votes.reject do |id, names|
+      @unknown_seen.key?(id) || names.any? { |name, _| normalize(name) == normalize(table_name(id)) }
+    end
     disagreements.sort.each do |id, names|
       winner, n = names.max_by { |_, c| c }
       puts format('  candidate: wire %<id>d table=%<tn>s but log says %<wn>s (x%<n>d)',

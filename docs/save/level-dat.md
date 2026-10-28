@@ -125,8 +125,8 @@ Each record stores the name as a bare optim-string (no type tag):
 - **The index is the record's position in the run**, so the run's absolute
   position is unknown — anchor it with players-cache.json: for every known
   name, `index - position` is a constant (269 for the first record here).
-  That doubles as the self-check: a known name that disagrees means the save
-  is from another world.
+  That doubles as the self-check: a known name that disagrees (or appears at
+  two ids) is stale cache data and the save's index replaces it.
 - The run is **not contiguous in the file**: the console buffer sits between
   records 337 and 338 here.
 - **Index 0 has no record** in this save (the run starts at index 1), so

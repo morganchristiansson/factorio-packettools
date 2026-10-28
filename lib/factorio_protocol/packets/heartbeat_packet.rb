@@ -21,8 +21,16 @@ module FactorioProtocol
     # after the last one (absent in the 25-byte form). NB 0xAB = 171, the
     # action's own ID.
     BT_RECORD = 10
+    # C→S separator: 00 00 00 <id> 00, then a 00 00 00 tail. S→C echoes use
+    # 01 01 00 <id> 00 between records and an 01 01 00 tail (the 01 01 is the
+    # echo flag, not the record's data). Measured on client-20261028-102801
+    # pkt 13/18/23: two records + 01 01 00 b5 00 + record + 01 01 00, then
+    # the next real action. Reading only the C→S marker stopped after one
+    # record and re-parsed the rest as stop_walking/nothing phantoms.
     BT_RECORD_MARK = "\x00\x00\x00\xAB\x00".b.freeze
+    BT_RECORD_MARK_SC = "\x01\x01\x00".b.freeze
     BT_TAIL = "\x00\x00\x00".b.freeze
+    BT_TAIL_SC = "\x01\x01\x00".b.freeze
 
     attr_reader :heartbeat
 
@@ -148,7 +156,14 @@ module FactorioProtocol
       is_drag = (count > 1)
 
       last_index = 0xFFFF
-      count.times do |i|
+      # `count` counts non-padding actions. A `nothing` (type 0) is wire
+      # padding: it still has a header to consume, but it must not use up one
+      # of the counted slots and it must NOT move last_index (its delta is not
+      # a player change). client-20261028-102801 pkt 1270: Build + nothing +
+      # 2x266 decoded as Build + nothing + one 266, losing the second player
+      # and shifting the first 16 places when the padding delta was applied.
+      i = 0
+      while i < count
         break if offset >= data.bytesize || tc[:hit_unknown]
         # In S→C echoes, the closure ends with a trailer: an optional
         # selection-echo `[55 ff ff ff ff][u32 ref]` followed by an 8-byte
@@ -182,8 +197,13 @@ module FactorioProtocol
         tc[:actions] << act
         # Keep the wire (0-indexed) index only for the next delta calculation;
         # public action hashes expose the Lua-style 1-indexed game index.
-        last_index = act[:game_player] - 1
+        # S→C `nothing` is padding (it is not one of the closure's counted
+        # slots and its delta is not a player change). In C→S it is a real
+        # counted action, as in client_build_terrain_then_nothing_20.
+        padding = is_server && act[:type].zero?
+        last_index = act[:game_player] - 1 unless padding
         tc[:hit_unknown] = true if act[:hit_unknown]
+        i += 1 unless padding
       end
 
       # Server-to-client heartbeats: the tick closure always starts with a
@@ -307,24 +327,61 @@ module FactorioProtocol
       # would be overwritten to 11/10 and the action would consume bytes
       # that belong to the next one.
       if name == 'build' && !alen.nil?
-        if is_drag && !is_server && offset + 21 <= data.bytesize &&
-           data.getbyte(offset + 9) == 0x01 && data.getbyte(offset + 10) == 0x01
-          alen = 21
-        elsif is_server && is_drag && offset + 21 <= data.bytesize &&
-              data.getbyte(offset + 9) == 0x01 && data.getbyte(offset + 10) == 0x01
-          # S→C echo of a drag build: TWO records (the placed tile + the drag
-          # endpoint), 21 bytes total like the C→S drag form. Reading 11
-          # bytes left the second record to be misparsed and a following
-          # chat SEGMENT was then read from mid-record (client-20261027-201904
-          # pkt 101714: "do we have large mining drills?" came out as a
-          # phantom/garbage instead of EMB_music's chat). The drag marker
-          # `01 01` sits at bytes 9/10 of the first record, same as C→S.
-          alen = 21
-        elsif is_drag && offset + 11 <= data.bytesize
-          alen = 11  # drag: 01 01 marker
-        elsif offset + 10 <= data.bytesize && data.getbyte(offset + 9) == 0x00 && offset + 10 < data.bytesize
-          alen = 10  # ghost: trailing 0x00 byte
-        end
+        # The marker (01 01) means a drag build: 21 bytes in both directions
+        # (S→C echoes the same two records — fixture s2c_drag_build_then_chat).
+        # The ghost flag (00) makes 10. "is_drag" is only "this closure has
+        # >1 action", so it must NOT imply an 11-byte build: a normal build
+        # sent alongside hover/selection echoes was read as 11 bytes, eating
+        # the next action's type byte and fabricating players from the header
+        # (client-20261028-102801.pcap pkt 1270: Build + nothing + 2x266
+        # became Build + paste_entity_settings Player_496 + Unknown(39)
+        # Player_679).
+        alen = if offset + 11 <= data.bytesize &&
+                  data.getbyte(offset + 9) == 0x01 &&
+                  data.getbyte(offset + 10) == 0x01
+                 (offset + 21 <= data.bytesize) ? 21 : 11
+               elsif offset + 10 <= data.bytesize && data.getbyte(offset + 9) == 0x00
+                 10 # ghost
+               else
+                 9  # plain
+               end
+        # S→C echoes append a 2-byte tail after a non-drag build body (the
+        # bytes are 00 10 / 02 10 before the next action; pkt 1270, 7509).
+        # Reading only the build body left them as a phantom `nothing` or
+        # begin_mining and shifted the following action. Drag echoes already
+        # carry their tail inside the 21-byte two-record form.
+        alen += 2 if is_server && alen < 21
+      end
+
+      # S→C-only echo bodies for actions whose C→S form is empty. The echo
+      # carries the surface/inventory reference the other clients need, and
+      # the log has one RemoteViewSurface/OpenLogisticsGui line per echo.
+      # Without these the body was read as a run of `nothing`/destroy phantom
+      # actions and the following real action (Zoom/266/StopWalking) was
+      # shifted or turned into Unknown(255)/Unknown(51)
+      # (client-20261028-102801 pkt 13792, 14067, 23175).
+      if is_server && name == 'remote_view_surface'
+        alen = 24
+      elsif is_server && name == 'open_logistics_gui'
+        alen = 28
+      elsif is_server && name == 'copy'
+        alen = 22
+      elsif is_server && name == 'send_stacks_to_trash'
+        alen = 17
+      elsif is_server && name == 'deconstruct'
+        alen = 23 # 16-byte area + 7-byte echo metadata (00000180000001)
+      elsif is_server && name == 'selected_entity_changed_based_on_unit_number'
+        alen = 8 # S→C echo carries the unit-number reference
+      elsif is_server && name == 'player_join_game'
+        alen = 16 # join echo: peer/mode/name block
+      elsif is_server && name == 'set_logistic_filter_item'
+        alen = 22 # S→C echo body (filter slot/item record)
+      elsif is_server && name == 'upgrade'
+        alen = 23 # S→C echo body (23B upgrade record)
+      elsif is_server && name == 'go_to_train_station'
+        alen = 13 # S→C echo body (station reference)
+      elsif is_server && name == 'set_ghost_cursor'
+        alen = 3 # S→C echo body
       end
 
       # open_gui: variable length, depends on direction.
@@ -336,11 +393,12 @@ module FactorioProtocol
       #   Server echo: 14 bytes when it appends entity ref + token + tick,
       #     else the bare 2-byte form [gui_type][flags] (no entity info).
       if name == 'open_gui'
-        alen = if is_server
-          (offset + 14 <= data.bytesize) ? 14 : 2
-        else
-          8
-        end
+        # S→C: the GUI open echo carries NO body — the next action starts right
+        # after the delta (server-observed pkt 21540: open_gui p88 then
+        # stop_drag_build p88; pkt 41860: open_gui p88 then 266 p269). The old
+        # "14 bytes if enough remain" read the following action headers as
+        # entity/token metadata and produced Unknown(160)/Player_318.
+        alen = is_server ? 0 : 8
       end
 
       # open_character_gui (2.0: 6 / 2.1: 61) / open_blueprint_library_gui
@@ -402,12 +460,16 @@ module FactorioProtocol
                     selected_entity_changed_based_on_unit_number
                     set_use_inserter_filters].include?(name)
         alen = if is_server
-          # +16 S→C echo metadata is only appended when there IS an entity to
-          # echo. In short leave broadcasts the echo is the bare C→S body —
-          # assuming +16 overruns the closure and the tail is then read as a
-          # phantom sync action (e.g. PeerDisconnect → bogus "Player_49xxx
-          # left the game"). Use the +16 form only when enough bytes remain.
-          (offset + alen + 16 <= data.bytesize) ? alen + 16 : alen
+          # +16 metadata exists only on a selection echo, and it starts with
+          # the 55 ff ff ff marker AFTER the action body. "Enough bytes
+          # remain" is not evidence: a multi-action S→C closure has plenty of
+          # bytes after every action, so that test over-consumed each bare
+          # echo and re-parsed the next action headers as body bytes (zoom →
+          # phantom cheat/set_logistic_filter_item, and a 266 run that exploded
+          # into fake players 499/636/773/... in client-20261028-101422).
+          echo = offset + alen + 4 <= data.bytesize &&
+                 data[offset + alen, 4] == "\x55\xff\xff\xff".b
+          (echo && offset + alen + 16 <= data.bytesize) ? alen + 16 : alen
         else
           is_last ? alen + 8 : alen
         end
@@ -429,7 +491,9 @@ module FactorioProtocol
       # wire 181 (0xB5) — the separator that follows each record re-uses the
       # action's own id as its marker byte.
       if (type == 171 || type == 181) && name == 'build_terrain'
-        mark = ([0, 0, 0, type].pack('C4') + "\x00").b
+        mark = is_server ? (BT_RECORD_MARK_SC + [type].pack('C') + "\x00").b
+                         : ([0, 0, 0, type].pack('C4') + "\x00").b
+        tail = is_server ? BT_TAIL_SC : BT_TAIL
         o = offset
         alen = 0
         while o + BT_RECORD <= data.bytesize
@@ -439,7 +503,13 @@ module FactorioProtocol
           alen += 5
           o += 5
         end
-        if is_last && data[o, 3] == BT_TAIL && (data.getbyte(o + 3) || 0) != 0x00
+        # S→C always appends the 3-byte echo tail after the last record, even
+        # when another action follows in the same closure. C→S only takes its
+        # zero tail on the last action (otherwise the zeros ARE the next
+        # `nothing` header).
+        if is_server
+          alen += 3 if data[o, 3] == tail
+        elsif is_last && data[o, 3] == tail && (data.getbyte(o + 3) || 0) != 0x00
           alen += 3
         end
       end

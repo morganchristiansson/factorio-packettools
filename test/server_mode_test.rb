@@ -125,6 +125,13 @@ class TestServerMode < Minitest::Test
     [output, sniffer]
   end
 
+  # The join fixtures carry player 12; seed 1..11 so appending at 12 is a
+  # valid max+1 join (the save/RCON roster would have them in a live run).
+  def seed_player_indexes(sniffer, max)
+    db = sniffer.instance_variable_get(:@player_db)
+    (1..max).each { |i| db[i] = { name: "seed#{i}", locale: nil } }
+  end
+
   # The join-time query's Lua for a given server version, built with no
   # server: an allocated client with #server_version stubbed (the getter
   # shape is the only thing that varies).
@@ -545,29 +552,55 @@ class TestServerMode < Minitest::Test
     assert_equal [msg13_packet], records, "`capture: save` records only the msg 13 TransferBlock"
   end
 
-  # A packet whose player index sits FAR past the roster is kept for review;
-  # one merely past it is a player we have no name for, not a desync.
-  def test_unknown_player_packet_is_saved_for_followup
+  # Live capture validates player IDs by MEMBERSHIP: the roster is seeded
+  # from RCON / the save, so a decoded player with no cache entry is evidence
+  # of a misdecode. The frame is kept for audit and the id is warned once.
+  def test_unknown_player_id_is_flagged_in_live_capture
     Dir.mktmpdir do |dir|
       Dir.chdir(dir) do
         packet = fixture_packet('client_chat_message_0x0b')
-        _, near = run_sniffer(server: true, host_ips: [SERVER_IP], player_db: nil,
-                              real_unknown_writer: true) do |s|
+        _, sniffer = run_sniffer(server: true, host_ips: [SERVER_IP], player_db: nil,
+                                 real_unknown_writer: true) do |s|
+          s.instance_variable_set(:@roster_ready, true)
           s.instance_variable_get(:@player_db)[1] = {name: 'known'}
           s.send(:process_packet, 1, 1_700_000_000.0, CLIENT_IP, SERVER_IP, 34_197, 34_197,
                    packet, "\x00" * 14 + packet)
         end
+        assert_equal [12], sniffer.instance_variable_get(:@invalid_player_ids).keys,
+                     'player 12 is not in the roster'
+        assert_equal 1, sniffer.instance_variable_get(:@stats)[:invalid_player]
+        writer = sniffer.instance_variable_get(:@unknown_writer)
+        writer.close
+        assert_operator File.binread(writer.path).bytesize, :>, 24, 'invalid player frame kept for audit'
+      end
+    end
+  end
+
+  # Replay defaults to the old distance rule (an old capture and today's
+  # cache need not describe the same world); `strict_player_ids: false`
+  # makes that explicit. A player merely past the roster is not flagged,
+  # while a far-out desync still is.
+  def test_unknown_player_packet_is_only_flagged_when_strict_or_far
+    Dir.mktmpdir do |dir|
+      Dir.chdir(dir) do
+        packet = fixture_packet('client_chat_message_0x0b')
+        _, near = run_sniffer(server: true, host_ips: [SERVER_IP], player_db: nil,
+                              strict_player_ids: false, real_unknown_writer: true) do |s|
+          s.instance_variable_get(:@player_db)[1] = {name: 'known'}
+          s.send(:process_packet, 1, 1_700_000_000.0, CLIENT_IP, SERVER_IP, 34_197, 34_197,
+                   packet, "\x00" * 14 + packet)
+        end
+        assert_empty near.instance_variable_get(:@invalid_player_ids)
         near_writer = near.instance_variable_get(:@unknown_writer)
         near_writer.close
         # player 12, one roster entry known (1): inside UNKNOWN_PLAYER_WINDOW,
-        # so nothing is kept — the corpus is for desyncs, not for nameless
-        # players. A writer that got no frames deletes its empty file.
+        # so nothing is kept. A writer that got no frames deletes its empty file.
         refute File.exist?(near_writer.path), 'a nameless player is not a desync'
 
         FactorioProtocol.select_version('2.0')
         far_packet = fixture_packet('client_chat_player_356_escaped_index')
         _, far = run_sniffer(server: true, host_ips: [SERVER_IP], player_db: nil,
-                             real_unknown_writer: true) do |s|
+                             strict_player_ids: false, real_unknown_writer: true) do |s|
           s.instance_variable_get(:@player_db)[1] = {name: 'known'}
           s.send(:process_packet, 1, 1_700_000_000.0, CLIENT_IP, SERVER_IP, 34_197, 34_197,
                    far_packet, "\x00" * 14 + far_packet)
@@ -583,6 +616,13 @@ class TestServerMode < Minitest::Test
     FactorioProtocol.reset_version
   end
 
+  def test_strict_player_ids_defaults_on_live_off_replay
+    _, live = run_sniffer(server: true, host_ips: [SERVER_IP], player_db: nil) {}
+    assert live.instance_variable_get(:@strict_player_ids), 'live capture uses roster membership'
+    _, replay = run_sniffer(pcap: 'dummy.pcap', player_db: nil) {}
+    refute replay.instance_variable_get(:@strict_player_ids), 'replay keeps the old distance rule'
+  end
+
   # ── Test 9: C→S join/leave detection feeds the agent ──────────────────
 
   def test_server_mode_join_and_leave_events
@@ -596,6 +636,7 @@ class TestServerMode < Minitest::Test
       agent = recording_agent
       sniffer.instance_variable_set(:@plugins, PluginsDouble.new(hivemind: agent))
       ts = 1_700_000_000.0
+      seed_player_indexes(sniffer, 11)
       # msg 4 ConnectionRequestReplyConfirm — connection attempt with username
       msg4 = "\x04".b + [1].pack('v') + [100].pack('V') + [200].pack('V') + [300].pack('V') +
         [5].pack('C') + 'alice' + msg4_session
@@ -620,6 +661,7 @@ class TestServerMode < Minitest::Test
       agent = recording_agent
       sniffer.instance_variable_set(:@plugins, PluginsDouble.new(hivemind: agent))
       ts = 1_700_000_000.0
+      seed_player_indexes(sniffer, 11)
       msg4 = "\x04".b + [1].pack('v') + [100].pack('V') + [200].pack('V') + [300].pack('V') +
         [5].pack('C') + 'alice' + msg4_session
       sniffer.send(:process_packet, 1, ts, CLIENT_IP, SERVER_IP, 34197, 34197, msg4)
@@ -640,6 +682,39 @@ class TestServerMode < Minitest::Test
     end
     sniffer = result[1]
     assert_empty events, 'msg 14 from unknown src_ip → no leave event'
+  end
+
+  # A join must append to the player list (max index + 1), never jump to a
+  # misdecoded high index. The frame is kept; the cache is not poisoned.
+  def test_misdecoded_join_index_is_flagged_and_not_cached
+    Dir.mktmpdir do |dir|
+      Dir.chdir(dir) do
+        events = nil
+        _, sniffer = run_sniffer(server: true, host_ips: [SERVER_IP], player_db: nil,
+                                 real_unknown_writer: true) do |s|
+          s.instance_variable_set(:@roster_ready, true)
+          seed_player_indexes(s, 11)
+          agent = recording_agent
+          s.instance_variable_set(:@plugins, PluginsDouble.new(hivemind: agent))
+          ts = 1_700_000_000.0
+          msg4 = "\x04".b + [1].pack('v') + [100].pack('V') + [200].pack('V') + [300].pack('V') +
+            [5].pack('C') + 'alice' + msg4_session
+          s.send(:process_packet, 1, ts, CLIENT_IP, SERVER_IP, 34_197, 34_197, msg4)
+          action = FactorioProtocol.build_input_action(70, 749, "\x00" * 16)
+          hb = FactorioProtocol.build_client_heartbeat(seq: 1, closures: [[100, 1, action + "\x00" * 8]],
+                                                       next_receive: 101, requests: [])
+          s.send(:process_packet, 2, ts, CLIENT_IP, SERVER_IP, 34_197, 34_197, hb, "\x00" * 14 + hb)
+          events = agent.events
+        end
+        assert_empty events, 'a misdecoded join index must not fire :joined'
+        db = sniffer.instance_variable_get(:@player_db)
+        assert_nil db.id_for('alice'), 'the bad index is not written to the cache'
+        assert_equal 1, sniffer.instance_variable_get(:@stats)[:invalid_join]
+        writer = sniffer.instance_variable_get(:@unknown_writer)
+        writer.close
+        assert File.exist?(writer.path), 'frame kept for audit'
+      end
+    end
   end
 
   # ── Test 10: split chat messages reassembled across packets ──────────
@@ -1341,6 +1416,7 @@ class TestServerMode < Minitest::Test
 
     output, sniffer = run_sniffer(server: true, host_ips: [SERVER_IP], player_db: nil) do |s|
       s.instance_variable_set(:@rcon, rcon)
+      seed_player_indexes(s, 11)
       msg4 = "\x04".b + [1].pack('v') + [100].pack('V') + [200].pack('V') + [300].pack('V') +
         [5].pack('C') + 'alice' + msg4_session
       s.send(:process_packet, 1, 1_700_000_000.0, CLIENT_IP, SERVER_IP, 34197, 34197, msg4)
@@ -1482,6 +1558,28 @@ class TestServerMode < Minitest::Test
     assert_equal 1, validator.stats[:ok], 'the wire action correlated with the log line'
     assert_equal 0, validator.stats[:mismatch]
     assert_equal({ 'Pipette' => 1 }, validator.votes[91])
+  end
+
+  # Client mode sees the same tick from BOTH directions: our C→S closure and
+  # the server's S→C echo. Both are fed (the offline validator does the same),
+  # while an exact repeat is deduped so nothing correlates twice.
+  def test_client_mode_feeds_both_directions_to_action_validator
+    sniffer = make_test_sniffer(server: false, host_ips: [SERVER_IP], plugins: [:action_validator])
+    validator = sniffer.instance_variable_get(:@plugins)[:action_validator]
+    validator.record_log_line('Info InputActionHandler.cpp:672: Action performed [0 0 StartWalking]')
+
+    # S→C echo first (server → client), then our C→S copy of the same closure.
+    sniffer.send(:process_packet, 1, 1_700_000_000.0, SERVER_IP, CLIENT_IP,
+                 34197, 34197, s2c_echo_packet)
+    assert_equal 1, validator.stats[:ok], 'the S→C echo correlates in client mode'
+
+    action = FactorioProtocol.build_input_action(70, 1, "\x00" * 16)
+    cs = FactorioProtocol.build_client_heartbeat(
+      seq: 1, closures: [[0, 1, action + "\x00" * 8]], next_receive: 1, requests: []
+    )
+    sniffer.send(:process_packet, 2, 1_700_000_000.0, CLIENT_IP, SERVER_IP,
+                 34197, 34197, cs)
+    assert_equal 1, validator.stats[:ok], 'the identical C→S copy is deduped'
   end
 
   # ── Centralized game-log tailer ─────────────────────────────────

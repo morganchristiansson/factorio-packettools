@@ -63,35 +63,47 @@ abort 'no candidate names found — not a level.dat stream?' if records.empty?
 roster_records = records.select { |r| r[:online_time_ticks] }
 
 cache = File.exist?(CACHE) ? JSON.parse(File.read(CACHE)) : {}
-known = {}
-cache.each { |id, rec| known[rec['name']] = id.to_i if rec.is_a?(Hash) && rec['name'] }
+# A name can appear at MORE than one index in a cache carried across saves
+# (the game renumbers players when a save is loaded into a fresh world, and
+# old ids are deliberately kept). Keep every candidate: choosing one would
+# let a stale duplicate masquerade as the current index.
+cache_ids = Hash.new { |h, k| h[k] = [] }
+cache.each { |id, rec| cache_ids[rec['name']] << id.to_i if rec.is_a?(Hash) && rec['name'] }
+cache_ids.default_proc = nil # reading a missing name must not grow the map
 
 # Anchor: index - position is constant across the run. With no cache to anchor
 # on we ASSUME the run starts at index 1 (verified on 2.0.77, where index 0
 # has no record) — and a join seen on the wire later corrects it anyway
 # (PlayerDatabase#remove_other_entries_for).
 offsets = Hash.new(0)
-roster_records.each_with_index { |r, i| offsets[known[r[:name]] - i] += 1 if known[r[:name]] }
-if known.empty?
+roster_records.each_with_index do |r, i|
+  cache_ids.fetch(r[:name], []).each { |id| offsets[id - i] += 1 }
+end
+if cache_ids.empty?
   shift = 1
   puts 'no known players in the cache — roster taken from the record structure alone'
 else
-  shift, votes = offsets.max_by { |_, v| v }
-  puts "candidates: #{records.size}   known names anchoring the run: #{votes}/#{known.size}"
+  shift = offsets.empty? ? 1 : offsets.max_by { |_, v| v }.first
+  # Count NAMES that land on the run's index, not raw offset votes.
+  anchored = roster_records.each_with_index.count do |r, i|
+    cache_ids.fetch(r[:name], []).include?(i + shift)
+  end
+  puts "candidates: #{records.size}   known names anchoring the run: #{anchored}/#{cache_ids.size}"
 end
-mismatched = roster_records.each_with_index.reject { |r, i| !known[r[:name]] || known[r[:name]] - i == shift }
-                   .map { |r, i| "#{r[:name]}@#{i} (cache index #{known[r[:name]]}, run says #{i + shift})" }
-# A cached player the save does NOT have is normal, not a foreign world: they
-# joined after this save was written. Only a name at a DIFFERENT index means
-# the two are not the same world, and that is what refuses the merge.
-absent = known.keys - roster_records.map { |r| r[:name] }
+mismatched = roster_records.each_with_index.reject do |r, i|
+  ids = cache_ids.fetch(r[:name], [])
+  ids.empty? || ids.include?(i + shift)
+end.map { |r, i| "#{r[:name]}@#{i} (cache index #{cache_ids[r[:name]].join('|')}, run says #{i + shift})" }
+# A cached player the save does NOT have is normal: they joined after this
+# save was written. A name at a DIFFERENT index is a stale duplicate id (old
+# world / bad join); flag it, then let the save's index replace it.
+absent = cache_ids.keys - roster_records.map { |r| r[:name] }
 if absent.any?
   puts "note: #{absent.size} cached player(s) joined after this save: #{absent.first(5).inspect}#{'…' if absent.size > 5}"
 end
 if mismatched.any?
   puts "[warn] #{mismatched.size} known name(s) disagree with the run: #{mismatched.first(5).join(', ')}"
-  puts '[warn] the save does not match this cache (different world/savefile?) — not merging'
-  exit 1
+  puts '[warn] replacing those cache entries with the save\'s indexes (the save is authoritative)'
 end
 
 roster = roster_records.each_with_index.to_h { |r, i| [i + shift, r] } # index -> record
@@ -105,20 +117,34 @@ colors = roster.values.count { |r| r[:color] }
 puts "color: #{colors}/#{roster.size} records (#{roster.values.map { |r| r[:color] }.compact.uniq.size} distinct)"
 
 named = roster.transform_values { |r| r[:name] }
-added = named.reject { |_, name| known.key?(name) } # the mismatch check passed, so these are new
+added = named.reject { |_, name| cache_ids.key?(name) } # the mismatch check passed, so these are new
 puts "new: #{added.size} -> #{added.values.first(10).inspect}#{'…' if added.size > 10}"
-renamed = named.select { |id, name| known.key?(name) && known[name] != id }
-puts "renamed: #{renamed.map { |id, n| "#{id}: #{known[n]} -> #{n}" }.join(', ')}" if renamed.any?
+renamed = named.select { |id, name| cache_ids.key?(name) && !cache_ids[name].include?(id) }
+puts "renamed: #{renamed.map { |id, n| "#{id}: #{cache_ids[n].join('|')} -> #{n}" }.join(', ')}" if renamed.any?
 
 if MERGE
   merged = {}
-  named.each { |id, name| merged[id.to_s] = (cache[id.to_s] || {}).merge('name' => name) }
+  named.each do |id, name|
+    # Keep the fields we already had: at this id, else at an old duplicate id
+    # for the same name (a renumbered player keeps their colour/quickbar).
+    base = cache[id.to_s] || (cache_ids[name] || []).filter_map { |old_id| cache[old_id.to_s] }.first || {}
+    merged[id.to_s] = base.merge('name' => name)
+  end
   # a locale the save knows and the cache does not (packets/RCON win):
   # ||= so a known locale is never overwritten, and a missing one stays missing
   roster.each { |id, r| merged[id.to_s]['locale'] ||= r[:locale] if r[:locale] }
   roster.each { |id, r| merged[id.to_s]['color'] ||= r[:color] if r[:color] }
-  (cache.keys - merged.keys).sort_by(&:to_i).each { |k| merged[k] = cache[k] } # keep stale ids
+  # Drop the old id for any name the save has at a different index; keep
+  # genuinely stale ids (names the save does not have) — they joined later.
+  stale_duplicates = cache.keys.reject { |id| merged.key?(id) }.select do |id|
+    rec = cache[id]
+    name = rec.is_a?(Hash) && rec['name']
+    current_id = name && named.key(name)
+    current_id && current_id.to_s != id.to_s
+  end
+  (cache.keys - merged.keys - stale_duplicates).sort_by(&:to_i).each { |k| merged[k] = cache[k] } # keep real stale ids
   File.write(CACHE, JSON.pretty_generate(merged))
+  puts "dropped #{stale_duplicates.size} stale duplicate name id(s)" if stale_duplicates.any?
   puts "wrote #{CACHE} (#{merged.size} players)"
 else
   out = roster.to_h { |id, r|
