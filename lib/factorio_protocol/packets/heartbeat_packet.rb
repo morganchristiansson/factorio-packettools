@@ -214,14 +214,14 @@ module FactorioProtocol
       # decoded the player context during parse_action, so dropping it here is
       # safe: downstream code sees only real actions.
       if is_server
-        # Stripping the server_tick_info wrapper (type 85) AND adjusting the
-        # player index. The S->C player delta is 1-indexed (matches the log
-        # player index directly), while parse_action adds +1 for the C->S
-        # encoding. Only correct when a wrapper was actually present.
-        removed = tc[:actions].reject! { |a| a[:name] == 'server_tick_info' }
-        if removed
-          tc[:actions].each { |a| a[:game_player] -= 1 if a[:game_player] && a[:game_player] > 0 }
-        end
+        # Strip the server_tick_info wrapper (type 85) but KEEP parse_action's
+        # +1: the wire player is 0-indexed, while Lua/user-facing indexes are
+        # 1-indexed. Subtracting 1 here made every S→C action name the player
+        # one below the actor (client-20261028-105633: morganc/voltflake/
+        # EMB_music/n700hybs appeared as the offline Toxmi/RojaRosa/
+        # ummwhocares/klwht6). The action validator converts back to the
+        # log's 0-indexed convention itself.
+        tc[:actions].reject! { |a| a[:name] == 'server_tick_info' }
         tc[:hit_unknown] = false
       end
 

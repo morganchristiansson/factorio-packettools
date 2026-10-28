@@ -536,11 +536,11 @@ REAL_PACKET_FIXTURES = [
     description: 'S→C multi-action closure: zoom_around_point (24B, NO +16) then selected_entity_changed_very_close (1B) then start_walking (16B). Regression: every family action was given +16 when bytes remained, swallowing the next headers and fabricating players 190/348',
     hex: '0706632c7a01596079010000000008550143826ee65860790100000000813f000000000000f03f00000000008070c00000000000c061c0ff0a01068746c8cc3b7f669ea0e63fcc3b7f669ea0e63f',
     actions: [
-      { type: 129, name: 'zoom_around_point', game_player: 63,
+      { type: 129, name: 'zoom_around_point', game_player: 64,
         data: '000000000000f03f00000000008070c00000000000c061c0' },
-      { type: 266, name: 'selected_entity_changed_very_close', game_player: 69,
+      { type: 266, name: 'selected_entity_changed_very_close', game_player: 70,
         data: '87' },
-      { type: 70, name: 'start_walking', game_player: 269,
+      { type: 70, name: 'start_walking', game_player: 270,
         data: 'cc3b7f669ea0e63fcc3b7f669ea0e63f' },
     ],
   },
@@ -597,7 +597,7 @@ REAL_PACKET_FIXTURES = [
     description: 'S→C open_character_gui echo (client-20261027-201904.pcap pkt 2250) — 1-byte GUI body, packet complete, no phantom PeerDisconnect',
     hex: '270613434c01929f4b0100000000045501e93ca32c919f4b01000000003e2401',
     actions: [
-      { type: 62, name: 'open_character_gui', game_player: 36,
+      { type: 62, name: 'open_character_gui', game_player: 37,
         data: '01' },
     ],
   },
@@ -611,7 +611,7 @@ REAL_PACKET_FIXTURES = [
     description: 'S→C set_use_inserter_filters echo (client-20261027-201904.pcap) — 1-byte parameter, packet complete, no phantom PeerDisconnect',
     hex: '270693754c0112d24b01000000000455014275f85211d24b0100000000ff12010c01',
     actions: [
-      { type: 274, name: 'set_use_inserter_filters', game_player: 12,
+      { type: 274, name: 'set_use_inserter_filters', game_player: 13,
         data: '01' },
     ],
   },
@@ -640,7 +640,7 @@ REAL_PACKET_FIXTURES = [
     description: 'S→C render_mode_changed (gp107, 1-byte mode=02) + SkippedTickClosure sync (tick 21737056), NOT a phantom PeerDisconnect (client-20261027-201904.pcap pkt 6174)',
     hex: '0716e1514c0160ae4b01000000000455018eefa06e5fae4b0100000000ff36016b02010f60ae4b01000000000000',
     actions: [
-      { type: 310, name: 'render_mode_changed', game_player: 107,
+      { type: 310, name: 'render_mode_changed', game_player: 108,
         data: '02' },
     ],
   },
@@ -695,7 +695,7 @@ REAL_PACKET_FIXTURES = [
     version: '2.1',
     hex: '2706d5c04d01691b4d01000000000555012fa10294681b4d010000000045678029000080e7ffff0c01018020000080e7ffff0010016b0100000058020014581f646f2077652068617665206c61726765206d',
     actions: [
-      { type: 69, name: 'build', game_player: 103,
+      { type: 69, name: 'build', game_player: 104,
         data: '8029000080e7ffff0c01018020000080e7ffff0010' },
       { type: 107, name: 'write_to_console', game_player: 89, total_segs: 2, seg_no: 0,
         data: '581f646f2077652068617665206c61726765206d' },
@@ -707,7 +707,7 @@ REAL_PACKET_FIXTURES = [
     version: '2.1',
     hex: '2706d6c04d016a1b4d010000000005550199c4440a691b4d01000000004567802a000080e7ffff0c01018020000080e7ffff0010016b010000005802010d696e696e67206472696c6c733f',
     actions: [
-      { type: 69, name: 'build', game_player: 103,
+      { type: 69, name: 'build', game_player: 104,
         data: '802a000080e7ffff0c01018020000080e7ffff0010' },
       { type: 107, name: 'write_to_console', game_player: 89, total_segs: 2, seg_no: 1,
         data: '696e696e67206472696c6c733f' },
@@ -722,9 +722,9 @@ REAL_PACKET_FIXTURES = [
     description: 'S→C Build + 2x selected_entity_changed_very_close (pkt 1270, tick 24776126). Build echo is a 10B body plus its 2B S→C tail; it is NOT 11B just because the closure has >1 action. Regression: Build ate the next type byte, then the tail delta shifted 266 from players 269/326 to 285/342 (invalid Player_496/679).',
     hex: '0706d1da7a01be0d7a0100000000085501de39bb31bd0d7a010000000045e68030ffff80fb00000c000010ff0a0127b7ff0a013987',
     actions: [
-      { type: 69, name: 'build', game_player: 230, data: '8030ffff80fb00000c000010' },
-      { type: 266, name: 'selected_entity_changed_very_close', game_player: 269, data: 'b7' },
-      { type: 266, name: 'selected_entity_changed_very_close', game_player: 326, data: '87' },
+      { type: 69, name: 'build', game_player: 231, data: '8030ffff80fb00000c000010' },
+      { type: 266, name: 'selected_entity_changed_very_close', game_player: 270, data: 'b7' },
+      { type: 266, name: 'selected_entity_changed_very_close', game_player: 327, data: '87' },
     ],
   },
   {
@@ -732,9 +732,9 @@ REAL_PACKET_FIXTURES = [
     description: 'S→C build_terrain with TWO 10-byte records separated by 01 01 00 b5 00 and ending 01 01 00, then a 266 (pkt 13, tick 24774869). Regression: only the C→S 00 00 00 b5 00 separator was known, so parsing stopped after one record and invented stop_walking/nothing actions.',
     hex: '2706e8d57a01d5087a0100000000085501b4605616d4087a0100000000b5e6942e00003d2700000008010100b5002c2f00003d2700000008010100ff0a010098',
     actions: [
-      { type: 181, name: 'build_terrain', game_player: 230,
+      { type: 181, name: 'build_terrain', game_player: 231,
         data: '942e00003d2700000008010100b5002c2f00003d2700000008010100' },
-      { type: 266, name: 'selected_entity_changed_very_close', game_player: 230, data: '98' },
+      { type: 266, name: 'selected_entity_changed_very_close', game_player: 231, data: '98' },
     ],
   },
   {
@@ -742,11 +742,11 @@ REAL_PACKET_FIXTURES = [
     description: 'S→C two RemoteViewSurface echoes (24B each) then 266 (pkt 13792, tick 24788457). Regression: table length 0 for C→S read the body as nothing/destroy phantoms and ended on Unknown(255) Player_43052.',
     hex: '27064d0b7b01e93d7a010000000008550161cbaa19e83d7a0100000000ff04010700001126ffffffa72f000000a01b8cf9a228044000000000ff04010000001126ffffffa72f000000a01b8cf9a228044000000000ff0a01dfb9',
     actions: [
-      { type: 260, name: 'remote_view_surface', game_player: 7,
+      { type: 260, name: 'remote_view_surface', game_player: 8,
         data: '00001126ffffffa72f000000a01b8cf9a228044000000000' },
-      { type: 260, name: 'remote_view_surface', game_player: 7,
+      { type: 260, name: 'remote_view_surface', game_player: 8,
         data: '00001126ffffffa72f000000a01b8cf9a228044000000000' },
-      { type: 266, name: 'selected_entity_changed_very_close', game_player: 230, data: 'b9' },
+      { type: 266, name: 'selected_entity_changed_very_close', game_player: 231, data: 'b9' },
     ],
   },
   {
@@ -754,9 +754,9 @@ REAL_PACKET_FIXTURES = [
     description: 'S→C OpenLogisticsGui (28B echo body) then zoom_around_point (pkt 14067, tick 24788696). Regression: the 28B body was read as Unknown(255) player 62 instead of the following zoom at player 230.',
     hex: '07063c0c7b01d83e7a0100000000065501cbabfab7d73e7a0100000000403fffffffffffffffffffffffff7fffffff7f000000000000000000000181a7000000000000f0bf00000000004050c00000000000c05fc0',
     actions: [
-      { type: 64, name: 'open_logistics_gui', game_player: 63,
+      { type: 64, name: 'open_logistics_gui', game_player: 64,
         data: 'ffffffffffffffffffffffff7fffffff7f0000000000000000000001' },
-      { type: 129, name: 'zoom_around_point', game_player: 230,
+      { type: 129, name: 'zoom_around_point', game_player: 231,
         data: '000000000000f0bf00000000004050c00000000000c05fc0' },
     ],
   },
@@ -765,9 +765,9 @@ REAL_PACKET_FIXTURES = [
     description: 'S→C Copy (22B echo body) then 266 (pkt 8209, tick 24782992). Regression: table length 0 decoded the body as craft Player_472 and lost the 269 selection echo.',
     hex: '2706a3f57a0190287a01000000000655016a39e6598f287a010000000086ff0d0156cb0000b53400009fc8000075310000000001800000ff0a010043',
     actions: [
-      { type: 134, name: 'copy', game_player: 269,
+      { type: 134, name: 'copy', game_player: 270,
         data: '56cb0000b53400009fc8000075310000000001800000' },
-      { type: 266, name: 'selected_entity_changed_very_close', game_player: 269, data: '43' },
+      { type: 266, name: 'selected_entity_changed_very_close', game_player: 270, data: '43' },
     ],
   },
   {
@@ -775,9 +775,9 @@ REAL_PACKET_FIXTURES = [
     description: 'S→C Copy then CycleClipboardBackwards (wire 31) (pkt 8606, tick 24783389, factorio-current.log). Pins 2.1 wire 31 to cycle_clipboard_backwards (2.0 had it at 33). Regression: Unknown(31) Player_269.',
     hex: '070630f77a011d2a7a0100000000065501f6d80ccf1c2a7a0100000000863fa75d00004356ffff9f5b00002b58ffff0000018000001fce',
     actions: [
-      { type: 134, name: 'copy', game_player: 63,
+      { type: 134, name: 'copy', game_player: 64,
         data: 'a75d00004356ffff9f5b00002b58ffff000001800000' },
-      { type: 31, name: 'cycle_clipboard_backwards', game_player: 269, data: '' },
+      { type: 31, name: 'cycle_clipboard_backwards', game_player: 270, data: '' },
     ],
   },
   {
@@ -785,9 +785,9 @@ REAL_PACKET_FIXTURES = [
     description: 'S→C SendStacksToTrash (17B echo body) then 266 (pkt 30089, tick 24803956). Regression: table length 0 read the body as Unknown(250) Player_230.',
     hex: '0706d8477b01747a7a0100000000065501b89eff11737a7a010000000053e6fa000146622502000000000001c2020400ff0a01278c',
     actions: [
-      { type: 83, name: 'send_stacks_to_trash', game_player: 230,
+      { type: 83, name: 'send_stacks_to_trash', game_player: 231,
         data: 'fa000146622502000000000001c2020400' },
-      { type: 266, name: 'selected_entity_changed_very_close', game_player: 269, data: '8c' },
+      { type: 266, name: 'selected_entity_changed_very_close', game_player: 270, data: '8c' },
     ],
   },
   {
@@ -795,11 +795,11 @@ REAL_PACKET_FIXTURES = [
     description: 'S→C Deconstruct (16B area + 7B echo tail) then 266/266/267 (pkt 28272, tick 24802238). Regression: taking only the 16B table length read the tail as stop_walking/nothing and shifted the three hovers to invalid Player_457.',
     hex: '270622417b01be737a01000000000a5501e56d2dfabd737a01000000008407e6e3050041c30000e6e3050041c3000000000180000001ff0a010088ff0a01388dff0b01ff07018882',
     actions: [
-      { type: 132, name: 'deconstruct', game_player: 7,
+      { type: 132, name: 'deconstruct', game_player: 8,
         data: 'e6e3050041c30000e6e3050041c3000000000180000001' },
-      { type: 266, name: 'selected_entity_changed_very_close', game_player: 7, data: '88' },
-      { type: 266, name: 'selected_entity_changed_very_close', game_player: 63, data: '8d' },
-      { type: 267, name: 'selected_entity_changed_very_close_precise', game_player: 326, data: '8882' },
+      { type: 266, name: 'selected_entity_changed_very_close', game_player: 8, data: '88' },
+      { type: 266, name: 'selected_entity_changed_very_close', game_player: 64, data: '8d' },
+      { type: 267, name: 'selected_entity_changed_very_close_precise', game_player: 327, data: '8882' },
     ],
   },
   {
@@ -807,9 +807,9 @@ REAL_PACKET_FIXTURES = [
     description: 'S→C SelectedEntityChangedBasedOnUnitNumber (8B echo body) then 267 (pkt 33567, tick 24807275). Regression: the 8B body was read as change_active_item_group_for_crafting Player_452, losing the 326 precise echo.',
     hex: '0706cf547b016b877a01000000000655016845429c6a877a0100000000ff0d01ff0d016eb75e0200000000ff0b01397882',
     actions: [
-      { type: 269, name: 'selected_entity_changed_based_on_unit_number', game_player: 269,
+      { type: 269, name: 'selected_entity_changed_based_on_unit_number', game_player: 270,
         data: '6eb75e0200000000' },
-      { type: 267, name: 'selected_entity_changed_very_close_precise', game_player: 326, data: '7882' },
+      { type: 267, name: 'selected_entity_changed_very_close_precise', game_player: 327, data: '7882' },
     ],
   },
   {
@@ -817,10 +817,10 @@ REAL_PACKET_FIXTURES = [
     description: 'S→C open_gui echo carries NO body (pkt 21540, tick 24747243): next action starts right after the delta. Regression: the old "14 bytes if enough remain" read stop_drag_build/zoom headers as entity/token metadata and produced Unknown(160) Player_378.',
     hex: '2706a3697a01eb9c7901000000000a5501bdeb1187ea9c790100000000093f05193100818e000000000000f0bf00000000000050c00000000000a062c0',
     actions: [
-      { type: 9, name: 'selected_entity_cleared', game_player: 63, data: '' },
-      { type: 5, name: 'open_gui', game_player: 88, data: '' },
-      { type: 49, name: 'stop_drag_build', game_player: 88, data: '' },
-      { type: 129, name: 'zoom_around_point', game_player: 230,
+      { type: 9, name: 'selected_entity_cleared', game_player: 64, data: '' },
+      { type: 5, name: 'open_gui', game_player: 89, data: '' },
+      { type: 49, name: 'stop_drag_build', game_player: 89, data: '' },
+      { type: 129, name: 'zoom_around_point', game_player: 231,
         data: '000000000000f0bf00000000000050c00000000000a062c0' },
     ],
   },
@@ -829,9 +829,9 @@ REAL_PACKET_FIXTURES = [
     description: 'S→C PlayerJoinGame (16B echo: peer/mode/name block) then 266 (pkt 17772, tick 24743475). Regression: table length 0 left the name block to be read as Unknown(255) Player_230 instead of the following 269 hover.',
     hex: '2716eb5a7a01338e7901000000000655015fac448d328e7901000000009fe6ff0003e60001076e65756d6173740000ff0a01272f0204538e79010000000000030aff0003',
     actions: [
-      { type: 159, name: 'player_join_game', game_player: 230,
+      { type: 159, name: 'player_join_game', game_player: 231,
         data: 'ff0003e60001076e65756d6173740000' },
-      { type: 266, name: 'selected_entity_changed_very_close', game_player: 269, data: '2f' },
+      { type: 266, name: 'selected_entity_changed_very_close', game_player: 270, data: '2f' },
     ],
   },
   {
@@ -839,9 +839,9 @@ REAL_PACKET_FIXTURES = [
     description: 'S→C PlayerMusicChanged (1B) then SelectedEntityChangedRelative then ZoomAroundPoint (pkt 13977, tick 24739759). Regression: treating the music echo as 15B swallowed the relative/zoom headers and invented Player_446.',
     hex: '07060c4c7a01af7f790100000000085501e57b88f9ae7f790100000000ff5c013f00ff0c0106d5227ceb8113000000000000f0bf00000000000066c00000000000c05640',
     actions: [
-      { type: 348, name: 'player_music_changed', game_player: 63, data: '00' },
-      { type: 268, name: 'selected_entity_changed_relative', game_player: 69, data: 'd5227ceb' },
-      { type: 129, name: 'zoom_around_point', game_player: 88,
+      { type: 348, name: 'player_music_changed', game_player: 64, data: '00' },
+      { type: 268, name: 'selected_entity_changed_relative', game_player: 70, data: 'd5227ceb' },
+      { type: 129, name: 'zoom_around_point', game_player: 89,
         data: '000000000000f0bf00000000000066c00000000000c05640' },
     ],
   },
@@ -850,11 +850,11 @@ REAL_PACKET_FIXTURES = [
     description: 'S→C SetLogisticFilterItem (22B echo) then ZoomAroundPoint + 266 (pkt 37042, tick 24810583). Regression: the 22B body was read as build/nothing/Unknown(224).',
     hex: '0706bb617b0157947a01000000000855012225231b56947a010000000066a10000000001000000ffffffff000000000000010001008145000000000000f0bf0000000000e06c400000000000a067c0ff0a016078',
     actions: [
-      { type: 102, name: 'set_logistic_filter_item', game_player: 161,
+      { type: 102, name: 'set_logistic_filter_item', game_player: 162,
         data: '0000000001000000ffffffff00000000000001000100' },
-      { type: 129, name: 'zoom_around_point', game_player: 230,
+      { type: 129, name: 'zoom_around_point', game_player: 231,
         data: '000000000000f0bf0000000000e06c400000000000a067c0' },
-      { type: 266, name: 'selected_entity_changed_very_close', game_player: 326, data: '78' },
+      { type: 266, name: 'selected_entity_changed_very_close', game_player: 327, data: '78' },
     ],
   },
   {
@@ -862,11 +862,11 @@ REAL_PACKET_FIXTURES = [
     description: 'S→C Upgrade (23B echo) then 266 (pkt 16083, tick 24790483). Regression: the body was read as gui_confirmed Player_470 instead of the 269 hover.',
     hex: '070637137b01d3457a01000000000a55014b13c1acd2457a01000000000507310085ff06016ac900007f3900006ac900007f39000000000180000000ff0a010088',
     actions: [
-      { type: 5, name: 'open_gui', game_player: 7, data: '' },
-      { type: 49, name: 'stop_drag_build', game_player: 7, data: '' },
-      { type: 133, name: 'upgrade', game_player: 269,
+      { type: 5, name: 'open_gui', game_player: 8, data: '' },
+      { type: 49, name: 'stop_drag_build', game_player: 8, data: '' },
+      { type: 133, name: 'upgrade', game_player: 270,
         data: '6ac900007f3900006ac900007f39000000000180000000' },
-      { type: 266, name: 'selected_entity_changed_very_close', game_player: 269, data: '88' },
+      { type: 266, name: 'selected_entity_changed_very_close', game_player: 270, data: '88' },
     ],
   },
   {
@@ -874,13 +874,13 @@ REAL_PACKET_FIXTURES = [
     description: 'S→C GoToTrainStation (13B echo) then StartWalking + precise 267 (pkt 58659, tick 24831720). Regression: table length 0 read the station body as nothing/Unknown(255) Player_160.',
     hex: '07064cb47b01e8e67a01000000000a5501b8951246e7e67a0100000000463f000000000000f03f0000000000000000c26200000000ffffffff0147000000466c0000000000000000000000000000f0bfff0b01398882',
     actions: [
-      { type: 70, name: 'start_walking', game_player: 63,
+      { type: 70, name: 'start_walking', game_player: 64,
         data: '000000000000f03f0000000000000000' },
-      { type: 194, name: 'go_to_train_station', game_player: 161,
+      { type: 194, name: 'go_to_train_station', game_player: 162,
         data: '00000000ffffffff0147000000' },
-      { type: 70, name: 'start_walking', game_player: 269,
+      { type: 70, name: 'start_walking', game_player: 270,
         data: '0000000000000000000000000000f0bf' },
-      { type: 267, name: 'selected_entity_changed_very_close_precise', game_player: 326,
+      { type: 267, name: 'selected_entity_changed_very_close_precise', game_player: 327,
         data: '8882' },
     ],
   },
@@ -889,9 +889,9 @@ REAL_PACKET_FIXTURES = [
     description: 'S→C SetGhostCursor (3B echo) then CloseGui + 266 (pkt 3630, tick 24881281). Regression: table length 0 read the cursor body as copy_entity_settings/stop_walking and lost the CloseGui + 326 hover.',
     hex: '270637767c0181a87b0100000000085501f6615bd980a87b010000000096a10f00013d000000ff0a01a578',
     actions: [
-      { type: 150, name: 'set_ghost_cursor', game_player: 161, data: '0f0001' },
-      { type: 61, name: 'close_gui', game_player: 161, data: '0000' },
-      { type: 266, name: 'selected_entity_changed_very_close', game_player: 326, data: '78' },
+      { type: 150, name: 'set_ghost_cursor', game_player: 162, data: '0f0001' },
+      { type: 61, name: 'close_gui', game_player: 162, data: '0000' },
+      { type: 266, name: 'selected_entity_changed_very_close', game_player: 327, data: '78' },
     ],
   },
 ].freeze

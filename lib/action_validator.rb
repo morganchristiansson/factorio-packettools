@@ -197,7 +197,10 @@ class ActionValidator
       note_wire_actions_for_state(wire.size)
       return if @logging_on == false # no log lines to join — don't buffer
       wire.each { |a| @unknown_seen[a[:type]] += 1 if a[:name].to_s.start_with?('Unknown') }
-      entries = wire.map { |a| [a[:game_player], a[:type]] }
+      # Log player indexes are 0-based; the decoded game_player is the
+      # user-facing 1-based Lua index in BOTH directions. Normalize here so
+      # C→S and S→C pair with the same log convention.
+      entries = wire.map { |a| [a[:game_player] - 1, a[:type]] }
       entries = @wire[tick].to_a + entries if append && @wire[tick]
       @buf_counts ||= {}
       @buf_counts[@wire.object_id] = (@buf_counts[@wire.object_id] || 0) + entries.size

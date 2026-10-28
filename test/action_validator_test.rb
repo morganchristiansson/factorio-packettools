@@ -122,7 +122,7 @@ class TestActionValidator < Minitest::Test
 
   def test_unrelated_players_do_not_pair
     log! 1000, 12, 'Build'
-    out, = capture_io { wire! 1000, [[70, 13]] } # player 13 on the wire, 12 in the log
+    out, = capture_io { wire! 1000, [[70, 14]] } # wire player 14 -> log index 13, log has 11
     assert_empty out
     assert_equal 0, @v.stats[:ok]
     assert_equal 0, @v.stats[:mismatch]

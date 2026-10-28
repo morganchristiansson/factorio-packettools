@@ -114,7 +114,8 @@ class TestFactorioProtocol < Minitest::Test
     actions = extract_actions(result)
     assert_equal 1, actions.size, 'server_tick_info wrapper should be stripped'
     assert_equal 'deconstruct', actions[0][:name]
-    assert_equal 2, actions[0][:game_player]
+    # wire 0-indexed; decoded game_player is the user-facing 1-indexed Lua id
+    assert_equal 3, actions[0][:game_player]
   end
 
   def test_client_heartbeat_keeps_all_actions
