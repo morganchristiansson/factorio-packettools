@@ -321,6 +321,7 @@ class ActionValidator
     # disagrees). The votes themselves (record_pair) stay name-agnostic —
     # whatever actually pairs gets voted and reported, never filtered.
     scored = []
+    log_has_extra = false
     (0..TICK_TOLERANCE).each do |o|
       next unless @log.key?(tick + o) # plain-hash reads: no default-proc pollution
       bucket = @log[tick + o]
@@ -342,6 +343,7 @@ class ActionValidator
             pairs_total += zipped.size
             agrees += zipped.count { |(wt, ln)| name_matches?(wt, ln) }
           else
+            log_has_extra = true if lseq.size > wseq.size
             zipped = wseq.zip(lseq).take_while { |(wt, ln)| name_matches?(wt, ln) }
             next if zipped.empty? # no agreeing prefix, no pairs from here
             plan[player] = [zipped, entries]
@@ -354,6 +356,14 @@ class ActionValidator
       end
     end
     return unless scored.any?
+    # Live CLIENT mode sees our own C→S closure before the server's S→C echo
+    # of the same tick. A partial C→S join would consume the log prefix and
+    # block the echo's extra actions (tick 24926750: OpenGui first, then
+    # StopDragBuild/266). Wait for the current tick's echo; an older retry
+    # still reports a genuine missing action.
+    if log_has_extra && tick == @consume_tick && client_mode_live?
+      return
+    end
     scored.sort_by! { |(_o, _po, _plan, agrees, pairs_total)| [-agrees, -pairs_total, _o, _po] }
     o, player_off, plan, agrees, pairs_total = scored.first
     if scored.size > 1
@@ -567,6 +577,12 @@ class ActionValidator
   # Wire id → table name, or nil. Read through the SELECTED tables, so
   # the summary speaks the version the session decodes with.
   def table_name(id) = FactorioProtocol.actions.dig(id, 0)
+
+  # True only for the live sniffer in client mode (the offline tool has its
+  # own paced merge; server mode never sees S→C).
+  def client_mode_live?
+    @host.respond_to?(:options) && !@host.options[:server]
+  end
 
   # ── Buffers ──────────────────────────────────────────────────────
 
