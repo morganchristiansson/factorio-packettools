@@ -94,7 +94,24 @@ class TestActionValidator < Minitest::Test
   def test_tick_tolerance_joins_lagged_log_line
     log! 1002, 12, 'Build'        # log tick leads by 2
     capture_io { wire! 1000, [[69, 12]] }
+    assert_equal 0, @v.stats[:ok], 'wait: the exact wire tick 1002 may still arrive'
+    # The wire advances past 1002 with no action for player 12; the retry of
+    # tick 1000 now knows the lagged line is its only match.
+    capture_io { wire! 1002, [[70, 99]] }
     assert_equal 1, @v.stats[:ok]
+  end
+
+  # The log is written just before the S→C echo: at wire tick 1000 the +2
+  # log line exists while wire tick 1002 has not arrived. Joining the lag
+  # tick steals the line tick 1002 needs and cascades into mass unmatched.
+  def test_future_exact_tick_is_not_stolen_by_lag_candidate
+    log! 1002, 12, 'Build'
+    capture_io { wire! 1000, [[70, 12]] }
+    assert_equal 0, @v.stats[:ok], 'lag join deferred while tick 1002 may still arrive'
+    capture_io { wire! 1002, [[69, 12]] }
+    assert_equal 1, @v.stats[:ok], 'tick 1002 joins its own exact log line'
+    assert_equal 0, @v.stats[:mismatch]
+    assert_empty @v.instance_variable_get(:@log)
   end
 
   def test_nothing_padding_stripped_from_wire_side
@@ -148,14 +165,16 @@ class TestActionValidator < Minitest::Test
   end
 
   def test_log_tick_consumed_after_correlation
-    # Log entry at tick+2 is consumed by wire tick: tick+1 must NOT re-find it.
+    # Log entry at tick+2 is consumed by wire tick after the wire advances.
     log! 1002, 12, 'Build'
-    capture_io { wire! 1000, [[69, 12]] }  # correlates with log tick 1002
+    capture_io { wire! 1000, [[69, 12]] }  # deferred until tick 1002 passes
+    capture_io { wire! 1002, [[70, 99]] }  # retry: tick 1000 joins log 1002
     assert_equal 1, @v.stats[:ok]
-    assert_empty @v.instance_variable_get(:@log), 'log tick should be consumed'
-    # Re-correlating tick+1 should NOT find stale log entries at tick+2.
+    refute @v.instance_variable_get(:@log).key?(1002), 'log tick consumed'
+    # A later wire tick must NOT re-find the consumed tick+2 entry.
     log! 2002, 12, 'Build'
     capture_io { wire! 2000, [[69, 12]] }
+    capture_io { wire! 2002, [[70, 99]] }
     assert_equal 2, @v.stats[:ok]
   end
 

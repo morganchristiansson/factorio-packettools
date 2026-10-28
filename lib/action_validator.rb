@@ -326,6 +326,13 @@ class ActionValidator
     scored = []
     log_has_extra = false
     (0..TICK_TOLERANCE).each do |o|
+      # Only join a LAGGED log tick once the wire has advanced past it. The
+      # log is written just before the S→C echo, so at wire tick T the +1/+2
+      # log lines may already exist while wire tick T+1/T+2 has not arrived.
+      # Joining T to T+2 then consumes the line the exact tick T+2 needs and
+      # cascades (mass unattributed/log-unmatched). Retry older ticks later;
+      # by then a genuinely action-logged-later line is still the only match.
+      next if o.positive? && tick + o > (@consume_tick || tick)
       next unless @log.key?(tick + o) # plain-hash reads: no default-proc pollution
       bucket = @log[tick + o]
       next if bucket.empty?
