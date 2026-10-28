@@ -360,7 +360,7 @@ module FactorioProtocol
       # actions and the following real action (Zoom/266/StopWalking) was
       # shifted or turned into Unknown(255)/Unknown(51)
       # (client-20261028-102801 pkt 13792, 14067, 23175).
-      if is_server && name == 'remote_view_surface'
+      if name == 'remote_view_surface'
         alen = 24
       elsif is_server && name == 'open_logistics_gui'
         alen = 28
@@ -375,7 +375,10 @@ module FactorioProtocol
       elsif is_server && name == 'player_join_game'
         alen = 16 # join echo: peer/mode/name block
       elsif is_server && name == 'set_logistic_filter_item'
-        alen = 22 # S→C echo body (filter slot/item record)
+        # S→C echo body is 22B, plus a 1B zero tail when present (the next
+        # byte is 0; pkt 53819: 22B body + 00, then StopMovement type 32).
+        # pkt 37042's next byte is zoom's 0x81, so that body is just 22.
+        alen = (offset + 23 <= data.bytesize && data.getbyte(offset + 22) == 0x00) ? 23 : 22
       elsif is_server && name == 'upgrade'
         alen = 23 # S→C echo body (23B upgrade record)
       elsif is_server && name == 'go_to_train_station'
@@ -384,6 +387,25 @@ module FactorioProtocol
         alen = 3 # S→C echo body
       elsif is_server && name == 'set_circuit_condition'
         alen = 11 # S→C echo body (condition record)
+      elsif is_server && name == 'cancel_upgrade'
+        alen = 22 # S→C echo body (upgrade record)
+      elsif is_server && name == 'cursor_transfer'
+        # S→C echo is 16B (C→S table length), except when the 16th byte is
+        # the 0xFF escape that starts the next action header: then it is 15B
+        # (pkt 36236 cursor + 268 vs pkt 11188 cursor + 266).
+        alen = (offset + 16 <= data.bytesize && data.getbyte(offset + 15) == 0xFF) ? 15 : 16
+      elsif is_server && name == 'inventory_transfer'
+        alen = 17 # S→C echo body (C→S table is 16)
+      elsif is_server && name == 'select_item_filter'
+        alen = 6 # S→C echo body (filter slot record)
+      elsif name == 'player_locale_changed'
+        # [uint32v len][locale bytes] — variable length, locale codes differ.
+        v_off, len = decode_uint32v(data, offset)
+        alen = (len && v_off + len <= data.bytesize) ? v_off - offset + len : nil
+      elsif name == 'player_clicked_gps_tag'
+        # [x u32][y u32][uint32v len][surface] — variable string.
+        v_off, len = decode_uint32v(data, offset + 8)
+        alen = (len && v_off + len <= data.bytesize) ? v_off - offset + len : nil
       end
 
       # open_gui: variable length, depends on direction.

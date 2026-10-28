@@ -850,7 +850,7 @@ direction-specific lengths by action NAME (IDs move between versions):
 
 | Action | S→C body | Evidence |
 |---|---|---|
-| `remote_view_surface` | 24 | client-20261028-102801 pkt 13792, 23175 |
+| `remote_view_surface` | 24 (both directions) | pkt 13792, 23175, C→S pkt 2665 |
 | `open_logistics_gui` | 28 | pkt 14067 |
 | `copy` | 22 | pkt 8209, 14954 |
 | `send_stacks_to_trash` | 17 | pkt 30089 |
@@ -862,6 +862,13 @@ direction-specific lengths by action NAME (IDs move between versions):
 | `go_to_train_station` | 13 | pkt 58659 |
 | `set_ghost_cursor` | 3 | pkt 3630 (client-20261028-105637) |
 | `set_circuit_condition` | 11 | pkt 968 (client-20261028-110751) |
+| `cancel_upgrade` | 22 | pkt 5718 (client-20261028-110947) |
+| `cursor_transfer` | 15/16 | pkt 36236 / 11188 |
+| `inventory_transfer` | 17 | pkt 53964 |
+| `select_item_filter` | 6 | pkt 42274 |
+| `player_locale_changed` | variable `[len][locale]` | pkt 6767 |
+| `player_clicked_gps_tag` | variable `[x][y][len][surface]` | pkt 51123 |
+| `set_logistic_filter_item` | 22 + optional 1B tail | pkt 37042 / 53819 |
 | `open_gui` | 0 | pkt 21540, 41860 |
 | `player_music_changed` | 1 (same as C→S) | pkt 13977 |
 

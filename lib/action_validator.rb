@@ -200,7 +200,16 @@ class ActionValidator
       return if @logging_on == false # no log lines to join — don't buffer
       wire.each { |a| @unknown_seen[a[:type]] += 1 if a[:name].to_s.start_with?('Unknown') }
       entries = wire.map { |a| [a[:game_player], a[:type]] }
-      entries = @wire[tick].to_a + entries if append && @wire[tick]
+      if append && @wire[tick]
+        # The other direction echoes the same closure: drop actions already
+        # present at this tick (multiset), keeping only genuinely new ones.
+        # C→S OpenGui + S→C OpenGui/StopDragBuild must not count OpenGui
+        # twice and starve the join memo (tick 24926750).
+        have = @wire[tick].each_with_object(Hash.new(0)) { |e, h| h[e] += 1 }
+        extra = entries.reject { |e| (have[e] -= 1) >= 0 }
+        return if extra.empty?
+        entries = @wire[tick] + extra
+      end
       @buf_counts ||= {}
       @buf_counts[@wire.object_id] = (@buf_counts[@wire.object_id] || 0) + entries.size
       @wire[tick] = entries
