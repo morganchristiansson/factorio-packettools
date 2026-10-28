@@ -1,9 +1,8 @@
 # frozen_string_literal: true
 
 # One bounded FIFO per agent; only decoded events, never packet buffers.
-# Queue + worker are created lazily so objects built by PRE-reload code
-# (which never ran the new initialize) self-heal on first use instead of
-# raising NoMethodError on a nil queue at shutdown (seen in production).
+# Queue + worker are created lazily (guard against double-init); a nil
+# queue at shutdown is a clean no-op (seen once in production).
 module AgentEvents
   def initialize_events
     return if @event_queue
@@ -31,7 +30,7 @@ module AgentEvents
   end
 
   def close_events
-    # Old pre-reload objects (no queue ever created): nothing to drain.
+    # No queue ever created: nothing to drain.
     return unless @event_queue
     @event_queue.close
     # ponytail: pending events are not durable; add a spool if restart delivery matters.

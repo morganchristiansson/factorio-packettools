@@ -101,8 +101,7 @@ module FactorioProtocol
   # ONE table per version: 2.0 = ACTIONS_20 + SEGMENT_TYPES_20 (segments
   # separate there — chat rides its own segment enum), 2.1 = ACTIONS_21
   # for both (main action types and input-action segments share the
-  # stable enum). Survives hot
-  # reloads: the sniffer re-applies #select_version after reloading (its  # @protocol_version ivar outlives the `load`).
+  # stable enum).
   class << self
     attr_accessor :actions, :segment_types
   end

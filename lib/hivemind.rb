@@ -53,16 +53,14 @@ class HivemindAgent
   # where the mixins are decided. A file without the key raises
   # `KeyError: key not found: "plugins"` instead of quietly producing an
   # agent with no plugins. A missing FILE is load_config's error to report
-  # (in initialize) — the class body must survive a hot reload either way.
+  # (in initialize).
   def self.config_plugins(path = CONFIG_FILE)
     return [] unless File.file?(path)
 
     Array(YAML.safe_load_file(path).fetch('plugins')).map { |n| n.to_s.to_sym }
   end
   PLUGIN_OWNER = 'hivemind'
-  # The list, read ONCE per load of this file: a hot reload re-reads the config
-  # and re-mixes, so an edited list applies then. A module already mixed in
-  # can't be un-mixed, so restarting is the clean switch.
+  # The list, read ONCE per load of this file (the config file path).
   def self.own_plugins = (@own_plugins ||= config_plugins)
   # Features still mixed in rather than built (see the constructor).
   def self.still_modules = %i[compaction].freeze
@@ -96,8 +94,7 @@ class HivemindAgent
 
   # Optional callback invoked with the clean text of every agent reply — both
   # the HivemindReply tool path (via on_sent) and the send_reply fallback. Set
-  # by the sniffer. Nil-safe (no sniffer owner → no-op). Survives hot
-  # reloads: the owner is set once on the persistent agent object.
+  # by the sniffer. Nil-safe (no sniffer owner → no-op).
   # (The reply path: @owner.publish_chat(:hivemind, 'Hivemind', text) —
   # the same relay every chat feature publishes through.)
 
@@ -105,13 +102,11 @@ class HivemindAgent
   attr_accessor :attrs, :player_db, :current_tick
   # The parsed config-hivemind.yaml (the agent and its plugins read their
   # keys from it with fetch — a missing key raises where it is read).
-  # Reload-safe like the mutexes below: a hot-reloaded agent built by older
-  # code has no hash, so it re-reads the file on first use.
+  # Memoised config (read once, on first use).
   def hive_config = (@hive_config ||= self.class.load_config)
 
   # Which of Hivemind's own plugins (config-hivemind.yaml `plugins:`) are
   # mixed in — what a call site asks before touching a plugin's methods.
-  # #plugin_files is what the sniffer re-reads on a hot reload.
   # The follow-ups the model schedules (the schedule_followup /
   # cancel_followup tools) — nil-safe, so a config without the feature turns
   # them into a clear refusal instead of a crash.
@@ -135,13 +130,10 @@ class HivemindAgent
   attr_reader :plugins
 
   def plugin?(name) = Plugins.enabled?(self.class.own_plugins, name)
-  def plugin_files = self.class.plugin_set.files
 
 
-  # Reload-safe lock accessors: a HOT-RELOADED agent keeps its boot-time
-  # ivars, so an agent object built by pre-split code lacks these. `||=`
-  # fills them in on first use (benign race: worst case the very first
-  # calls briefly hold different Mutex instances).
+  # Lazily-initialised locks: ||= fills them in on first use (benign race:
+  # worst case the very first calls briefly hold different Mutex instances).
   def rate_mutex = (@rate_mutex ||= Mutex.new)
 
   # The ask mutex: a follow-up that comes due while a conversation turn holds
@@ -274,7 +266,7 @@ class HivemindAgent
     # plus an absolute unix due_at (persisted, so a restart re-arms with the
     # correct remaining delay); its own mutex + condition variable let a
     # single scheduler thread sleep until the next due time instead of
-    # polling, and it survives hot reloads with the agent that owns it.
+    # polling.
     # Console lines are a QUEUE drained on each prompt: append_history
     # enqueues (chat lines, join/leave events, the agent's own replies via
     # HivemindReply's on_sent / the fallback send_reply); unread_console drains
@@ -282,8 +274,7 @@ class HivemindAgent
     # inside the persisted conversation (each prompt embeds them), so no side
     # copy is kept.
     # Guarded by @console_mutex (separate from @mutex so the packet thread
-    # never blocks on a slow LLM call). Survives hot reloads (the agent
-    # persists in state).
+    # never blocks on a slow LLM call).
     @console_queue = []
     @console_mutex = Mutex.new
     # Session persistence (console history + LLM conversation saved so a full
@@ -401,9 +392,8 @@ class HivemindAgent
   # Observe the LLM run so the console shows WHAT the model does, not
   # just the reply tool's final send: reasoning/thinking, tool calls and
   # their results, any plain assistant text. Registered ONCE at init —
-  # the chat object survives hot reloads and re-registering per ask
-  # would stack duplicate observers. (Closures hit the CURRENT class
-  # definitions after a hot reload via normal dynamic dispatch.)
+  # the chat object is reused across asks, and re-registering per ask
+  # would stack duplicate observers.
   def hook_chat_observers
     return unless @chat
     return if @observers_hooked
@@ -600,11 +590,12 @@ class HivemindAgent
 
   # ── LLM plumbing ──────────────────────────────────────────────────
 
-  # Re-register the tool set with FRESH instances before every ask. Tools
-  # are registered once at creation otherwise; hot reloads (Ctrl-C `load`)
-  # rebind the tool CLASSES, so stale instances would keep running old
-  # code and new tools wouldn't appear until restart. with_tool replaces by
-  # name, so this is idempotent and cheap.
+  # Register the tool set on `chat` (defaults to @chat): once at construction
+  # and again on each fresh chat (a model switch, or the throwaway compaction
+  # chat). with_tool replaces by name, so it is idempotent. The instances are
+  # held for every ask: they bind stable live refs (@rcon, @owner,
+  # player_db) — the RCON wrapper rebinds its socket on reconnect and the
+  # feature list is fixed at startup.
   def register_tools(chat = @chat)
     return unless chat
     chat.with_tool(HivemindReply.new(rcon: @rcon, on_sent: ->(text) { append_history('hivemind', text); @owner&.publish_chat(:hivemind, 'Hivemind', text) }))
@@ -646,13 +637,11 @@ class HivemindAgent
   # it via RCON (send_reply).
   def complete(prompt)
     @mutex.synchronize do
-      # register_tools keeps tool code hot-reloadable (see above).
       # NOTE: the system prompt is NOT re-applied per ask — it is STATIC
       # (personality/rules/tools) so the conversation prefix is identical
       # across requests, letting provider-side prompt caching work.
       # Dynamic context (online players, stats, new console lines) rides
       # in the per-turn user prompt (see turn_prompt).
-      register_tools
       response = nil
       begin
         response = ask_with_retry(@chat, prompt)
@@ -751,7 +740,7 @@ class HivemindAgent
   # with non-ASCII bytes raises Encoding::CompatibilityError. All inputs
   # are scrubbed at their boundaries too (on_chat/on_player_event/online
   # providers), so this is belt-and-braces for anything that slips through
-  # (e.g. queued lines persisted across a hot reload by an older build).
+  # (e.g. queued lines persisted across a restart by an older build).
   # `player:` marks the player this turn is about (the one who triggered,
   # or the one being greeted) — their memory is injected if not already
   # delivered this session.
@@ -829,7 +818,7 @@ class HivemindAgent
   # greeted). Agent replies (player == 'hivemind') are excluded too — they
   # are already in the conversation as assistant messages. Player names
   # are re-cleaned here: queued entries may predate the boundary cleaning
-  # (persisted across hot reloads).
+  # (persisted across restarts).
   # Mark a player as encountered in THIS LLM session. Called from every
   # encounter point: console lines (chat + join/leave) via append_history,
   # and memory injections via memory_prompt.
@@ -1105,7 +1094,7 @@ class HivemindAgent
   # Switch the persistent model at runtime (without changing the config file).
   # Uses RubyLLM::Chat#with_model which mutates the SAME chat in place —
   # messages, tools, and observers stay, only the model+provider changes.
-  # Survives hot reloads (ivar) but not a full restart (reverts to config).
+  # Persists for the run but resets on a full restart (reverts to config).
   def switch_model!(new_model)
     cleaned = clean_text(new_model.to_s).strip
     return "Error: model name empty — usage: /model <model-id>" if cleaned.empty?

@@ -4,8 +4,8 @@ require 'json'
 
 # Player ID -> info mapping, persisted to a JSON file.
 # IDs are 1-indexed game player indexes (parser converts from the
-# 0-indexed wire protocol at decode time). Persists across restarts and
-# hot reloads via the JSON file.
+# 0-indexed wire protocol at decode time). Persists across restarts via
+# the JSON file.
 #
 # TWO files, both managed here:
 #
@@ -86,10 +86,10 @@ class PlayerDatabase
   end
 
   # Names are forced to UTF-8 + scrubbed on Entry: packet-derived names can
-  # still carry a binary encoding tag with non-ASCII bytes (hot-reload state
-  # written by an older build, or a decode path that missed the scrub), and a
-  # binary name makes JSON.pretty_generate during persistence raise JSON::GeneratorError
-  # — killing Ctrl-C shutdown/reload. Sanitizing here keeps the DB self-
+  # still carry a binary encoding tag with non-ASCII bytes (state written by
+  # an older build, or a decode path that missed the scrub), and a binary name
+  # makes JSON.pretty_generate during persistence raise JSON::GeneratorError
+  # — killing Ctrl-C shutdown. Sanitizing here keeps the DB self-
   # healing regardless of caller.
   # Persist immediately when a player mapping changes, so the cache survives
   # a crash/kill mid-session.

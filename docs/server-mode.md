@@ -1,4 +1,4 @@
-# Sniffer Operations: Server Mode, Auto-Detection, Hot Reload, RCON
+# Sniffer Operations: Server Mode, Auto-Detection, RCON
 
 Operational notes for running the sniffer on the game server host (the
 current setup — dedicated server + RCON). Protocol internals live in
@@ -22,7 +22,7 @@ Slow storage can still block capture—this is not a lossless-capture
 guarantee.
 
 **Restart fully when installing this threading change.** Existing objects
-retain the old writer/watchdog state across hot reloads.
+retain the old writer/watchdog state across a restart.
 
 ## Server Mode (`--server`)
 
@@ -183,39 +183,18 @@ Ctrl-C needed) to filter the console output:
   long-lived sniffer instance. It exits silently when stdin isn't
   available (nohup/systemd/pcap mode).
 
-## Hot Reload
+## Shutting Down
 
-Ctrl-C reloads the code; Ctrl-C again **within 5 seconds** of the previous
-press quits. A single Ctrl-C pressed later is another reload — so you can
-reload repeatedly while editing code, and double-tap to shut down.
-Player names are persisted to `players-cache.json` (and language overrides to `players-locale.json`) on reload and at shutdown.
-
-Reloads are IN PLACE: `FactorioPacketTools#run` rescues `Interrupt`, calls
-`reload_code!` (which `load`s every lib file), and `retry`s. Nothing is
-torn down — the running instance keeps ALL its ivars (player DB, stats,
-online map, agent, filters, learned identities) AND the open capture
-handle (`@capturer` is memoized), so a reload loses ZERO packets. New code
-applies on the next method dispatch because Ruby dispatches through the
-class object at call time, and `load` reopens those class definitions in
-place. After loading, `reload_code!` re-applies the protocol-version
-mapping (the reload resets segment tables to 2.1) and revives the agent's
-follow-up scheduler thread; `run`'s retry also re-runs `load_roster`, re-
-anchoring the packet-maintained roster to RCON's authoritative view.
-
-Implementation: `factorio-packettools.rb` is a thin entry point (CLI, traps,
-one construction); the reloadable classes live in `lib/` and are listed in
-`FactorioPacketTools::RELOADABLE_LIBS` plus the files of the features that
-are loaded (`Plugins.files` and the agent's own plugin files — anything not
-in `plugins:` is never re-read in). Caveat: reload swaps CODE, not object shape — new ivars need
-lazy init (`@x ||=`) or a full restart. config.yaml is read once, at
-startup; Hivemind's own plugin list (config-hivemind.yaml) is re-read on
-every reload, since its file is re-`load`ed.
+Ctrl-C raises `Interrupt`, caught by the entry point to call
+`FactorioPacketTools#finish` -- closing the capture writers and printing the
+session summary. The always-on capture opens the next timestamped file on each
+run, and `players-cache.json` / `players-locale.json` persist between runs.
 
 ## Tests
 
 - `ruby -Ilib test/server_mode_test.rb` — server mode, auto-detect,
-  dedicated detection, hot-reload state, RCON roster parsing.
+  dedicated detection, RCON roster parsing.
 - `ruby -Ilib test/plugins_test.rb` — the `plugins:` feature list and the
-  hot-reload file list.
+  file resolution.
 - `ruby -Ilib test/packet_fixtures_test.rb` — real captured packet fixtures.
 - `ruby -Ilib test/factorio_protocol_test.rb` — protocol unit tests.

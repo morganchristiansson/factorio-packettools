@@ -20,7 +20,7 @@ class HivemindPersistence
   # session-path knob; tests stub this class method instead
   # (HivemindPersistence.stub(:default_path, tmp) { new_hive_agent(...) }),
   # and a nil stub is the "no session file" case. Captured in the
-  # constructor, so the path survives a hot reload of this file.
+  # constructor, so the path is captured once.
   def self.default_path = 'hivemind-session.json'
 
   # The agent, as its owner: this feature reaches the session state through

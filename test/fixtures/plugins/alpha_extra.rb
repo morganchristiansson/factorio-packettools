@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 # Fixture feature in the alpha FAMILY (alpha.rb + alpha_extra.rb are the
-# files a feature owns, for the hot reload).
+# files a feature owns, resolved by PluginSet#files).
 class AlphaExtra
   def initialize(_host); end
 

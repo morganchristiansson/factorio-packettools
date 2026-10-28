@@ -70,10 +70,9 @@ class Discord
     raise ArgumentError, "no Discord token — set #{TOKEN_ENV} or `token:` in #{config_file}" if @token.to_s.empty?
 
     @bot = bot || build_bot
-    # Register the gateway handler as a bound method so a hot reload (which
-    # reopens the class) dispatches to the redefined on_discord_message on
-    # the SAME gateway thread — no reconnect needed, mirroring hivemind's
-    # chat object surviving reload.
+    # Register the gateway handler as a bound method on the gateway thread
+    # so on_discord_message resolves to the latest code on every call — no
+    # reconnect needed, mirroring hivemind's chat object.
     @bot.message(&method(:on_discord_message))
     initialize_events
   end

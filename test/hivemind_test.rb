@@ -248,7 +248,7 @@ class TestHivemindAgent < Minitest::Test
   end
 
   # A missing config file is initialize's error to report — the class must
-  # still load (it is `load`ed on every hot reload, in a running sniffer).
+  # still load (the file is required at startup, not lazily at first use).
   def test_own_plugin_list_tolerates_a_missing_config
     assert_empty HivemindAgent.config_plugins('/nonexistent/config-hivemind.yaml')
   end
@@ -372,7 +372,7 @@ class TestHivemindAgent < Minitest::Test
 
   def test_unread_console_cleans_persisted_binary_names
     # Entries written by an OLD build (before boundary cleaning) survive
-    # hot reloads — unread_console must still produce UTF-8 lines.
+    # across restarts — unread_console must still produce UTF-8 lines.
     @agent.send(:append_history, "sévérin".b, "legacy binary entry".b)
     lines = @agent.send(:unread_console)
     assert_equal Encoding::UTF_8, lines.first.encoding

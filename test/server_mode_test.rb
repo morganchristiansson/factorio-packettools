@@ -383,31 +383,6 @@ class TestServerMode < Minitest::Test
     assert_includes err, 'raised TypeError', 'and the failure is reported, not swallowed'
   end
 
-  # ── Test 7: hot reload — in-place, same objects ───────────────────────
-
-  def test_hot_reload_preserves_state
-    sniffer = make_test_sniffer(server: true, host_ips: [SERVER_IP])
-    sniffer.instance_variable_set(:@player_db, PlayerDatabase.new(nil))
-    sniffer.instance_variable_get(:@player_db)[7] = {name: 'hotreload_user'}
-    sniffer.send(:process_packet, 1, 1_700_000_000.0, CLIENT_IP, SERVER_IP, 34197, 34197, fixture_packet('client_pipette'))
-    stats = sniffer.instance_variable_get(:@stats)
-    player_db = sniffer.instance_variable_get(:@player_db)
-    assert_equal 1, stats[:packets], 'packet counted before reload'
-
-    # In-place reload: handle_interrupt! is exactly what Ctrl-C triggers
-    # inside #run. The SAME object must keep its ivars while the libs reload.
-    capture_io { sniffer.handle_interrupt! }
-    assert_same stats, sniffer.instance_variable_get(:@stats), 'same instance keeps the SAME stats object'
-    assert_same player_db, sniffer.instance_variable_get(:@player_db), 'same instance keeps the SAME player DB object'
-    assert_equal 'hotreload_user', sniffer.instance_variable_get(:@player_db).lookup(7),
-                 'player names survive reload'
-    sniffer.send(:process_packet, 2, 1_700_000_001.0, CLIENT_IP, SERVER_IP, 34197, 34197, fixture_packet('client_chat_message_0x0b'))
-    assert_equal 2, sniffer.instance_variable_get(:@stats)[:packets], 'packets keep counting after reload'
-
-    # double-tap quit: a second interrupt within QUIT_WINDOW re-raises
-    assert_raises(Interrupt) { sniffer.handle_interrupt! }
-  end
-
   # ── Test 8: RCON attribute parsing + refresh diff ────────────────────
 
   def test_rcon_attribute_parsing_and_sync
@@ -511,8 +486,8 @@ class TestServerMode < Minitest::Test
     failed_output, = capture_io { sr2.send(:load_roster) }
     assert_empty failed_output, 'failed roster query is silent'
 
-    # one-shot across hot reload: roster is queried exactly once, not again
-    # after Ctrl-C reload (snapshot carries state.roster_loaded over)
+    # Roster is queried on demand (not at construction); load_player_attrs
+    # reuses that same dump instead of issuing a second query.
     queries = 0
     fake3 = Object.new
     fake3.define_singleton_method(:player_attributes) do
@@ -522,11 +497,9 @@ class TestServerMode < Minitest::Test
     fake3.define_singleton_method(:server_version) { nil }
     sr3 = make_test_sniffer(server: true, host_ips: [SERVER_IP])
     sr3.instance_variable_set(:@rcon, fake3)
-    sr3.send(:load_roster)              # startup query
-    sr3.send(:load_player_attrs)        # attrs seed — must REUSE the roster dump, not re-query
-    capture_io { sr3.handle_interrupt! } # in-place reload (loads libs)
-    sr3.send(:load_roster)              # run() resumes → re-seeds
-    assert_equal 2, queries, 'roster re-queried after reload; attrs seed reuses the same dump (no 3rd query)'
+    sr3.send(:load_roster)              # one query
+    sr3.send(:load_player_attrs)        # reuses the dump, no second query
+    assert_equal 1, queries, 'load_player_attrs reuses the roster dump (no second query)'
   end
 
   # ── Test 7: capture filters (keepalives, directions, full-capture) ────

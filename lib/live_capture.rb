@@ -127,7 +127,7 @@ class LiveCapture
     puts "Capture error: #{e}"
     puts "Available interfaces: #{self.class.list_interfaces.join(', ')}"
   rescue Interrupt
-    # Propagate so the entry point can decide between hot reload and quit.
+    # Propagate so the entry point can finalize the session.
     raise
   ensure
     report_drops(cap, force: true) if cap

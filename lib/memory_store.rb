@@ -3,7 +3,7 @@
 require 'fileutils'
 
 # Hivemind's long-term memory: keyed text blobs persisted on disk that
-# survive restarts, hot reloads, and session resets. The agent (and the
+# survive restarts and session resets. The agent (and the
 # compaction model) only ever sees KEYS, never file paths:
 #
 #   key "soul"      → memories/SOUL.md             who Hivemind IS

@@ -17,8 +17,7 @@ require 'ruby_llm'
 # one switch.
 class HivemindTags
   # The agent, as its owner. Nothing else is needed — the RCON client is
-  # passed per call, because tools are rebuilt fresh before every ask (the
-  # agent's register_tools, which routes here).
+  # passed per call (the agent's #register_tools routes here).
   def initialize(host)
     @host = host
   end
@@ -26,8 +25,7 @@ class HivemindTags
   attr_reader :host
 
   # Offer set_player_tag on this chat. with_tool replaces by name, so calling
-  # it before every ask is idempotent and picks up tool code changes made by
-  # a hot reload.
+  # it before every ask is idempotent.
   def register(chat, rcon)
     chat.with_tool(SetPlayerTag.new(rcon: rcon))
   end

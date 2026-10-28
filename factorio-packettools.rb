@@ -9,9 +9,6 @@ end
 # extracts player actions, and logs them.
 #
 # Thin entry point: parses args, builds the sniffer once, and runs it.
-# Ctrl-C/SIGHUP hot-reloads the lib code IN PLACE (the sniffer keeps its
-# ivars and open capture handle — zero packet loss); a second interrupt
-# within QUIT_WINDOW quits.
 #
 # Usage:
 #   Live capture: sudo ruby factorio-packettools.rb
@@ -67,8 +64,7 @@ LOG_KEEP_DAYS = 7
 # appended to logs/packettools-<timestamp>.log (same content, nothing
 # extra) so incident history survives the terminal scrollback. One shared
 # mutex keeps lines from interleaving across the packet/agent threads.
-# Lives here (entry point, never hot-reloaded) so a Ctrl-C reload can't
-# double-wrap the streams.
+# Lives here so the streams are wrapped exactly once per run.
 class OutputTee
   def initialize(primary, secondary, mutex)
     @primary = primary
@@ -151,7 +147,7 @@ def load_config
 end
 
 # ─────────────────────────────────────────────────────────────────────
-# CLI + hot-reload loop
+# CLI
 # ─────────────────────────────────────────────────────────────────────
 if __FILE__ == $PROGRAM_NAME
   require 'optparse'
@@ -301,13 +297,6 @@ if __FILE__ == $PROGRAM_NAME
     puts 'Warning: live capture requires root. Try: sudo ...'
   end
 
-  # ── Hot reload (in place) ──────────────────────────────────────────
-  # The sniffer handles Ctrl-C/SIGHUP itself: first press reloads the lib
-  # files IN PLACE (this object keeps every ivar and the open capture
-  # handle — zero packet loss, nothing to re-point) and resumes; a second
-  # press within FactorioPacketTools::QUIT_WINDOW bubbles up here → finalize
-  # and quit. See FactorioPacketTools#handle_interrupt! / #reload_code!.
-
   sniffer = FactorioPacketTools.new(options)
 
   # Interactive filter console: reads commands from stdin in a background
@@ -323,12 +312,6 @@ if __FILE__ == $PROGRAM_NAME
   end
   filter_console.name = 'filter-console'
   puts 'Filter console active — type /help for commands' if $stdin.tty?
-
-  # Reload on SIGHUP too (systemd ExecReload, shells/tmux send HUP when the
-  # controlling terminal closes, `kill -HUP <pid>`). Raising Interrupt
-  # reuses the exact Ctrl-C semantics inside #run. Trap is set once here —
-  # the entry point is not hot-reloaded, so it survives every `load`.
-  Signal.trap('HUP') { raise Interrupt }
 
   begin
     sniffer.run

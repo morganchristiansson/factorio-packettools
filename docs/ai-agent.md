@@ -67,9 +67,8 @@ the agent rather than how the agent works — hence the log watcher, but not
 the model fallback chain, the console-history queue or the join greeting,
 which are the agent itself.
 
-The list is read when `hivemind.rb` loads — startup and every hot reload,
-so an edited list applies on the next Ctrl-C (a module already mixed in
-can't be un-mixed, so the clean way to swap the list is a restart).
+The list is read when `hivemind.rb` loads (once, at startup). A module
+already mixed in can't be un-mixed, so swapping the list needs a restart.
 
 Personality: Hivemind is the **collective consciousness of the factory** —
 not a player, but the machines themselves. It speaks coldly, patiently,
@@ -80,8 +79,8 @@ the server: who is online, how long they've played, what's being built.
 The **personality** lives in `memories/SOUL.md` (seeded from `lib/hivemind_prompts.rb`
 `DEFAULT_SOUL` on first run; evolved by compaction or hand-edited between
 sessions). The live system prompt (`SYSTEM_PROMPT` + current SOUL/KNOWLEDGE)
-is built by `system_prompt_with_memories` — hot reloads apply code changes,
-and a fresh restart re-seeds it from the current memory files.
+is built by `system_prompt_with_memories`; a fresh restart re-seeds it
+from the current memory files (code changes also require a restart).
 
 ## Threading contract (capture must never wait on the LLM)
 
@@ -95,8 +94,8 @@ monotonic event-arrival time, not execution time. Events arriving during a
 completion wait for their turn before entering Hivemind's console context.
 
 Completions still serialize on `@mutex` with scheduled follow-ups and manual
-compaction. Log-event reaction turns use the event worker too. Queues survive
-ordinary hot reloads; this threading migration requires a full restart.
+compaction. Log-event reaction turns use the event worker too. This threading
+migration requires a full restart to install (it can't be applied mid-run).
 Shutdown closes each queue and allows two seconds to drain; unfinished work
 is reported, not persisted. Regression: `test/agent_events_test.rb` and
 `test_hung_llm_call_does_not_block_packet_thread`.
@@ -222,8 +221,7 @@ player chat ──► write_to_console action (C→S packet)
   chars; the queue is capped at 1000 unread lines (oldest dropped with a
   warning when no trigger happens for a long while); after a
   conversation reset the last ~10 lines are re-seeded as fresh context.
-  The queue survives hot reloads (agent persists in state).
-- **Console debugging — what the model does**: every LLM turn is logged to
+  - **Console debugging — what the model does**: every LLM turn is logged to
   the sniffer console (`after_message` observer): `reasoning:` for thinking
   tokens, `assistant:` for the reply, `tool call:` / `tool result:` for the
   tool round-trips, and a per-request **token-usage suffix** — e.g.
@@ -348,9 +346,9 @@ by default (OpenAI's newer convention). Some endpoints/models (e.g.
 Console Go) only accept `system` and reject the request with an
 `invalid_request_error` about `messages[0].role`. The agent forces
 `openai_use_system_role = true` so the prompt goes out as `system`,
-which every endpoint accepts. This is applied at startup only — a model
-switch needs a full sniffer restart (Ctrl-C reload keeps the old
-RubyLLM config since the agent object persists).
+which every endpoint accepts. This is applied at startup only — a model switch needs a full
+restart (the RubyLLM config is set at construction and not changed
+mid-run).
 
 Request identity: every LLM request carries a custom `User-Agent`
 (`factorio-hivemind/1.0`, never a generic SDK/HTTP-library name) plus a
@@ -382,33 +380,22 @@ server mode — client/pcap runs never auto-enable (the agent needs RCON).
   `write_to_console` action; and in server mode the sniffer only analyzes
   C→S packets anyway, so the agent never sees its own replies.
 
-## Hot reload
+## Restarts
 
-The agent survives Ctrl-C code reloads as a plain ivar on the persistent
-sniffer instance (reloads are IN PLACE — same objects, new code), so LLM
-context, the rate limiter, and the RubyLLM connection carry over. Only a
-second Ctrl-C (quit) ends it. The threads it owns belong to plugins: the
-follow-up scheduler — a plain sleep-on-condition-variable thread with no
-shared state beyond the pending list — and the log-tail thread. Both keep
-running across reloads (methods resolve against the reloaded classes) and
-need no cleanup.
+The session is file-backed: `hivemind-session.json` carries the conversation
+and console queue, `players-cache.json` / `players-locale.json` carry player
+names and locales, and the always-on capture writes the next timestamped pcap
+on each start. On start the log-tail thread and follow-up scheduler start and
+the session re-arms pending follow-ups from the file.
 
-On hot reload the sniffer re-points the agent's providers and calls
-`@plugins[:hivemind].ensure_followup_scheduler` for the on-plugins, plus
-`start_log_watcher` on the host — `reload_code!` revives the single shared
-tailer thread if it died (action_validator and the logwatcher both subscribe
-to its `:on_log_line` emit, so there is only one reader on the inode).
-Hot reload swaps CODE, not object shape — the agent keeps its boot-time
-ivars. Changes that add/remove instance state need a full restart;
-method/tool/prompt changes hot-reload fine. `hivemind.rb` is re-`load`ed
-like everything else, so its plugin list is re-read too (see "Plugins").
 
 ## Tools
 
 Tools are `RubyLLM::Tool` subclasses constructed with their dependencies
 and registered with `@chat.with_tool(...)` (RubyLLM accepts instances).
-They are **re-registered fresh before every ask**, so Ctrl-C hot reloads
-rebind tool classes immediately — no restart needed for tool changes.
+They bind live refs (@rcon, the agent) and gated by the feature list, so a
+registration made once on a chat lasts for every ask (see
+`#register_tools`).
 
 - **`reply`** tool — class `HivemindReply` (`text: ...)` — the reply path: sends text to
   in-game chat via RCON `game.print` (`RconClient#say`, Lua-quoted so
@@ -490,8 +477,8 @@ matched by parsed event name via `#log_event_name`)
   at all (queue-only, no turn).
   Manual `/compact` ignores that gate.
 
-The tailer thread lives on the host/sniffer object (survives hot reloads);
-`start_log_watcher` revives it at the reload seam if it died.
+The tailer thread lives on the host/sniffer object; `start_log_watcher`
+(reviving any dead tailer) runs at startup.
 
 ## Scheduled follow-ups (timers)
 

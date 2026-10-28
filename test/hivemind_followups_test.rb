@@ -150,26 +150,31 @@ class TestHivemindFollowUps < Minitest::Test
   end
 
 
-  # The follow-up scheduler thread must survive hot reloads: the agent
-  # object persists while code is reloaded, but a thread that died (or was
-  # never started) is revived at the sniffer's reconstruction seam via
-  # ensure_followup_scheduler.
-  def test_hot_reloaded_agent_gets_scheduler_revived_at_seam
+  # The scheduler starts at agent construction; ensure_followup_scheduler is
+  # start-once and does not revive a dead thread (thread death is not recovered).
+  def test_scheduler_started_at_construction
     agent = new_hive_agent(rcon: FakeRcon.new, memory_dir: false)
     fups = agent.plugins[:followups]
-    fups.instance_variable_get(:@scheduler)&.kill
-    fups.instance_variable_get(:@scheduler)&.join(0.1)
+    sched = fups.instance_variable_get(:@scheduler)
+    assert sched&.alive?, 'scheduler started at agent construction'
 
+    id_before = sched.object_id
+    fups.ensure_followup_scheduler # already running — start-once no-op
+    assert_equal id_before, fups.instance_variable_get(:@scheduler).object_id,
+                 'a live scheduler is not replaced'
+
+    # A thread that dies is left dead — no revival.
+    sched.kill; sched.join(0.1)
     fups.ensure_followup_scheduler
-    assert fups.instance_variable_get(:@scheduler)&.alive?, 'scheduler started at the seam'
+    refute fups.instance_variable_get(:@scheduler)&.alive?, 'a killed scheduler is not revived'
 
     class << agent
       def complete(_p) = '' # never hit the network
     end
-    result = agent.schedule_followup(delay_seconds: 30, task: 'post-reload check', name: 'reload-check')
+    result = agent.schedule_followup(delay_seconds: 30, task: 'scheduler check', name: 'scheduler-check')
     assert_match(/scheduled/, result)
-    assert_equal 'post-reload check', agent.plugins[:followups].pending.first[:task]
-    agent.send(:persist!)  # the exact crash from the live run
+    assert_equal 'scheduler check', agent.plugins[:followups].pending.first[:task]
+    agent.send(:persist!)
     assert agent.send(:compaction_material).include?('Pending scheduled follow-ups:')
   end
 

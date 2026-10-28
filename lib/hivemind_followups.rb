@@ -7,8 +7,8 @@
 # schedule_followup / cancel_followup tools' backing logic, a JS
 # setTimeout/clearTimeout analog.
 # Deliberately NOT part of the tool classes: the pending entries are shared
-# state (persisted by the session, listed by compaction) and must survive hot
-# reloads and restarts, while tools are rebuilt fresh per ask.
+# state (persisted to the session file by the persistence feature, listed by
+# compaction).
 class HivemindFollowups
   # The agent, as its owner, plus THIS feature's own state: the pending
   # entries, their lock and condition variable, and the scheduler thread. The
@@ -140,11 +140,10 @@ class HivemindFollowups
     "Follow-up '#{name_text}' cancelled."
   end
 
-  # Start the follow-up scheduler thread unless one is already running.
-  # Called at the sniffer's reconstruction seam after every reload; also
-  # revives a thread that died. Safe to call repeatedly.
+  # Start the follow-up scheduler thread (start-once). Called at agent
+  # construction; a dead thread is not revived.
   def ensure_followup_scheduler
-    start_scheduler if @scheduler.nil? || !@scheduler.alive?
+    start_scheduler if @scheduler.nil?
   end
 
   private
@@ -206,19 +205,16 @@ class HivemindFollowups
     false
   end
 
-  # Background thread that fires due follow-ups. Holds @followup_mutex for
-  # the check-and-sleep atomically (ConditionVariable#wait releases it while
-  # sleeping), so schedule_followup's signal can never be lost: it either
-  # wakes the wait or the loop re-checks right after. The thread survives
-  # hot reloads (the agent object persists — the block still resolves
-  # methods against the reloaded classes) and is recreated on a full
-  # restart when pending follow-ups are re-armed from the session file.
   def format_remaining(secs)
     s = [secs.to_i, 0].max
     return "#{s}s" if s < 60
     "#{s / 60}m#{s % 60}s"
   end
 
+  # Fires due follow-ups on a background thread. Holds @followup_mutex for
+  # the check-and-sleep atomically (ConditionVariable#wait releases it while
+  # sleeping), so schedule_followup's signal can never be lost: it either
+  # wakes the wait or the loop re-checks right after.
   def start_scheduler
     @scheduler = Thread.new do
       loop do

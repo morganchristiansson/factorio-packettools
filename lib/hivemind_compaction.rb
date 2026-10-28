@@ -343,7 +343,7 @@ module HivemindCompaction
   # name for this set everywhere: the `@session_players` ivar, the
   # `session_players` reader here, and the `session_players` key in
   # hivemind-session.json (persisted via append_history and memory_prompt,
-  # so restarts and hot reloads can't drift it from what the conversation
+  # so restarts can't drift it from what the conversation
   # actually contains). Players with on-disk blobs who were silent this
   # session are deliberately NOT included — there is no new material about
   # them, so the pass would just answer UNCHANGED (wasted output per

@@ -110,8 +110,8 @@ class TestPlugins < Minitest::Test
     assert_equal ::HiveFeature, built.class, 'the namespace comes from the constructor'
   end
 
-  # The hot-reload list is the files the features own: their own plus family.
-  def test_family_files_come_along_for_the_reload
+  # The files a feature owns: its own plus its family.
+  def test_family_files_come_along
     set = set_for(%w[alpha])
     assert_equal %w[alpha alpha_extra], set.files.map { |f| File.basename(f, '.rb') }
     set.files.each { |f| assert File.file?(f), "#{f} must exist" }
@@ -125,15 +125,15 @@ class TestPlugins < Minitest::Test
   end
 
   # A name can be in the list for its FILE alone: the sniffer lists hivemind
-  # and translation so their code reloads, but it constructs those objects
-  # itself and dispatches no events to them — so they must not be built as
-  # features ("no feature class"), while still showing up in `files`.
+  # and translation as objects it constructs itself (not features it dispatches
+  # to) — so they must not be built as features ("no feature class"), while
+  # still showing up in `files`.
   def test_dispatch_subset_excludes_from_building_not_from_files
     set = Plugins::PluginSet.new(%w[alpha beta], Owner.new, dir: FIXTURES, dispatch: %w[alpha])
     out, err = capture_io { assert_equal %w[Alpha], set.features.map { |f| f.class.name } }
     assert_empty err, 'no "no feature class" warning for a name nobody dispatches to'
     assert_equal %w[alpha alpha_extra beta], set.files.map { |f| File.basename(f, '.rb') },
-                 'every listed file (and its family) still reloads'
+                 'every listed file (and its family) is resolved'
   end
 
   # The feature classes come from the plugin LISTS now: PluginSet derives

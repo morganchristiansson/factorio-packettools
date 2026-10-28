@@ -3,8 +3,8 @@
 require 'ruby_llm'
 
 # RubyLLM tool classes for the Hivemind agent (see hivemind.rb). Kept in
-# their own file so the agent class stays readable; hot-reloadable — listed
-# in SNIFFER_LIBS (factorio-packettools.rb) so Ctrl-C `load` redefines them.
+# their own file so the agent class stays readable; registered onto each
+# chat via HivemindAgent#register_tools.
 #
 # SetPlayerTag lives in lib/hivemind_tags.rb, with the `tags` feature that
 # offers it: it is the only tool that writes to the game, so switching it off

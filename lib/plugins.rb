@@ -60,14 +60,12 @@ module Plugins
     # The owner's feature objects, built on first use: the named files are
     # required, then the class each contributes is instantiated with the
     # owner. A name whose class is not there, or one that will not build, is
-    # reported and left out — a feature is never half-alive. This is also what
-    # the hot-reload list is read from, so a reload re-reads the files.
+    # reported and left out — a feature is never half-alive.
     def features
       @features ||= @dispatch.filter_map { |name| build(name) }
     end
 
-    # Every file the features own (their own plus their family), for the
-    # owner's hot reload.
+    # Every file the features own (their own plus their family).
     def files
       @names.flat_map { |name|
         file = path_for(name)

@@ -86,7 +86,7 @@ class TestAgentEvents < Minitest::Test
     legacy = Recorder.allocate
     legacy.instance_variable_set(:@events, [])
     capture_io do
-      # enqueue lazily creates the worker (old hot-reloaded objects)
+      # enqueue lazily creates the worker
       assert legacy.enqueue(:on_chat, 'late')
       legacy.close_events
       assert_equal [['late']], legacy.events

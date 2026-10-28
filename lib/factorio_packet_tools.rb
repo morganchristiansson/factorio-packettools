@@ -13,12 +13,6 @@ require_relative 'plugins'
 require_relative 'server_detect'
 require_relative 'player_attrs'
 
-# Hot reload (Ctrl-C / SIGHUP): the RUNNING instance reloads its own code
-# IN PLACE — no rebuild, no state snapshot, no capture reopen. `load`
-# reopens the class definitions; this object keeps every ivar (and the
-# open capture handle), so new code applies on the next dispatch with
-# zero packet loss. A second interrupt within QUIT_WINDOW quits.
-
 # ─────────────────────────────────────────────────────────────────────
 # Main Application
 # ─────────────────────────────────────────────────────────────────────
@@ -36,23 +30,6 @@ class FactorioPacketTools
   # path — touch() never revives a disconnected record — so a false
   # positive sticks until rejoin/restart; keep headroom generous.
   HEARTBEAT_TIMEOUT = 20.0
-
-  # Lib files reloaded on Ctrl-C/SIGHUP (relative to lib/). `load` re-reads
-  # each file (redefining classes); `require` would only load once.
-  # Constant-redefinition warnings are expected and silenced during load.
-  # Optional features (hivemind, translation) are NOT listed: their files
-  # come from Plugins.files (plus the agent's own plugin files), so a
-  # feature that is switched off is never read back in.
-  RELOADABLE_LIBS = %w[
-    factorio_protocol item_db player_db pcap live_capture rcon_client log_tail agent_events memory_store player_attrs input_actions_20 factorio_packet_tools
-    factorio_protocol/packets/factorio_packet
-    factorio_protocol/packets/heartbeat_packet
-    factorio_protocol/packets/connection_packets
-  ].freeze
-
-  # Seconds between two Ctrl-C/SIGHUP presses that count as "quit".
-  # Monotonic time, so wall-clock changes (NTP, manual) don't matter.
-  QUIT_WINDOW = 5
 
   # How far past the known roster a player index may sit before it counts as
   # a desync rather than a player we have no name for. The DISTANCE decides,
@@ -151,7 +128,7 @@ class FactorioPacketTools
     # username), flipped to confirmed once their first C→S heartbeat action
     # binds a game index. Lets liveness touches and clean-quit signals
     # (C→S PeerDisconnect sync action / msg 14) resolve WHO without S→C
-    # analysis. Survives hot reloads via state.
+    # analysis. Lives on this instance for the lifetime of the run.
     @ip_names = {}
     # Cross-packet chat segment reassembly buffer: [player, total_segs] =>
     # {seg_no => payload}. Split chat messages arrive as separate
@@ -239,12 +216,11 @@ class FactorioPacketTools
       # Protocol version → input-action SEGMENT-type mapping. Explicit
       # --protocol-version wins; otherwise ask RCON for
       # helpers.game_version (cached on @protocol_version — an ivar, so it
-      # survives hot reloads with the instance). Main action types are
-      # version-stable and need no switch — only segments follow
-      # defines.input_action.
+      # is queried once). Main action types are version-stable and need no
+      # switch — only segments follow defines.input_action.
       # Optional features: plugin FEATURES in @plugins (built lazily by
-      # PluginSet), so hot reload swaps the CODE under the same objects and
-      # there are no feature ivars to carry over or re-point.
+      # PluginSet); the sniffer holds no feature ivars to carry over or
+      # re-point.
       # Hivemind AI agent: reads packet-decoded chat and answers players who
       # say "hivemind". Needs the `hivemind` plugin (config.yaml `plugins:`)
       # AND server mode with RCON plus a key for its startup model — the
@@ -299,7 +275,7 @@ class FactorioPacketTools
 
     # Version → segment-type mapping (server mode may also query RCON here;
     # the RCON client is only created in server mode). Runs on every
-    # construction, including hot reloads.
+    # construction.
     select_protocol_version
   end
 
@@ -384,8 +360,7 @@ class FactorioPacketTools
 
   # Run the capture/analysis loop. Blocks until the source is exhausted
   # (pcap) or Interrupt is raised (live capture). Does NOT finalize — the
-  # entry point calls #finish when actually shutting down, so a hot reload
-  # can keep the capture file and state alive.
+  # entry point calls #finish when actually shutting down.
   def run
     if @options[:server] && @host_ips.empty?
       puts 'Error: server mode could not determine the server IP.'
@@ -415,8 +390,7 @@ class FactorioPacketTools
     elsif @options[:interface]
       # Seed the roster before capturing so existing players' names are
       # known from the start (RCON is authoritative; later joiners are
-      # learned from the packet stream). Runs again after every in-place
-      # reload — see load_roster for why that re-seed matters.
+      # learned from the packet stream).
       load_roster if @rcon
       load_player_attrs if @rcon
       # A configured save (roster_save:) seeds the roster from disk — the
@@ -425,13 +399,10 @@ class FactorioPacketTools
       seed_roster_from_disk_save if @options[:roster_save]
       on_start if @rcon || log_consumers?
       # The single log-tailer thread (emits :on_log_line to the plugin bus).
-      # Started after on_start so consumers are built first; idempotent, revived
-      # on reload. Needs RCON in server mode (host-side log) OR a configured
-      # log_path in client mode (where the player reads the server log).
+      # Started after on_start so consumers are built first; idempotent. Needs
+      # RCON in server mode (host-side log) OR a configured log_path in client
+      # mode (where the player reads the server log).
       start_log_watcher if @rcon || log_consumers?
-      # Memoized: a reload must NOT reopen the capture device. Reusing this
-      # handle across reloads is what makes them lossless (and avoids two
-      # BPF listeners duplicating every packet).
       @capturer ||= LiveCapture.new(
         interface: @options[:interface],
         port: @options[:port],
@@ -439,16 +410,12 @@ class FactorioPacketTools
         transfer_block_hook: map_download_hook,
       )
       puts "Listening on #{@options[:interface]} port #{@options[:port]}..."
-      puts 'Press Ctrl+C to reload code; Ctrl+C again to quit.'
       puts 'Decoded per-action lines hidden — use /debug (or --debug) to show them (chat + events + warnings always print).' unless @debug
       if (ips = @options[:host_ips].to_a).any?
         puts ips.size > 1 ? "Filtering: #{@options[:server] ? 'to' : 'from'} #{ips.join(', ')}" : "Filtering: #{@options[:server] ? 'to' : 'from'} #{ips.first}"
       end
       @capturer.each_packet { |*args| process_packet(*args) }
     end
-  rescue Interrupt
-    handle_interrupt!
-    retry
   end
 
   # Finalize the session: summary and close writers.
@@ -461,61 +428,6 @@ class FactorioPacketTools
     print_summary
     @pcap_writer&.close
     @unknown_writer&.close
-  end
-
-  # Ctrl-C / SIGHUP inside #run: FIRST press reloads all sniffer libs IN
-  # PLACE and resumes (same objects, same open capture handle — zero packet
-  # loss); a second press within QUIT_WINDOW re-raises so the entry point
-  # finalizes and quits. Later presses are fresh reloads again.
-  def handle_interrupt!
-    now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-    # Bare `raise` would re-raise $! (works inside the live Ctrl-C rescue, but
-    # raises RuntimeError when called directly — e.g. the double-tap spec).
-    raise Interrupt if @last_interrupt && (now - @last_interrupt) <= QUIT_WINDOW
-    @last_interrupt = now
-    reload_code!
-  end
-
-  # Reload the sniffer libs without rebuilding anything: `load` REOPENS
-  # each class definition, so this running instance keeps every ivar (and
-  # the capture handle) while its methods become the new code — dispatch
-  # goes through the class at call time. After loading, revive whatever
-  # depends on post-load state: the protocol-version mapping (reload resets
-  # FactorioProtocol's segment tables to their 2.1 defaults) and the
-  # agent's follow-up scheduler thread (may have died under old code).
-  def reload_code!
-    puts "\nInterrupt — reloading code in place; session preserved."
-    puts "  Press Ctrl+C (or SIGHUP) again within #{QUIT_WINDOW} seconds to quit."
-    old_verbose = $VERBOSE
-    $VERBOSE = nil
-    begin
-      root = File.expand_path('..', __dir__)
-      reload_files.each { |lib| load lib.start_with?('/') ? lib : File.expand_path("lib/#{lib}.rb", root) }
-    ensure
-      $VERBOSE = old_verbose
-    end
-    select_protocol_version
-    hivemind = @plugins[:hivemind]
-    hivemind&.plugins&.[](:followups)&.ensure_followup_scheduler
-    # Revive the host-owned single log-tailer (idempotent; a live thread is
-    # left alone, a dead one is restarted). Server-mode (RCON) or any
-    # log-line consumer enabled (action_validator, hivemind logwatcher).
-    start_log_watcher if @rcon || log_consumers?
-    # Hot reload swaps code under the same hivemind object; re-point
-    # the cached attrs/tick provider in case this is the first
-    # reload after the agent was constructed (or libs changed
-    # the ivar shape).
-    hivemind&.attrs = @attrs
-    hivemind&.current_tick = -> { @game_tick }
-    hivemind.player_db = @player_db if hivemind
-    # Agent event queues/workers persist on the same objects across reloads.
-  end
-
-  # Every lib file a reload re-reads: the core list, the loaded features'
-  # files, and the loaded hivemind plugins' files. Absolute paths come from
-  # Plugins (a feature may live outside lib/), bare names are lib/ files.
-  def reload_files
-    (RELOADABLE_LIBS + @plugins.files + [@plugins[:hivemind]].compact.flat_map(&:plugin_files)).uniq
   end
 
   private
@@ -534,9 +446,8 @@ class FactorioPacketTools
   # fanned to every consumer (action_validator, hivemind logwatcher). Runs ONLY
   # for live capture — -r replay is offline, so it never tails the log (offline
   # validation against the log is tools/validate_actions.rb). Resolved path
-  # cached on the same ivar (survives reload) so reload re-reads the same file
-  # instead of another /proc scan. Idempotent: re-called on hot reload to
-  # restart a thread that died; a live thread is left alone.
+  # cached on the same ivar so a re-check reads the same file instead of
+  # another /proc scan. Idempotent: a live thread is left alone.
   def start_log_watcher
     return if @options[:pcap] # -r replay is offline — no log tailing
     @log_path = ServerDetect.log_path if @log_path.nil?
@@ -1376,11 +1287,9 @@ class FactorioPacketTools
   # later are captured from the packet stream (msg 4 username + first C→S
   # heartbeat game index). A failed query is skipped silently.
   #
-  # Runs on EVERY run attempt — fresh boot AND each in-place reload. The
-  # reload case is deliberate: it re-anchors the packet-maintained roster
-  # to the server's authoritative view after any interruption. The roster
-  # data itself lives on the persistent @attrs object, so nothing is lost
-  # between runs either way.
+  # Runs once at startup (RCON is authoritative). Players who join later are
+  # captured from the packet stream (msg 4 username + first C→S heartbeat
+  # game index); the roster data lives on the persistent @attrs object.
   def load_roster
     return unless @rcon
     # Use player_attributes which now includes locale
@@ -1415,8 +1324,8 @@ class FactorioPacketTools
 
   # Pick the input-action SEGMENT-type mapping for the server's protocol
   # version. Explicit options[:protocol_version] (--protocol-version) wins;
-  # else query RCON helpers.game_version once and cache in state (survives
-  # hot reloads, which reset FactorioProtocol.segment_types to 2.1 default).
+  # else query RCON helpers.game_version once and cache in state so it is
+  # not re-queried.
   def select_protocol_version
     version = @options[:protocol_version] || @protocol_version
     if version.nil? && @rcon
@@ -1432,7 +1341,7 @@ class FactorioPacketTools
 
   # Same, from the wire: a joining client's connection request (msg 2)
   # advertises the version, so a capture needs no RCON and no flag. Stashed in
-  # @protocol_version so a hot reload re-applies the same tables.
+  # @protocol_version so the detected version is reused.
   def detect_protocol_version(udp_data)
     version = FactorioProtocol.detect_version(udp_data)
     return unless version
@@ -1446,9 +1355,8 @@ class FactorioPacketTools
   # ── Interactive filter console (stdin) ──────────────────────────
 
   # Handle one line from the interactive filter console. Called by the
-  # entry point's stdin thread; survives hot reloads (filters live in
-  # state, the thread re-points at each new sniffer instance). Chat
-  # (write_to_console) is always printed and exempt from these filters.
+  # entry point's stdin thread; filters live in state on this instance.
+  # Chat (write_to_console) is always printed and exempt from these filters.
   def handle_command(line)
     parts = line.strip.split(/\s+/)
     return if parts.empty?
@@ -1800,8 +1708,8 @@ class FactorioPacketTools
   # from which the most recently written save is read. Gives the up-to-date
   # roster on restart without RCON (client mode) or as a complement to it
   # (server mode — players offline now are still in the save). Missing path
-  # or a save that refuses to merge is a warn, not a crash. Runs on every
-  # run (boot and in-place reload) so a new autosave re-seeds it.
+  # or a save that refuses to merge is a warn, not a crash. Runs at startup
+  # so a new autosave re-seeds it.
   def seed_roster_from_disk_save
     spec = File.expand_path(@options[:roster_save]) # expand ~; YAML keeps it literal
     save = File.directory?(spec) ? latest_save(spec) : spec
