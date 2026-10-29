@@ -50,7 +50,34 @@ class PlayerBackup
   FILENAME = 'players-backup.json'
   # Every key one record may carry. Anything else in the file is dropped on
   # read, so a typo'd field cannot masquerade as data.
-  FIELDS = %w[quickbar color online_time online_time_seen].freeze
+  FIELDS = %w[quickbar color chat_color online_time online_time_seen].freeze
+
+  # Predefined /color command names → [player_color, chat_color], each as
+  # [r, g, b, a] floats 0..1. From the game's utility-constants.player_colors
+  # table (external/data-raw-dump.json / core/prototypes/utility-constants.lua).
+  # The /color <name> command is the ONLY way to set player_color and
+  # chat_color to DIFFERENT values — the RGB form derives chat_color by adding
+  # 0.15 to each channel (clamped at 1.0), measured live on 2.1.23:
+  #   /color 12 34 56 → color=[0.0471,0.1333,0.2196,0.5],
+  #                     chat_color=[0.1971,0.2833,0.3696,1.0]
+  # The predefined entries carry hand-tuned chat_color values that do not
+  # follow that formula. player color alpha is ALWAYS 0.5 and chat alpha 1.0.
+  COLOR_NAMES = {
+    'default'  => [[0.869, 0.5, 0.13, 0.5],   [1.0, 0.63, 0.259, 1.0]],
+    'red'      => [[0.815, 0.024, 0.0, 0.5],   [1.0, 0.166, 0.141, 1.0]],
+    'green'    => [[0.093, 0.768, 0.172, 0.5], [0.173, 0.824, 0.25, 1.0]],
+    'blue'     => [[0.155, 0.54, 0.898, 0.5],  [0.343, 0.683, 1.0, 1.0]],
+    'orange'   => [[0.869, 0.5, 0.13, 0.5],    [1.0, 0.63, 0.259, 1.0]],
+    'yellow'   => [[0.835, 0.666, 0.077, 0.5], [1.0, 0.828, 0.231, 1.0]],
+    'pink'     => [[0.929, 0.386, 0.514, 0.5], [1.0, 0.52, 0.633, 1.0]],
+    'purple'   => [[0.485, 0.111, 0.659, 0.5], [0.821, 0.44, 0.998, 1.0]],
+    'white'    => [[0.8, 0.8, 0.8, 0.5],       [0.9, 0.9, 0.9, 1.0]],
+    'black'    => [[0.1, 0.1, 0.1, 0.5],       [0.5, 0.5, 0.5, 1.0]],
+    'gray'     => [[0.4, 0.4, 0.4, 0.5],       [0.7, 0.7, 0.7, 1.0]],
+    'brown'   => [[0.3, 0.117, 0.0, 0.5],      [0.757, 0.522, 0.371, 1.0]],
+    'cyan'     => [[0.275, 0.755, 0.712, 0.5], [0.335, 0.918, 0.866, 1.0]],
+    'acid'     => [[0.559, 0.761, 0.157, 0.5], [0.708, 0.996, 0.134, 1.0]],
+  }.freeze
 
   # `host` is the sniffer (Plugins hands every feature its owner): the two
   # things this one needs are on it, and either may be nil — no RCON, no
@@ -75,8 +102,36 @@ class PlayerBackup
   # here: it just keeps the file current between joins instead of at the next
   # one. The picker sends ~25 samples/second while it is open, so the
   # no-op-if-unchanged check in #note_color is load-bearing, not a nicety.
+  #
+  # `rgba` is already [r,g,b,a] floats 0..1 (FactorioPacketTools#on_player_color
+  # converts the wire bytes). Measured on 2.1.23: the action's 4th byte is
+  # IGNORED (0, 127 and 255 all leave the player colour alpha at 0.5) and the
+  # action sets BOTH colours: color = RGB + alpha 0.5, chat_color = color +
+  # 0.15 (clamped) + alpha 1.0. So the wire alpha must not be stored as sent.
   def on_player_color(name, rgba)
-    note_color(name, rgba)
+    return unless rgba.is_a?(Array) && rgba.length == 4
+    color = [rgba[0], rgba[1], rgba[2], 0.5]
+    note_color(name, color, chat_color_for(color))
+  end
+
+  # A /color console command, arriving as chat (write_to_console). Verified
+  # independent of the set_player_color action: /color is a chat message the
+  # player types; set_player_color is the color-picker GUI action. They never
+  # co-occur (captures: 4 /color commands from player 8, 0 set_player_color
+  # actions in that capture; 182 set_player_color from player 122 in a
+  # different capture). /color sets BOTH color and chat_color (they differ —
+  # only predefined names allow independent values; RGB derives chat_color
+  # by adding 0.15 to each channel).
+  # :factorio source only — /color typed in Discord or by Hivemind must not
+  # move the backup. Player_N names are dropped: they are unbound indexes,
+  # not real players.
+  def on_chat(source, author, text, _player_id = nil)
+    return unless source == :factorio
+    return if author.nil? || author.start_with?('Player_')
+    result = parse_color_command(text)
+    return unless result
+    player_color, chat_color = result
+    note_color(author, player_color, chat_color)
   end
 
   # Startup (see FactorioPacketTools#on_start): ONE query for the whole
@@ -97,7 +152,7 @@ class PlayerBackup
     return unless @rcon
     roster = @rcon.roster_backup
     return if roster.nil? || roster.empty?
-    bars = colors = 0
+    bars = colors = chat_colors = 0
     times = []
     @mutex.synchronize do
       roster.each do |p|
@@ -110,17 +165,22 @@ class PlayerBackup
           rec['color'] = color.map(&:to_f)
           colors += 1
         end
+        chat_color = p[:chat_color]
+        if chat_color.is_a?(Array) && chat_color.length == 4 && rec['chat_color'] != chat_color.map(&:to_f)
+          rec['chat_color'] = chat_color.map(&:to_f)
+          chat_colors += 1
+        end
         bar = p[:quickbar]
         next if bar == :failed # the getter raised: not an empty bar, nothing to save
         next unless filled?(bar) && rec['quickbar'] != copy(bar)
         rec['quickbar'] = copy(bar)
         bars += 1
       end
-      persist if bars + colors > 0 # one write for the whole roster, not one per player
+      persist if bars + colors + chat_colors > 0 # one write for the whole roster, not one per player
     end
     # outside the lock (sync_times takes it) — one write for the roster
     sync_times(times)
-    puts "[player-backup] roster snapshot: #{roster.size} players, #{bars} bar(s), #{colors} colour(s) saved"
+    puts "[player-backup] roster snapshot: #{roster.size} players, #{bars} bar(s), #{colors} colour(s), #{chat_colors} chat-colour(s) saved"
   end
 
   # The event (see FactorioPacketTools#on_join_enriched). Runs on the join
@@ -141,7 +201,7 @@ class PlayerBackup
     # so it gates the restore, and the snapshot is skipped: what we put back
     # is what the game ends up holding, so the file and the game still agree.
     return if new_save && restore(name, index, saved)
-    note_color(name, attrs[:color])
+    note_color(name, attrs[:color], attrs[:chat_color])
     # nil is the join query's "empty bar" (the payload always carries the
     # key); only :failed, the Lua read raising, means we do not know
     return if attrs[:quickbar] == :failed
@@ -259,19 +319,62 @@ class PlayerBackup
     return nil unless rec.is_a?(Hash) # someone we have never seen (a copy of
                                       # {} would be truthy)
     rec.merge('quickbar' => rec['quickbar'] && copy(rec['quickbar']),
-              'color' => rec['color'] && rec['color'].dup)
+              'color' => rec['color'] && rec['color'].dup,
+              'chat_color' => rec['chat_color'] && rec['chat_color'].dup)
   end
 
-  # The colour the join query reported. The game keeps its own copy (it is in
-  # the save), so this is a snapshot, never a restore.
-  def note_color(name, color)
+  # The colour reported by either the set_player_color action (color picker —
+  # both colours, derived from RGB) or a /color console command. The game and
+  # the save keep their own color copy, so this is a snapshot, never a
+  # restore — it just keeps the file current between joins. chat_color is
+  # optional (nil when the source didn't provide it, e.g. an older caller).
+  def note_color(name, color, chat_color = nil)
     return unless color.is_a?(Array) && color.length == 4
     @mutex.synchronize do
       rec = (records[name.to_s] ||= {})
-      return if rec['color'] == color.map(&:to_f) # unchanged: no write
-      rec['color'] = color.map(&:to_f)
-      persist
+      changed = false
+      if rec['color'] != color.map(&:to_f) # unchanged: no write
+        rec['color'] = color.map(&:to_f)
+        changed = true
+      end
+      if chat_color.is_a?(Array) && chat_color.length == 4 && rec['chat_color'] != chat_color.map(&:to_f)
+        rec['chat_color'] = chat_color.map(&:to_f)
+        changed = true
+      end
+      persist if changed
     end
+  end
+
+  # Parse a /color console command from chat text into
+  # [player_color, chat_color], each [r,g,b,a] floats 0..1, or nil.
+  #   /color red           → named lookup from COLOR_NAMES (both values differ)
+  #   /color 255 0 0       → RGB: alpha is ALWAYS 0.5; chat_color = RGB + 0.15
+  #   /color 255 0 0 255   → the 4th value is IGNORED by 2.1.23 (0, 1, 127
+  #                          and 255 all leave alpha at 0.5 and chat unchanged):
+  #                          measured with the observer client + RCON.
+  # Verified: /color 255 0 0 → color=[1,0,0,0.5], chat_color=[1,0.15,0.15,1];
+  # /color 12 34 56 → color=[0.0471,0.1333,0.2196,0.5],
+  #                   chat_color=[0.1971,0.2833,0.3696,1.0].
+  # chat_color is color + 0.15 per channel, clamped to 1.0 (NOT a 0.15 floor:
+  # a 0 channel becomes 0.15, a 0.5 channel becomes 0.65). Named colors bypass
+  # the formula — their chat_color is hand-tuned in the table.
+  def parse_color_command(text)
+    return nil unless text
+    m = text.match(/\A\/color\s+(\S+)/i)
+    return nil unless m
+    arg = m[1]
+    return COLOR_NAMES[arg] if COLOR_NAMES.key?(arg)
+    return nil unless text.match?(/\A\/color\s+\d/) # not RGB — not a /color we recognize
+    nums = text.match(/\A\/color\s+(\d+)\s+(\d+)\s+(\d+)/)
+    return nil unless nums
+    color = [nums[1..3].map { |v| v.to_f / 255.0 }, 0.5].flatten
+    [color, chat_color_for(color)]
+  end
+
+  # Chat tint the game derives from a /color RGB or set_player_color action:
+  # each channel + 0.15, capped at 1.0, alpha 1.0 (measured on 2.1.23).
+  def chat_color_for(color)
+    [color[0, 3].map { |c| [c + 0.15, 1.0].min }, 1.0].flatten
   end
 
   def save_quickbar(name, bar)
@@ -294,17 +397,26 @@ class PlayerBackup
   # ── restore ──────────────────────────────────────────────────────
 
   # Put back everything we saved, in ONE RCON command (RconClient#
-  # restore_player): the quickbar cells and the colour, each only if we have
+  # restore_player): the quickbar cells and the colours, each only if we have
   # it. True when something was written. Called for a player joining a NEW
   # save (the game's defaults are not what they chose) and for one joining
   # with an empty bar.
+  #
+  # Both LuaPlayer.color AND LuaPlayer.chat_color are restored: the game
+  # hands out its own palette colour for both on a new save, and chat_color
+  # does NOT inherit from color — a restored color with no chat_color leaves
+  # the game's default chat colour, which may not be what the player chose.
+  # Records written before chat_color existed (or by an old build) fall back
+  # to the game's own derivation from color: channel + 0.15, capped at 1.0.
   def restore(name, index, saved)
     return false unless saved.is_a?(Hash)
     bar = filled?(saved['quickbar']) ? saved['quickbar'] : nil
     color = saved['color'].is_a?(Array) && saved['color'].length == 4 ? saved['color'] : nil
-    return false unless bar || color
+    chat_color = saved['chat_color'].is_a?(Array) && saved['chat_color'].length == 4 ? saved['chat_color'] : nil
+    chat_color ||= chat_color_for(color) if color
+    return false unless bar || color || chat_color
     cells = cells_of(bar || [])
-    done = @rcon.restore_player(name, cells, color: color)
+    done = @rcon.restore_player(name, cells, color: color, chat_color: chat_color)
     if bar
       if done == cells.size
         puts "[player-backup] #{name}: restored #{done} slot(s) from #{PlayerBackup::FILENAME}"
@@ -314,6 +426,7 @@ class PlayerBackup
       end
     end
     puts "[player-backup] #{name}: restored colour #{Array(color).join(',')}" if color
+    puts "[player-backup] #{name}: restored chat colour #{Array(chat_color).join(',')}" if chat_color
     # the game now holds it; so must the cache
     @player_db&.replace_quickbar(index, bar) if bar
     @player_db[index] = { color: color } if color && @player_db

@@ -88,9 +88,12 @@ module FactorioProtocol
   #   [requests]
   # A tick closure is `tick(u64)` plus, unless all closures are empty, a
   # uint32v `action_count << 1 | has_segments` and the actions. `closures:` is
-  # [[tick, action_count, actions_bytes], ...] — the actions already encoded
-  # (see build_input_action), so a caller can put anything on the wire. The
-  # 8-byte [tick][pad] trailer goes inside `actions_bytes`, after the last one.
+  # [[tick, action_count, actions_bytes, segments], ...] — the actions already
+  # encoded (see build_input_action), so a caller can put anything on the
+  # wire. `segments` is optional: an array of encoded segment blobs (see
+  # build_chat_segment); when present the closure carries a segment block
+  # instead of/alongside counted actions. The 8-byte [tick][pad] trailer goes
+  # inside `actions_bytes`, after the last one.
   #
   # An IDLE client sends EMPTY closures for every tick it "played": the server
   # only learns a client's tick from its closures and cannot know what the
@@ -99,7 +102,7 @@ module FactorioProtocol
   # `requests:` are the sequence numbers the server asked us to resend
   # (parse_heartbeat reads them from a flag-0x01 heartbeat).
   def self.build_client_heartbeat(seq:, closures:, next_receive:, requests: [], has_random: false, sync_actions: [])
-    all_empty = closures.all? { |_, _, actions| actions.nil? || actions.to_s.empty? }
+    all_empty = closures.all? { |_, _, actions, segments| actions.to_s.empty? && Array(segments).empty? }
     has_tcl = closures.size > 0
     has_sync = !sync_actions.empty?
     flags = 0
@@ -108,10 +111,13 @@ module FactorioProtocol
     flags |= 0x08 if all_empty && has_tcl          # no per-closure action count
     flags |= 0x10 if has_sync                      # has synchronizer action
     flags |= 0x01 unless requests.empty?           # has heartbeat requests
-    body = closures.map do |tick, count, actions|
+    body = closures.map do |tick, count, actions, segments|
       blob = [tick].pack('Q<')
       next blob if all_empty
-      blob + encode_uint32v(count.to_i << 1) + actions.to_s
+      segments = Array(segments)
+      blob + encode_uint32v((count.to_i << 1) | (segments.empty? ? 0 : 1)) +
+        (segments.empty? ? ''.b : [segments.size].pack('C') + segments.join) +
+        actions.to_s
     end
     out = build_header(6, has_random: has_random) + [flags].pack('C') + [seq].pack('V')
     out += [closures.size].pack('C') if (flags & 0x02) != 0 && (flags & 0x04).zero?
@@ -130,10 +136,13 @@ module FactorioProtocol
     flags |= 0x02 if has_tcl
     flags |= 0x04 if has_tcl && closures.size == 1
     flags |= 0x08 if all_empty && has_tcl
-    body = closures.map do |tick, count, actions|
+    body = closures.map do |tick, count, actions, segments|
       blob = [tick].pack('Q<')
       next blob if all_empty
-      blob + encode_uint32v(count.to_i << 1) + actions.to_s
+      segments = Array(segments)
+      blob + encode_uint32v((count.to_i << 1) | (segments.empty? ? 0 : 1)) +
+        (segments.empty? ? ''.b : [segments.size].pack('C') + segments.join) +
+        actions.to_s
     end
     out = build_header(7, has_random: has_random) + [flags].pack('C') + [seq].pack('V')
     out += [closures.size].pack('C') if (flags & 0x02) != 0 && (flags & 0x04).zero?
@@ -153,6 +162,23 @@ module FactorioProtocol
   # 0x06 MapLoadingProgressUpdate: type(1) + progress(1)
   def self.map_loading_sync_action(progress = 254)
     [0x06, progress].pack('CC')
+  end
+
+  # write_to_console is sent as a SEGMENT, not a counted input action (real
+  # C→S heartbeat, client-20261029-131204.pcap pkt 208357):
+  #   [type(1)=107][blue(u32)][raw_player(uint16v)][total(uint32v)]
+  #   [segment_no(uint32v)][payload_len(uint32v)][payload]
+  # The payload is the chat action's own serialization, the same
+  # [player(uint16v)][len(uint32v)][text] decode_chat reads. `blue` is a
+  # per-client message sequence (the capture increments 18 → 19); the player
+  # is the 1-indexed game index (raw_player is player - 1).
+  def self.build_chat_segment(player, text, blue: 0, total: 1, number: 0)
+    raw = player.to_i - 1
+    text = text.to_s.b
+    payload = encode_uint16v(raw) + encode_uint32v(text.bytesize) + text
+    [107].pack('C') + [blue.to_i].pack('V') + encode_uint16v(raw) +
+      encode_uint32v(total) + encode_uint32v(number) +
+      encode_uint32v(payload.bytesize) + payload
   end
 
   # One input action inside a closure:

@@ -33,10 +33,12 @@ class RconClient
   PLAYER_ATTRS_FILENAME = 'factorio-packettools-attrs.json'
   PLAYER_ATTRS_WRITE_LUA =
     'local t={} for _,p in pairs(game.players) do t[#t+1]={i=p.index,n=p.name,c=p.connected,a=p.admin,o=p.online_time,k=p.afk_time,l=p.locale,' \
-     'y={r=p.color.r,g=p.color.g,b=p.color.b,a=p.color.a}} end helpers.write_file(' + PLAYER_ATTRS_FILENAME.inspect + ', helpers.table_to_json(t), false, 0)'
+     'y={r=p.color.r,g=p.color.g,b=p.color.b,a=p.color.a},' \
+     'z={r=p.chat_color.r,g=p.chat_color.g,b=p.chat_color.b,a=p.chat_color.a}} end helpers.write_file(' + PLAYER_ATTRS_FILENAME.inspect + ', helpers.table_to_json(t), false, 0)'
   PLAYER_ATTRS_PRINT_LUA =
     'local t={} for _,p in pairs(game.players) do t[#t+1]={i=p.index,n=p.name,c=p.connected,a=p.admin,o=p.online_time,k=p.afk_time,l=p.locale,' \
-     'y={r=p.color.r,g=p.color.g,b=p.color.b,a=p.color.a}} end rcon.print(helpers.table_to_json(t))'
+     'y={r=p.color.r,g=p.color.g,b=p.color.b,a=p.color.a},' \
+     'z={r=p.chat_color.r,g=p.chat_color.g,b=p.chat_color.b,a=p.chat_color.a}} end rcon.print(helpers.table_to_json(t))'
 
   # name → item prototype id, built in the `prototypes.item` iteration order
   # (that order IS the wire id — see DUMP_PROTOTYPES_LUA). Defined ONCE per
@@ -88,6 +90,7 @@ class RconClient
         afk_time: r['k'].to_i,
         locale: r['l']&.to_s,
         color: parse_color(r['y']),
+        chat_color: parse_color(r['z']),
         quickbar: r.key?('q') ? (r['q'] == false ? :failed : PlayerDatabase.parse_quickbar(r['q'])) : nil }
     end
   end
@@ -143,7 +146,8 @@ class RconClient
     lua = 'do ' + ITEM_ID_MAP_LUA +
           'local t={} for _,p in pairs(game.players) do ' + quickbar_read_lua('q') +
           'local okq=pcall(read) t[#t+1]={i=p.index,n=p.name,c=p.connected,o=p.online_time,q=okq and q or false,' \
-          'y={r=p.color.r,g=p.color.g,b=p.color.b,a=p.color.a}} end ' \
+          'y={r=p.color.r,g=p.color.g,b=p.color.b,a=p.color.a},' \
+          'z={r=p.chat_color.r,g=p.chat_color.g,b=p.chat_color.b,a=p.chat_color.a}} end ' \
           "helpers.write_file(#{ROSTER_BACKUP_FILENAME.inspect}, helpers.table_to_json(t), false, 0) end"
     # No print fallback: the whole-roster payload is far past any response
     # cap, so a truncated parse would be worse than nil.
@@ -197,6 +201,7 @@ class RconClient
       'local okq=p and pcall(read) ' +
       'rcon.print(p and helpers.table_to_json({i=p.index,n=p.name,c=p.connected,a=p.admin,' +
       'o=p.online_time,k=p.afk_time,l=p.locale,y={r=p.color.r,g=p.color.g,b=p.color.b,a=p.color.a},' +
+      'z={r=p.chat_color.r,g=p.chat_color.g,b=p.chat_color.b,a=p.chat_color.a},' +
       'q=okq and q or false}) or "nil") end'
   end
 
@@ -238,16 +243,20 @@ class RconClient
   # filter shape, say) is a number we report rather than a silent no-op.
   # One line, server-side, no response cap to worry about (a short count).
   # Put a player's saved state back over RCON in ONE command: the quickbar
-  # cells (flat slot index => item id) and, optionally, their colour — a new
-  # save hands out the game's DEFAULTS for both (a starting quickbar, a
-  # palette colour), and `LuaPlayer.color` is writable even though
-  # `online_time` is not, so both are recoverable. Cells and colour are
-  # independent: either, both, or neither may be given. Returns the number of
-  # quickbar slots written (the colour has no count).
-  def restore_player(player, cells, color: nil)
+  # cells (flat slot index => item id) and, optionally, their colour AND
+  # chat colour — a new save hands out the game's DEFAULTS for both
+  # (a starting quickbar, a palette colour), and `LuaPlayer.color` /
+  # `LuaPlayer.chat_color` are both writable even though
+  # `online_time` is not, so both are recoverable. chat_color does NOT inherit
+  # from color, so restoring one without the other leaves the game's default
+  # for the missing one. Cells, colour, and chat_colour are independent: any
+  # subset may be given. Returns the number of quickbar slots written (the
+  # colours have no count).
+  def restore_player(player, cells, color: nil, chat_color: nil)
     cells ||= {}
     color = nil unless color.is_a?(Array) && color.length == 4
-    return 0 if cells.empty? && color.nil? # nothing to say, no command
+    chat_color = nil unless chat_color.is_a?(Array) && chat_color.length == 4
+    return 0 if cells.empty? && color.nil? && chat_color.nil? # nothing to say, no command
     version = server_version.to_s
     cells = (cells || {}).map { |i, id| "[#{i.to_i}]=#{id.to_i}" }.join(',')
     set = if !version.empty? && !version.match?(/\A2\.0(\.|\z)/)
@@ -257,10 +266,11 @@ class RconClient
             'if pcall(p.set_quick_bar_slot,i,r[v]) then ok=ok+1 end'
           end
     tint = color ? "p.color={#{color.map(&:to_f).join(',')}}" : ''
+    chat_tint = chat_color ? "p.chat_color={#{chat_color.map(&:to_f).join(',')}}" : ''
     lua = 'do local p=game.players["' + lua_quote(player) + '"] local ok=0 ' \
       'local r={} for x in pairs(prototypes.item) do r[#r+1]=x end ' \
       "if p then local s={#{cells}} for i,v in pairs(s) do #{set} end " \
-      "#{tint} end " \
+      "#{tint} #{chat_tint} end " \
       'rcon.print(ok) end'
     execute(lua).to_s.strip.to_i
   end

@@ -399,9 +399,9 @@ class TestServerMode < Minitest::Test
     )
     assert_equal [
       { index: 1, name: 'morganc', connected: true, admin: true, online_time: 7_142_576, afk_time: 722,
-        locale: nil, color: [0.163, 0.529, 0.686, 1.0], quickbar: nil },
+        locale: nil, color: [0.163, 0.529, 0.686, 1.0], chat_color: nil, quickbar: nil },
       { index: 2, name: 'bob', connected: false, admin: false, online_time: 500, afk_time: 0,
-        locale: nil, color: nil, quickbar: nil },
+        locale: nil, color: nil, chat_color: nil, quickbar: nil },
     ], attrs, 'parse_player_attrs + afk_time + LuaPlayer.color (the all-players dump carries no quickbar)'
     assert_nil RconClient.parse_player_attrs('garbage'), 'non-JSON payload → nil'
 
@@ -1064,8 +1064,8 @@ class TestServerMode < Minitest::Test
   def fake_backup_rcon(version: '2.0.77', written: :all, roster: nil)
     calls = []
     rcon = Object.new
-    rcon.define_singleton_method(:restore_player) do |name, cells, color: nil|
-      calls << [name, cells, color]
+    rcon.define_singleton_method(:restore_player) do |name, cells, color: nil, chat_color: nil|
+      calls << [name, cells, color, chat_color]
       written == :all ? cells.size : 1
     end
     rcon.define_singleton_method(:server_version) { version }
@@ -1102,7 +1102,7 @@ class TestServerMode < Minitest::Test
       # joins with an empty bar → put the saved one back
       fresh = build_backup(rcon: rcon, player_db: db, path: path)
       fresh.on_join_enriched('alice', 7, quickbar: nil)
-      assert_equal [['alice', { 1 => 30, 4 => 32, 30 => 33 }, nil]], calls,
+      assert_equal [['alice', { 1 => 30, 4 => 32, 30 => 33 }, nil, nil]], calls,
                    'restored by name, with the flat cell indices the setter takes'
       assert_equal [7, bar], db.replaced, 'the in-memory cache follows the game'
 
@@ -1197,8 +1197,8 @@ class TestServerMode < Minitest::Test
       backup.on_join_enriched('alice', 4, quickbar: defaults, color: [0.0, 0.3, 0.8, 1.0],
                               online_time: 0)
       assert_equal 1, calls.size, 'ONE command for both'
-      assert_equal ['alice', { 1 => 30, 4 => 32 }, mine], calls.first,
-                   'with her bar AND her colour'
+      assert_equal ['alice', { 1 => 30, 4 => 32 }, mine, [0.965, 0.174, 0.15, 1.0]], calls.first,
+                   'with her bar AND her colour, chat derived because the record predates it'
       assert_equal [4, bar], db.replaced, 'the cache follows the game'
       assert_equal [4, { color: mine }], db.color, 'colour included'
 
@@ -1359,18 +1359,21 @@ class TestServerMode < Minitest::Test
     rcon.stubs(:server_version).returns('2.0.77')
     rcon.stubs(:execute).with { |cmd| calls << cmd; true }.returns('2')
 
-    assert_equal 2, rcon.restore_player('alice', { 1 => 30, 30 => 33 }, color: [0.8, 0.0, 0.0, 1.0])
+    assert_equal 2, rcon.restore_player('alice', { 1 => 30, 30 => 33 },
+                                        color: [0.8, 0.0, 0.0, 1.0],
+                                        chat_color: [0.95, 0.15, 0.15, 1.0])
     flat = calls.last
     assert_includes flat, 'local s={[1]=30,[30]=33}', 'cells as {flat index => id}'
     assert_includes flat, 'p.set_quick_bar_slot,i,r[v]', '2.0: (index, name)'
     assert_includes flat, 'r[#r+1]=x', 'ids resolve to names via prototypes.item'
     assert_includes flat, 'p.color={0.8,0.0,0.0,1.0}', 'the colour rides in the same command'
+    assert_includes flat, 'p.chat_color={0.95,0.15,0.15,1.0}', 'and so does the chat colour'
 
-    assert_equal 0, rcon.restore_player('alice', {}), 'nothing to write, no colour'
+    assert_equal 0, rcon.restore_player('alice', {}), 'nothing to write, no colours'
     assert_equal 1, calls.size, 'and no command sent'
 
-    rcon.restore_player('alice', {}, color: [1.0, 0.0, 0.0, 1.0]) # a colour on its own
-    assert_includes calls.last, 'p.color={1.0,0.0,0.0,1.0}', 'is still one command'
+    rcon.restore_player('alice', {}, chat_color: [1.0, 0.15, 0.15, 1.0]) # chat colour alone
+    assert_includes calls.last, 'p.chat_color={1.0,0.15,0.15,1.0}', 'is still one command'
 
     # 2.1: (page, slot, filter), and the name is Lua-quoted
     calls21 = []

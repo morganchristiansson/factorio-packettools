@@ -125,6 +125,23 @@ class FactorioClientBuildTest < Minitest::Test
     assert_equal "\x01\x02\x03\x04".b, a[:data]
   end
 
+  def test_chat_segment_rebuilds_the_captured_bytes
+    # Real C→S /color typed by player 8 (client-20261029-131204.pcap pkt
+    # 208357): write_to_console rides a segment, not a counted action.
+    expected = ['06066fee4579f9d5d4010000000001016b1200000007010010070e2f636f6c6f722032353520302030f0d5d40100000000'].pack('H*')
+    segment = FactorioProtocol.build_chat_segment(8, '/color 255 0 0', blue: 18)
+    built = FactorioProtocol.build_client_heartbeat(
+      seq: 2_034_626_159, next_receive: 30_725_616,
+      closures: [[30_725_625, 0, '', [segment]]]
+    )
+    assert_equal expected, built
+    hb = FactorioProtocol.parse_udp_payload(built)[:heartbeat]
+    chat = hb[:tick_closures][0][:actions][0]
+    assert_equal :write_to_console, chat[:name]
+    assert_equal 8, chat[:game_player]
+    assert_equal '/color 255 0 0', FactorioProtocol.decode_chat(chat[:data])
+  end
+
   # ── ClientChangedState sync action heartbeats (handshake.pcap) ──
 
   def test_state_2_sync_action_rebuilds_the_captured_bytes

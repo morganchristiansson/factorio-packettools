@@ -452,29 +452,36 @@ tally the action names — the `Unknown(n)` types are the to-do list,
 everything else is the damage they did. For scale: decoding capture 192159
 with the 2.1 tables produced 1,070 flags and 143 with 2.0.
 
-## `set_player_color` (2.0 wire 296, 2.1 311): FOUR UNORM bytes R,G,B,A
+## `set_player_color` (2.0 wire 296, 2.1 312): RGB plus an ignored 4th byte
 
 Table length 4, and it holds: 2313 occurrences over the whole rolling set,
 all one player (`karada`, colour picker open, ~25/second), no desync around
-them. The four bytes are RGB in that order plus alpha, each 0..255 —
-measured, not guessed:
+them. Bytes 0..2 sweep the full range and contain the pure corners:
+`[0,0,255]` alone is blue, `[0,255,0]` green, `[255,255,255]` white — R, G,
+B in that order. Byte 3 is **127 in every captured sample**, which looked
+like alpha (the save says karada's colour is `[1,1,1,0.5]`).
 
-- byte 3 is **127 in every single sample**, and the save says karada's
-  `LuaPlayer.color` is `[1,1,1,0.5]`; 0.5 through an 8-bit channel is 127
-  (truncated) / 128 (rounded), so that byte is alpha and the game's default
-  colour carries alpha 0.5 — the same 0.5 `FactorioSave.color_at` reads for
-  all 338 players in the save.
-- bytes 0..2 sweep the full range and contain the pure corners:
-  `[0,0,255]` alone is blue, `[0,255,0]` green, `[255,255,255]` white —
-  R, G, B in that order (4 f32s would be 16 bytes and NaN patterns; a
-  LuaColor is not what the wire carries).
+**Live 2.1.23 probe (observer client + RCON, 2026-10-29) settled it: byte 3
+is IGNORED.** Sending `[255,0,0,0]`, `[255,0,0,127]` and `[255,0,0,255]`
+all produce `LuaPlayer.color = [1,0,0,0.5]`. The action also sets
+`chat_color`, by adding 0.15 to each colour channel and clamping at 1.0
+(`[255,0,255,?]` → chat `[1,0.15,1,1]`; `[10,20,30,?]` → color
+`[0.0392,0.0784,0.1176,0.5]`, chat `[0.1892,0.2284,0.2676,1]`). So a
+picker colour is `color = RGB/255 + alpha 0.5`, `chat_color = color + 0.15
+(clamped) + alpha 1.0` — never the 4th wire byte.
 
-Decoded in `FactorioPacketTools#log_action` as `[b/255 rounded 4]` into
-`players-cache.json` (keyed by game index) and, through the `player_backup`
-plugin, `players-backup.json` (keyed by NAME, which survives a save change
-that resets indexes). Alpha therefore lands at 0.498 where RCON says 0.5 —
-the 8-bit wire's own quantisation, and RCON still overwrites with 0.5 at
-startup and on the next join. A colour whose game index has no name yet is
+The `/color` console command (a `write_to_console` chat line) sets the same
+two values: `/color 12 34 56` → color `[0.0471,0.1333,0.2196,0.5]`, chat
+`[0.1971,0.2833,0.3696,1.0]`. A 4th value is ignored there too (help says
+RGBA, but 0/1/127/255/0.25/0.75 all leave alpha at 0.5). Named colours are
+the exception: they come from utility-constants.player_colors and carry
+hand-tuned chat colours (e.g. red → color `[0.815,0.024,0,0.5]`, chat
+`[1,0.166,0.141,1]`).
+
+`player_backup` now stores the TRANSLATED values in `players-backup.json`
+(and restores both colours); `players-cache.json` still gets the raw
+`b/255` RGB from `FactorioPacketTools#log_action`, where RCON overwrites
+the alpha at startup/join. A colour whose game index has no name yet is
 dropped rather than written under a `Player_N` placeholder.
 
 ## Chat Message Formats (`write_to_console`): `[uint16v player][uint32v len][text]`
