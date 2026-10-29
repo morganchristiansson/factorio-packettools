@@ -1,16 +1,14 @@
 #!/usr/bin/env ruby
 # Per-player position map: all position-bearing actions with correct decodes.
-# Usage: ruby tools/posmap.rb CAPTURE [--ver 2.0|2.1] [--near X Y R] [--player N]
+# Usage: ruby tools/posmap.rb CAPTURE [--near X Y R] [--player N]
 # Position sources only (2026-08-16 corrections): build, begin_mining_terrain,
 # change_shooting_state, move_on_pan, deconstruct. NOT drop_item (direction
 # double) or zoom_around_point (doubles don't match player positions).
 require_relative '../lib/pcap'
 require_relative '../lib/factorio_protocol'
 
-VER = (ARGV.find_index('--ver') ? ARGV[ARGV.find_index('--ver') + 1] : '2.0')
 path = ARGV.reject { |a| a.start_with?('--') }.first
-abort "usage: ruby tools/posmap.rb CAPTURE [--ver ..] [--near X Y R] [--player N]" unless path
-FactorioProtocol.select_version(VER)
+abort "usage: ruby tools/posmap.rb CAPTURE [--near X Y R] [--player N]" unless path
 
 NEAR = ARGV.find_index('--near') ? ARGV[ARGV.find_index('--near') + 1, 3].map(&:to_f) : nil
 PLAYER = ARGV.find_index('--player') ? ARGV[ARGV.find_index('--player') + 1].to_i : nil

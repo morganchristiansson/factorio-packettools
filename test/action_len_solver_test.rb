@@ -26,11 +26,9 @@ class TestActionLenSolver < Minitest::Test
   # against the 2.0 ones. Reset before AND after, so no 2.0 table survives into
   # another test file when they are run in one process.
   def setup
-    FactorioProtocol.reset_version
   end
 
   def teardown
-    FactorioProtocol.reset_version
   end
 
   def fixture(name)
@@ -46,7 +44,6 @@ class TestActionLenSolver < Minitest::Test
   end
 
   def solved(name, type)
-    FactorioProtocol.select_version('2.0')
     ActionLenSolver.measure_length(fixture(name), table_lens, type)
   end
 
@@ -62,20 +59,5 @@ class TestActionLenSolver < Minitest::Test
     )
     assert_nil ActionLenSolver.measure_length(data, {}, 900)
     assert_nil ActionLenSolver.measure_length(data, {}, 901)
-  end
-
-  # build_terrain is content-defined: the parser computes its length, the 2.0
-  # table claims 0, and the solver must use the parser's — otherwise the walk
-  # steps into its terrain records and every later length is nonsense.
-  def test_content_defined_action_comes_from_the_parser_not_the_table
-    FactorioProtocol.select_version('2.0')
-    data = fixture('client_build_terrain_then_nothing_20')
-    assert_equal 0, FactorioProtocol::ACTIONS_20[171].last,
-                 'the table really does claim 0 for build_terrain — the wrong zero this work is about'
-    walk = ActionLenSolver.walk_lens_for(data, {}, 171)
-    assert_equal 25, walk[171],
-                 'and the walk must use the parser-derived 25, not the table\'s 0'
-    assert_nil ActionLenSolver.hole_type(data, {}),
-               'so the whole closure walks: build_terrain 25 + nothing 0 = the area'
   end
 end

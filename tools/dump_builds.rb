@@ -4,10 +4,8 @@
 require_relative '../lib/pcap'
 require_relative '../lib/factorio_protocol'
 
-VER = (ARGV.find_index('--ver') ? ARGV[ARGV.find_index('--ver') + 1] : '2.0')
 path = ARGV.reject { |a| a.start_with?('--') }.first
-abort "usage: ruby tools/dump_builds.rb CAPTURE [--ver 2.0|2.1] [--min-only]" unless path
-FactorioProtocol.select_version(VER)
+abort "usage: ruby tools/dump_builds.rb CAPTURE [--min-only]" unless path
 MIN_ONLY = ARGV.include?('--min-only')
 
 TX, TY = 558.0, 83.0

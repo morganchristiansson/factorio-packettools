@@ -208,9 +208,8 @@ class RconClient
   # The caller must have defined `p` (the LuaPlayer) and the `ids` name→id
   # map (ITEM_ID_MAP_LUA) first.
   #
-  # The read loop follows the server version (the same helpers.game_version
-  # string select_version uses for the action tables) because the getter
-  # changed in 2.1: 2.0 takes a flat index 1..100, 2.1 takes (page, slot).
+  # The read loop follows the server version because the getter changed in
+  # 2.1: 2.0 takes a flat index 1..100, 2.1 takes (page, slot).
   # The 2.1 branch assumes 0-based page/slot, like the wire's
   # quick_bar_set_selected_page byte. An unknown version falls back to the
   # 2.0 shape; the pcall at each call site turns a wrong guess, or a changed
@@ -303,12 +302,10 @@ class RconClient
     false
   end
 
-  # Server version string (e.g. "2.0.77") via the rcon.print data channel
+  # Server version string (e.g. "2.1.14") via the rcon.print data channel
   # (helpers.game_version — game.version doesn't exist), or nil on failure.
-  # Used to pick the protocol's segment-type mapping
-  # (FactorioProtocol.select_version).
-  # Memoised: a version never changes under a running server, and the
-  # sniffer asks at startup anyway (select_protocol_version). Failures are
+  # Used for the version-dependent RCON quickbar getter.
+  # Memoised: a version never changes under a running server. Failures are
   # NOT memoised, so a server that was down at boot is retried.
   def server_version
     return @server_version if @server_version

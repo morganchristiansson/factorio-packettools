@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require 'zlib'
 require_relative 'factorio_wire'
 
 # The Factorio SAVE format's reader: its string container (FactorioWire, with
@@ -187,6 +188,38 @@ module FactorioSave
     rgba.map { |v| v.round(4) }
   end
 
+  # ── Reading a save file ──────────────────────────────────────────
+
+  # The decompressed level.dat stream, chunk by chunk (~1 MiB each).
+  # A .zip save holds level.dat split into zlib-compressed entries that MUST
+  # be joined in name order (zip entry order is random); a raw level.dat is
+  # read as-is. This is the library path used by the CLI and by the sniffer
+  # (map download / roster_save) — no subprocess.
+  def self.each_chunk(path)
+    return enum_for(:each_chunk, path) unless block_given?
+    if File.extname(path) == '.zip'
+      names = IO.popen(['unzip', '-Z1', path], &:read).lines.map(&:strip)
+      names.grep(%r{/level\.dat\d*\z}).sort_by { |n| n[%r{level\.dat(\d*)\z}, 1].to_i }.each do |n|
+        yield Zlib::Inflate.inflate(IO.popen(['unzip', '-p', path, n], 'rb', &:read))
+      end
+    else
+      File.open(path, 'rb') do |f|
+        while (chunk = f.read(1 << 20))
+          yield chunk
+        end
+      end
+    end
+  end
+
+  def self.scan_save(path)
+    Roster.new(each_chunk(path))
+  end
+
+  # One anchored roster: game index -> player record, plus the diagnostics
+  # the CLI prints. `known_names` is PlayerDatabase#name_ids (name -> [ids]).
+  Indexing = Struct.new(:by_index, :shift, :anchored, :known_count,
+                        :mismatched, :absent, keyword_init: true)
+
   # ── Scanning a save for the player records ───────────────────────
   #
   # Streams the decompressed level.dat (memory-light: one carry buffer) and
@@ -211,6 +244,42 @@ module FactorioSave
     # save's own tick (read from TICK_SIGNATURE in level.dat, falling back to
     # the largest last-online seen in the top slot when not found).
     attr_reader :slots, :save_tick
+
+    # A PLAYER RECORD is a name with a play-time/last-online pair in front of
+    # it; prototype names and chat strings carry the same name signature but
+    # no stat pair.
+    def player_records
+      @records.select { |r| r[:online_time_ticks] }
+    end
+
+    # Anchor the record run against known name -> [cache ids]. With no known
+    # names the run is assumed to start at index 1 (the save's own layout;
+    # a later join corrects it).
+    def indexed(known_names = {})
+      records = player_records
+      offsets = Hash.new(0)
+      records.each_with_index do |r, i|
+        known_names.fetch(r[:name], []).each { |id| offsets[id - i] += 1 }
+      end
+      if known_names.empty?
+        shift = 1
+        anchored = 0
+      else
+        shift = offsets.empty? ? 1 : offsets.max_by { |_, v| v }.first
+        anchored = records.each_with_index.count do |r, i|
+          known_names.fetch(r[:name], []).include?(i + shift)
+        end
+      end
+      mismatched = records.each_with_index.reject do |r, i|
+        ids = known_names.fetch(r[:name], [])
+        ids.empty? || ids.include?(i + shift)
+      end.map { |r, i| "#{r[:name]}@#{i} (cache index #{known_names[r[:name]].join('|')}, run says #{i + shift})" }
+      absent = known_names.keys - records.map { |r| r[:name] }
+      by_index = records.each_with_index.to_h { |r, i| [i + shift, r] }
+      Indexing.new(by_index: by_index, shift: shift, anchored: anchored,
+                   known_count: known_names.size, mismatched: mismatched,
+                   absent: absent)
+    end
 
     private
 

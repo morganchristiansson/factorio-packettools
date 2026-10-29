@@ -20,10 +20,8 @@ require 'time'
 require_relative '../lib/pcap'
 require_relative '../lib/factorio_protocol'
 
-VER = (ARGV.find_index('--ver') ? ARGV[ARGV.find_index('--ver') + 1] : '2.0')
 path = ARGV.reject { |a| a.start_with?('--') }.first
 abort "usage: ruby tools/track_player.rb CAPTURE --player N --start HH:MM:SS --end HH:MM:SS" unless path
-FactorioProtocol.select_version(VER)
 PLAYER = ARGV[ARGV.find_index('--player') + 1].to_i
 T0 = Time.parse(ARGV[ARGV.find_index('--start') + 1])
 T1 = Time.parse(ARGV[ARGV.find_index('--end') + 1])

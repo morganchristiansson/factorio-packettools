@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require_relative 'pcap'
+
 # Live Capture (pcaprub)
 # ─────────────────────────────────────────────────────────────────────
 class LiveCapture
@@ -23,12 +25,8 @@ class LiveCapture
   # out of the capture fast path so the offsets can be tested without a live
   # capture, and so the reassembler never sees the framing.
   def self.transfer_block(frame)
-    return nil if frame.bytesize < 42
-    ihl = (frame.getbyte(14) & 0x0F) * 4
-    udp = 22 + ihl
-    return nil unless (frame.getbyte(udp) & 0x1F) == 13
-    return nil if frame.bytesize <= udp + 5
-    [frame.unpack1('V', offset: udp + 1), frame.byteslice(udp + 5, frame.bytesize - udp - 5).to_s]
+    udp = PcapFormat.udp(frame, datalink: 1)
+    udp && PcapFormat.transfer_block(udp[4])
   end
 
   def self.list_interfaces
@@ -89,36 +87,25 @@ class LiveCapture
       ihl = (pkt.getbyte(14) & 0x0F) * 4
       next if pkt.bytesize < 14 + ihl + 8
 
-      # Fast path: map-download TransferBlocks (msg 13) need no parsing at
-      # all — persist the frame if saving and skip the full yield/parse
-      # pipeline (the bottleneck that overflowed the buffer before).
-      if (pkt.getbyte(14 + ihl + 8) & 0x1F) == 13
+      udp = PcapFormat.udp(pkt, datalink: 1)
+      next unless udp
+      src_ip, dst_ip, sport, dport, udp_data, = udp
+
+      # Fast path: map-download TransferBlocks (msg 13) need no analysis —
+      # persist the frame if saving and skip the full yield/parse pipeline
+      # (the bottleneck that overflowed the buffer before).
+      if (udp_data.getbyte(0) & 0x1F) == 13
         @transfer_block_sink&.write_frame(pkt)
-        block = LiveCapture.transfer_block(pkt) if @transfer_block_hook
+        block = PcapFormat.transfer_block(udp_data) if @transfer_block_hook
         @transfer_block_hook&.call(*block) if block
         next
       end
 
-      raw = pkt[14..]
-      next if raw.nil? || raw.bytesize < 20
-
-      ihl = (raw.getbyte(0) & 0x0F) * 4
-      next if raw.bytesize < ihl + 8 || raw.getbyte(9) != 17
-
-      sport = raw.unpack1('n', offset: ihl)
-      dport = raw.unpack1('n', offset: ihl + 2)
       next if @port && sport != @port && dport != @port
-
-      udp_data = raw[ihl + 8, raw.bytesize - ihl - 8]
-      next if udp_data.nil? || udp_data.bytesize < 1
 
       ts = Time.now.to_f
       pkt_num += 1
-      yield(pkt_num, ts,
-            # 4.5x faster than raw[..].bytes.join('.') — twice per packet
-            "#{raw.getbyte(12)}.#{raw.getbyte(13)}.#{raw.getbyte(14)}.#{raw.getbyte(15)}",
-            "#{raw.getbyte(16)}.#{raw.getbyte(17)}.#{raw.getbyte(18)}.#{raw.getbyte(19)}",
-            sport, dport, udp_data, pkt)
+      yield(pkt_num, ts, src_ip, dst_ip, sport, dport, udp_data, pkt)
 
       # Surface capture loss early (report when it jumps by >= 1000)
       report_drops(cap) if pkt_num % 50_000 == 0

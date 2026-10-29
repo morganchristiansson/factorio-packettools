@@ -4,10 +4,11 @@
 # Based on Hornwitser's Wireshark dissector (reverse-engineered from factorio.pdb).
 module FactorioProtocol
   require_relative 'factorio_protocol/packets/heartbeat_packet'
+  require_relative 'factorio_protocol/action_lengths'
   require_relative 'factorio_protocol/packets/connection_packets'
   require_relative 'factorio_protocol/position'
   require_relative 'factorio_protocol/quickbar'
-  require_relative 'input_actions_20'
+  require_relative 'factorio_protocol/player_join'
   require_relative 'input_actions_21'
   require_relative 'factorio_types'
 
@@ -55,15 +56,11 @@ module FactorioProtocol
   }.freeze
 
   # ── Input Actions ──────────────────────────────────────────────────
-  # [action_id] => [name, data_len]. ONE table per version, both
-  # generated and log-verified (no experimental base + merge chain):
-  #   2.1 (the released stable numbering): input_actions_21.rb —
-  #       defines dump + measured +1 renumbering + log-verified overlays;
-  #   2.0: input_actions_20.rb — defines dump + validated internal actions.
+  # [action_id] => [name, data_len]. 2.1's stable enum only.
   #   data_len: 0 = no data, N = fixed N bytes, nil = variable/unknown
   #   (hit_unknown keeps the frame in unknown.packets; MEASURED lengths —
   #   tools/measure_action_lens.rb over the captures — are folded INTO the
-  #   tables and marked in their source files).
+  #   table and marked in its source file).
 
   extend WireDecode
 
@@ -79,79 +76,21 @@ module FactorioProtocol
     entry ? entry[1] : nil
   end
 
-  # ── Version-dependent tables (2.0 vs 2.1) ───────────────────────
+  # ── Input-action tables ─────────────────────────────────────────
+  # 2.1 is the released stable numbering and the only table. 2.0 is retired
+  # (git tag protocol-2.0-final has the old reference table if a capture ever
+  # needs it). Names AND data lengths come from this one map.
+  ACTIONS = ACTIONS_21
+  SEGMENT_TYPES = ACTIONS_21
 
-  # The wire numbering of input actions is version-dependent: 2.1's stable
-  # enum renumbered the low ids relative to 2.0 (start_walking 67 → 70,
-  # write_to_console/chat 104 → 107 — verified on live 2.0.77 sessions and
-  # on the 2026-10-26 stable captures). The stable numbering drifted again
-  # (+1 from the inserted action's band in ids 16..40; input_actions_21.rb
-  # tells the whole story). ACTIONS_20 is the 2.0 table.
+  def self.actions = ACTIONS
 
-  #
-  # **2.1 is the DEFAULT** (2026-10-26): 2.1 is the released stable version
-  # and the numbering servers run, so an undetectable version decodes as
-  # 2.1 (2.0 is retired). The 2.0 tables stay selectable for replaying old
-  # captures: the connection request's version string
-  # (`FactorioProtocol.detect_version`, pre-scanned on `-r`) or
-  # `protocol_version: "2.0"` in config.yaml picks them. The measured
-  # C→S lengths ride along per version, so the default decode is also the
-  # measured one.
-  #
-  # ONE table per version: 2.0 = ACTIONS_20 + SEGMENT_TYPES_20 (segments
-  # separate there — chat rides its own segment enum), 2.1 = ACTIONS_21
-  # for both (main action types and input-action segments share the
-  # stable enum).
-  class << self
-    attr_accessor :actions, :segment_types
-  end
-  self.actions = ACTIONS_21
-  self.segment_types = ACTIONS_21
-
-  # Name for an input-action segment type under the selected protocol
-  # version. SEGMENT_TYPES_20 values are bare strings; ACTIONS_21 entries
-  # are [name, data_len] pairs.
+  # Name for an input-action segment type. Main actions and segments share
+  # the stable 2.1 enum.
   def self.segment_action_name(type)
-    entry = segment_types[type]
+    entry = SEGMENT_TYPES[type]
     name = entry.is_a?(Array) ? entry[0] : entry
     name || "Unknown(#{type})"
-  end
-
-  # Pick the main-action + segment-type mapping for a server version
-  # string ("2.0.77", "2.1", or a bare "2.0"). Anything 2.0.x uses the
-  # 2.0.x keeps the 2.0 tables (replay of old captures); anything else —
-  # 2.1, a future 3.0, empty, undetectable — decodes as 2.1, the release
-  # numbering. Returns the chosen label ("2.0" / "2.1+") for logging.
-  # Inspect one UDP payload for a ConnectionRequest (msg 2) and return the
-  # advertised Factorio version. Returns nil when the payload is not a
-  # complete ConnectionRequest. Pcap and capture callers can use this to
-  # choose the version-dependent action tables before decoding heartbeats.
-  def self.detect_version(data)
-    hdr = parse_network_header(data)
-    return nil unless hdr && hdr[:msg_type] == 2
-    parsed = ConnectionRequestPacket.parse(data)
-    parsed&.result&.dig(:connection_request, :version)
-  rescue StandardError
-    nil
-  end
-
-  def self.select_version(version)
-    if version.to_s.match?(/\A2\.0(\.|\z)/)
-      self.actions = ACTIONS_20
-      self.segment_types = SEGMENT_TYPES_20
-      '2.0'
-    else
-      self.actions = ACTIONS_21
-      self.segment_types = ACTIONS_21
-      '2.1+'
-    end
-  end
-
-  # Restore the DEFAULT (2.1) mappings. Exposed for tests so version-
-  # dependent fixtures don't leak their tables into later cases.
-  def self.reset_version
-    self.actions = ACTIONS_21
-    self.segment_types = ACTIONS_21
   end
 
   # ── Network Header ─────────────────────────────────────────────────

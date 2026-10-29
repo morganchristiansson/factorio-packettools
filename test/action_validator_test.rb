@@ -10,12 +10,10 @@ require 'factorio_protocol'
 
 class TestActionValidator < Minitest::Test
   def setup
-    FactorioProtocol.reset_version
     @v = ActionValidator.new(Object.new)
   end
 
   def teardown
-    FactorioProtocol.reset_version
   end
 
   # ── helpers ──────────────────────────────────────────────────────

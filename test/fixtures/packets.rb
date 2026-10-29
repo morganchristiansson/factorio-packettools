@@ -332,30 +332,6 @@ REAL_PACKET_FIXTURES = [
   # 254 the index is 0xff-escaped ([ff][u16 LE]), so every chat message on a
   # busy server starts 0xff — and the decoder read that as the 5-byte uint32v
   # length escape, printing "?d\u0001$mod bug or are we talking actual bug".
-  {
-    name: 'client_chat_player_356_escaped_index',
-    description: 'captures/server-34197-20261003-164448.pcap.gz pkt 656: player 357, payload [ff 64 01 (=356)][0x34=52][text]',
-    version: '2.0.77',
-    hex: '2606e45ede2704fc2b08000000000101680d000000ff6401010038ff640134616e642069747320736f206261642074686174206920646f6e74206665656c20692063616e206275696c6420616e797468696e6702fc2b0800000000',
-    actions: [
-      { type: 104, name: 'write_to_console', game_player: 357,
-        total_segs: 1, seg_no: 0,
-        data: 'ff640134616e642069747320736f206261642074686174206920646f6e74206665656c20692063616e206275696c6420616e797468696e67',
-        chat: 'and its so bad that i dont feel i can build anything' },
-    ],
-  },
-  {
-    name: 'client_chat_player_356_escaped_index_2',
-    description: 'captures/server-34197-20261003-170056.pcap.gz pkt 413385: same shape, different closure flags',
-    version: '2.0.77',
-    hex: '060672af262473322d080000000001016801000000ff6401010028ff6401246d6f6420627567206f72206172652077652074616c6b696e672061637475616c2062756770322d0800000000',
-    actions: [
-      { type: 104, name: 'write_to_console', game_player: 357,
-        total_segs: 1, seg_no: 0,
-        data: 'ff6401246d6f6420627567206f72206172652077652074616c6b696e672061637475616c20627567',
-        chat: 'mod bug or are we talking actual bug' },
-    ],
-  },
 
   # ── C→S split-chat reassembly regression fixtures (2026-08-16, 2.0.77) ──
   #
@@ -369,88 +345,12 @@ REAL_PACKET_FIXTURES = [
   # message, and players >= 64 (0x40/0x42/…) must NOT be read as a length
   # prefix (that read the player byte as a length and TRUNCATED long
   # messages mid-word).
-  {
-    name: 'client_split_chat_2seg_p66_seg0',
-    description: 'Player 66 (game 67) split chat, segment 0 of 2. payload starts [0x42(player66)][0x77(total_len=119)]. Was truncated at "...feelings toward" because 0x42 was read as a uint32v length 66',
-    version: '2.0.77',
-    hex: '06062ec99f600607a700000000000101680b000000420200644277686976656d696e6420776861742061726520796f757220706572736f6e616c2c20646565702c20616e642068696464656e206665656c696e677320746f77617264732074686520706c61796572206d6f7267616e632c20746865206b696e6420796fef06a70000000000',
-    actions: [
-      { type: 104, name: 'write_to_console', game_player: 67,
-        total_segs: 2, seg_no: 0,
-        data: '4277686976656d696e6420776861742061726520796f757220706572736f6e616c2c20646565702c20616e642068696464656e206665656c696e677320746f77617264732074686520706c61796572206d6f7267616e632c20746865206b696e6420796f' },
-    ],
-  },
-  {
-    name: 'client_split_chat_2seg_p66_seg1',
-    description: 'Player 66 split chat, segment 1 of 2 — raw continuation (no player/len header) with the shared seg_blue 0x0b',
-    version: '2.0.77',
-    hex: '26062fc99f600707a700000000000101680b000000420201157520776f756c64206e657665722074656c6c2e2e2ef106a70000000000',
-    actions: [
-      { type: 104, name: 'write_to_console', game_player: 67,
-        total_segs: 2, seg_no: 1,
-        data: '7520776f756c64206e657665722074656c6c2e2e2e' },
-    ],
-  },
-  {
-    name: 'client_split_chat_4seg_p54_seg0',
-    description: 'Player 54 (game 55) LONG split chat, segment 0 of 4 (298-byte message). Payload starts [0x36(player54)][uint32v len ff 2a 01 00 00 = 298]. Regressions: (a) split reassembly — only the last-write-won fragment was kept; (b) length is a uint32v LONG form (0xff + uint32 LE), not a single byte',
-    version: '2.0.77',
-    hex: '260662a1d410a39ba70000000000010168500000003604006436ff2a010000486976656d696e642c2074686520646566696e6974696f6e206f6620636f6e73656e737573206973206e6f7420657175616c20746f206265696e6720756e616e696d6f75733a20436f6e73656e737573206d65616e7320612067656e6572a09ba70000000000',
-    actions: [
-      { type: 104, name: 'write_to_console', game_player: 55,
-        total_segs: 4, seg_no: 0,
-        data: '36ff2a010000486976656d696e642c2074686520646566696e6974696f6e206f6620636f6e73656e737573206973206e6f7420657175616c20746f206265696e6720756e616e696d6f75733a20436f6e73656e737573206d65616e7320612067656e6572' },
-    ],
-  },
-  {
-    name: 'client_split_chat_4seg_p54_seg1',
-    description: 'Player 54 split chat, segment 1 of 4 — raw continuation',
-    version: '2.0.77',
-    hex: '060663a1d410a49ba700000000000101685000000036040164616c206f7220776964657370726561642061677265656d656e7420616d6f6e6720612067726f7570206f662070656f706c652e204974206973206120736861726564206f70696e696f6e2c2062656c6965662c206f7220706f736974696f6e2074686174a19ba70000000000',
-    actions: [
-      { type: 104, name: 'write_to_console', game_player: 55,
-        total_segs: 4, seg_no: 1,
-        data: '616c206f7220776964657370726561642061677265656d656e7420616d6f6e6720612067726f7570206f662070656f706c652e204974206973206120736861726564206f70696e696f6e2c2062656c6965662c206f7220706f736974696f6e2074686174' },
-    ],
-  },
-  {
-    name: 'client_split_chat_4seg_p54_seg2',
-    description: 'Player 54 split chat, segment 2 of 4 — raw continuation',
-    version: '2.0.77',
-    hex: '260664a1d410a59ba700000000000101685000000036040264206d6f7374206d656d62657273206f66206120636f6d6d756e697479206f72207465616d206163636570742c206576656e206966207468657920646f206e6f7420616c6c2066756c6c79206167726565206f6e2065766572792073696e676c6520646574a29ba70000000000',
-    actions: [
-      { type: 104, name: 'write_to_console', game_player: 55,
-        total_segs: 4, seg_no: 2,
-        data: '206d6f7374206d656d62657273206f66206120636f6d6d756e697479206f72207465616d206163636570742c206576656e206966207468657920646f206e6f7420616c6c2066756c6c79206167726565206f6e2065766572792073696e676c6520646574' },
-    ],
-  },
-  {
-    name: 'client_split_chat_4seg_p54_seg3',
-    description: 'Player 54 split chat, segment 3 (final) of 4 — raw continuation',
-    version: '2.0.77',
-    hex: '260665a1d410a69ba70000000000010168500000003604030461696c2ea39ba70000000000',
-    actions: [
-      { type: 104, name: 'write_to_console', game_player: 55,
-        total_segs: 4, seg_no: 3,
-        data: '61696c2e' },
-    ],
-  },
   # ── Measured C→S payload lengths + content-defined actions (2026-09-26) ──
   #
   # Each description states the evidence the length came from, so a future
   # disagreement is a disagreement about evidence, not about a magic number:
   # a marker analysis over every occurrence, a per-closure candidate search,
   # or the game's own semantics (pipette carries the picked-up entity).
-  {
-    name: 'client_build_terrain_then_nothing_20',
-    description: '2.0 build_terrain with TWO 10-byte terrain records (25 bytes: record, the 5-byte separator 00 00 00 AB 00, record) followed by a `nothing`. Regression for the closure tail: taking build_terrain\'s old 3-byte "tail" here ate the following `nothing` header and desynced the rest of the closure (685 of the tail\'s flagged packets). The payload is exactly 10 + 5*markers — verified against all 3 901 build_terrain payloads in captures/, every gap 10 bytes.',
-    version: '2.0',
-    hex: '0606e6e763590b897a060000000004ab0179cffeff476002000004000000ab006fcffeff47600200000400000008897a0600000000',
-    actions: [
-      { type: 171, name: 'build_terrain', game_player: 1, data: '79cffeff476002000004000000ab006fcffeff476002000004' },
-      { type: 0, name: 'nothing', game_player: 1, data: '' },
-    ],
-  },
   # Frequent actions whose measured C→S length is now pinned (2026-09-26).
   # Each is the whole closure, so the length claim is the only thing that can
   # satisfy the byte budget.

@@ -1,6 +1,6 @@
 #!/usr/bin/env ruby
 # Scan a pcap for grief evidence: builds/deconstructs/mining near a target.
-# Usage: ruby tools/grief_scan.rb CAPTURE [--tx X] [--ty Y] [--ver 2.0|2.1]
+# Usage: ruby tools/grief_scan.rb CAPTURE [--tx X] [--ty Y]
 #
 # Decode corrections (2026-08-16): drop_item and zoom_around_point are NOT
 # position sources (drop_item = direction double; zoom doubles don't match
@@ -12,11 +12,9 @@ require_relative '../lib/factorio_protocol'
 
 TX = (ARGV.find_index('--tx') ? ARGV[ARGV.find_index('--tx') + 1].to_f : 558.0)
 TY = (ARGV.find_index('--ty') ? ARGV[ARGV.find_index('--ty') + 1].to_f : 83.0)
-VER = (ARGV.find_index('--ver') ? ARGV[ARGV.find_index('--ver') + 1] : '2.0')
 path = ARGV.reject { |a| a.start_with?('--') }.first
-abort "usage: ruby tools/grief_scan.rb CAPTURE [--tx X] [--ty Y] [--ver 2.0|2.1]" unless path
+abort "usage: ruby tools/grief_scan.rb CAPTURE [--tx X] [--ty Y]" unless path
 
-FactorioProtocol.select_version(VER)
 R = 8  # search radius around target
 
 min_ts = Float::INFINITY
@@ -79,7 +77,7 @@ PcapReader.new(path).each_packet do |_, ts, src, dst, sport, dport, udp, _|
   end
 end
 
-puts "== #{path}  (proto #{VER}) =="
+puts "== #{path}  (proto 2.1) =="
 puts "range: #{Time.at(min_ts).strftime('%Y-%m-%d %H:%M:%S')} .. #{Time.at(max_ts).strftime('%Y-%m-%d %H:%M:%S')}  (#{((max_ts-min_ts)/60).round(1)} min)"
 puts "packets: #{n_pkts}  heartbeats: #{n_hb}  actions: #{n_actions}  players: #{players.keys.sort.join(',')}"
 puts

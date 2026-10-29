@@ -154,7 +154,6 @@ target coordinate:
 
 ```bash
 ruby -r./lib/pcap -r./lib/factorio_protocol -e '
-  FactorioProtocol.select_version("2.0.77")
   TX, TY = -1.5, 19.5
   PcapReader.new("captures/server-34197-*.pcap").each_packet do |_, ts, _, _, _, _, udp, _|
     next unless udp && udp.getbyte(0) == 6

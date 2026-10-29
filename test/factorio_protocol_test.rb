@@ -12,24 +12,9 @@ require 'factorio_types'
 class TestFactorioProtocol < Minitest::Test
   def setup
     @item_db = nil
-    # The protocol tables are module-level state (select_version mutates
-    # actions and segment_types), so a test that switches version must not
-    # leak into the next one. reset_version is the single place that clears
-    # both.
-    FactorioProtocol.reset_version
-    # …and it clears them to 2.0, the only RELEASED version and the default
-    # since 2026-10-03. The synthetic packets below are hand-written with
-    # 2.1 numbers (build 68, zoom 128, deconstruct 131, start_walking 69,
-    # selected_entity_changed_very_close 266), so this file runs against the
-    # 2.1 tables; the tests that are about 2.0 select it themselves.
-    FactorioProtocol.select_version('2.1')
+    # Actions come from the fixed 2.1 table. No per-test version state.
   end
 
-  def teardown
-    # setup selected 2.1 for this file; put the default 2.0 back so the
-    # tables can't leak into another test file in a one-process run.
-    FactorioProtocol.reset_version
-  end
 
   # ── TilePos / TileRect ─────────────────────────────────────────
 
@@ -381,7 +366,6 @@ class TestFactorioProtocol < Minitest::Test
     # corrects this via merge. Without the correction, the parser would name
     # type 107 "change_active_item_group_for_crafting" and never hit the
     # write_to_console name-based hack.
-    FactorioProtocol.select_version('2.1')
     assert_equal 'write_to_console', FactorioProtocol.action_name(107)
     assert_equal 'gui_confirmed', FactorioProtocol.action_name(106)
     assert_equal 'market_offer', FactorioProtocol.action_name(108)
@@ -495,15 +479,6 @@ class TestFactorioProtocol < Minitest::Test
     assert_equal 16, FactorioProtocol.action_len(132)   # deconstruct
     assert_equal 16, FactorioProtocol.action_len(69)    # build (table value; hack adjusts to 9/10/11/21 by variant)
     assert_nil FactorioProtocol.action_len(107)         # write_to_console (variable, no table length)
-  end
-
-  def test_detect_version_from_connection_request
-    data = [2, 0, 0, 2, 0, 77].pack('C*') + [19_003, 123].pack('V*')
-    assert_equal '2.0.77 (build 19003)', FactorioProtocol.detect_version(data)
-  end
-
-  def test_detect_version_returns_nil_for_other_packet
-    assert_nil FactorioProtocol.detect_version([6].pack('C'))
   end
 
   # ── uint16v / uint32v decoding ────────────────────────────────
@@ -678,7 +653,6 @@ class TestFactorioProtocol < Minitest::Test
   # desyncs under the lens-less 2.0 tables. The property itself is covered by
   # test_ff_byte_still_escapes_for_real_action_ids below (synthetic).
   def test_ff_byte_still_escapes_for_real_action_ids
-    FactorioProtocol.select_version('2.0')
     # 300 > 255 is a real action ID and MUST keep its 3-byte escape form
     data = [0x26, 0x06, 0, 0, 0, 0].pack('C*') +
            [0].pack('Q<') + [0x02].pack('C') + [0xFF, 0x2C, 0x01, 0x00].pack('C*') +
@@ -693,7 +667,6 @@ class TestFactorioProtocol < Minitest::Test
   # (2026-09-25, player 161). The lengths matter as much as the layout: a
   # wrong quick_bar_pick_slot length desyncs every action after it.
   def test_quickbar_layouts
-    FactorioProtocol.select_version('2.0')
     qb = FactorioProtocol::QuickBar
 
     # set_slot: [item][slot][op][src u16][client tick u32] — substation (30)

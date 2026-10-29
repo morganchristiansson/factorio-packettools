@@ -12,6 +12,8 @@ require_relative 'log_tail'
 require_relative 'plugins'
 require_relative 'server_detect'
 require_relative 'player_attrs'
+require_relative 'console'
+require_relative 'action_presenter'
 
 # ─────────────────────────────────────────────────────────────────────
 # Main Application
@@ -126,6 +128,8 @@ class FactorioPacketTools
     if options[:entity_db] && File.exist?(options[:entity_db])
       @entity_db = ItemDB.new(options[:entity_db])
     end
+    @presenter = ActionPresenter.new(item_db: @item_db, entity_db: @entity_db,
+                                     dump_raw_types: !!@options[:dump_raw_types])
     # Self (this client) tracking: we learn our own username from the
     # ConnectionRequestReplyConfirm and our own game player index from our
     # outgoing (C→S) heartbeat actions. This lets us correct the peer-id
@@ -158,15 +162,6 @@ class FactorioPacketTools
     # Latest game tick observed in heartbeat tick closures — the clock for
     # lazy online_time computation (60 ticks/s, tick is in every closure).
     @game_tick = 0
-    # Interactive output filters (stdin console, /show /actions /noise /debug).
-    # Empty list = no restriction.
-    @show_players = []
-    @show_actions = []
-    @hide_actions = []
-    # Whether decoded per-action lines print. The runtime /debug toggle wins
-    # over the --debug startup flag. Default is OFF — the normal operator
-    # output is chat + join/leave events + warnings.
-    @debug = !!@options[:debug]
     # Features (config.yaml `plugins:`): one Plugins object for this owner,
     # which builds them from the list and dispatches what we emit below.
     # This file names none of them. hivemind and translation are objects
@@ -179,6 +174,10 @@ class FactorioPacketTools
     # handed down as the feature's constructor kwargs via the args: slot.
     listed = Array(options[:plugins]).map { |n| n.to_s.to_sym }
     @plugins = Plugins::PluginSet.new(listed, self, args: {hivemind: {current_tick: -> { @game_tick }, sniffer_plugins: options[:plugins]}})
+    # Interactive filters + command surface. The packet host only asks the
+    # filter; plugin commands stay in the console for now.
+    @console = Console.new(self, player_db: @player_db, plugins: -> { @plugins },
+                           debug: !!@options[:debug])
     # Server mode: this host IS the game server. Classify packet direction
     # by comparing src/dst against our own IPs and analyze ONLY incoming
     # (client→server) traffic — the outgoing direction is a broadcast of
@@ -229,11 +228,6 @@ class FactorioPacketTools
           warn "Prototype DB from RCON failed: #{e.class}: #{e.message}"
         end
       end
-      # Protocol version → input-action SEGMENT-type mapping. Explicit
-      # --protocol-version wins; otherwise ask RCON for
-      # helpers.game_version (cached on @protocol_version — an ivar, so it
-      # is queried once). Main action types are version-stable and need no
-      # switch — only segments follow defines.input_action.
       # Optional features: plugin FEATURES in @plugins (built lazily by
       # PluginSet); the sniffer holds no feature ivars to carry over or
       # re-point.
@@ -289,10 +283,6 @@ class FactorioPacketTools
     end
 
 
-    # Version → segment-type mapping (server mode may also query RCON here;
-    # the RCON client is only created in server mode). Runs on every
-    # construction.
-    select_protocol_version
   end
 
   # What a feature gets as its owner: this host, and these are the shared
@@ -426,7 +416,7 @@ class FactorioPacketTools
         transfer_block_hook: map_download_hook,
       )
       puts "Listening on #{@options[:interface]} port #{@options[:port]}..."
-      puts 'Decoded per-action lines hidden — use /debug (or --debug) to show them (chat + events + warnings always print).' unless @debug
+      puts 'Decoded per-action lines hidden — use /debug (or --debug) to show them (chat + events + warnings always print).' unless @console.debug?
       if (ips = @options[:host_ips].to_a).any?
         puts ips.size > 1 ? "Filtering: #{@options[:server] ? 'to' : 'from'} #{ips.join(', ')}" : "Filtering: #{@options[:server] ? 'to' : 'from'} #{ips.first}"
       end
@@ -520,13 +510,6 @@ class FactorioPacketTools
     # identifiable packet and create the writer (server mode creates it at
     # init — server-<port>).
     ensure_pcap_writer(src_ip, dst_ip) if @pending_capture
-
-    # Protocol version from the connection request a client sends when it
-    # joins (msg 2 carries it). Nothing announces 2.0, so the tables already
-    # default to 2.0 — this exists to notice a server that says otherwise
-    # (an experimental 2.1 build), and to reject a capture from a version
-    # whose numbering the tables cannot serve.
-    detect_protocol_version(udp_data) if (udp_data.getbyte(0) & 0x1F) == 2 && @protocol_version.nil?
 
     # RequestForHeartbeatWhenDisconnecting (msg 14) — documented as a C→S
     # clean-quit request (header only). Never observed in captures so far
@@ -759,9 +742,7 @@ class FactorioPacketTools
           # like it is past an empty/stale max.
           if !(@strict_player_ids && @roster_ready) || join_index_valid?(name, idx)
             entry[1] = true  # confirmed — never re-fire the join event
-            @player_db[idx] = {name: name, locale: nil}
-            @player_db.remove_other_entries_for(name, idx)
-            @attrs.set_index(name, idx)  # confirming heartbeat = liveness proof
+            bind_player_index(name, idx)  # confirming heartbeat = liveness proof
             # src_ip → name for connected players: lets the clean-quit
             # signals (C→S PeerDisconnect sync action, msg 14 fallback)
             # resolve the leaver on C→S alone. Server mode has no S→C
@@ -787,14 +768,14 @@ class FactorioPacketTools
         # (and printed the line) thousands of times in a 5h capture. A
         # validated index is also restated in attrs for the session's stats.
         if !(@strict_player_ids && @roster_ready) || join_index_valid?(@self_name, idx)
-          @attrs.set_index(@self_name, idx)
           if @player_db.id_for(@self_name) != idx
-            @player_db[idx] = {name: @self_name, locale: nil}
             # Stale cache entries may have this name at another slot; the
             # confirmed heartbeat index wins.
-            @player_db.remove_other_entries_for(@self_name, idx)
+            bind_player_index(@self_name, idx)
             ts_str = Time.at(ts).strftime('%H:%M:%S.%L')
             puts "#{ts_str}  [self]  #{@self_name} confirmed as game player ##{idx}"
+          else
+            @attrs.set_index(@self_name, idx)
           end
         else
           join_misdecode = true
@@ -919,192 +900,9 @@ class FactorioPacketTools
          "(#{n} so far, frame saved to unknown.packets)"
   end
 
+  # Display formatting lives in ActionPresenter (lib/action_presenter.rb).
   def format_action_data(act)
-    return '' unless act[:data] && act[:data].bytesize > 0
-    d = act[:data]
-
-    case act[:name]
-    when "start_walking"
-      dir = FactorioProtocol::Position.direction(act)
-      if dir && dir.size >= 2
-        x, y = dir
-        dirs = [
-          [[1.0, 0.0], 'east'], [[-1.0, 0.0], 'west'],
-          [[0.0, 1.0], 'south'], [[0.0, -1.0], 'north'],
-          [[0.707, 0.707], 'southeast'], [[0.707, -0.707], 'northeast'],
-          [[-0.707, 0.707], 'southwest'], [[-0.707, -0.707], 'northwest'],
-        ]
-        name = dirs.find { |(dx, dy), _| (x - dx).abs < 0.05 && (y - dy).abs < 0.05 }&.last
-        if name
-          return " dir=#{name}"
-        else
-          return " dir=(#{'%.1f' % x}, #{'%.1f' % y})"
-        end
-      end
-    when "begin_mining_terrain"
-      pos = FactorioProtocol::Position.decode(act)
-      return " pos=(#{'%.3f' % pos[0]}, #{'%.3f' % pos[1]})" if pos
-    when "drop_item"
-      # 8-byte payload is a DIRECTION double, not a position (verified
-      # 2026-08-16). Print it as a direction to avoid emitting a bogus
-      # position from the raw i32s.
-      dir = FactorioProtocol::Position.direction(act)
-      return " dir=(#{'%.2f' % dir[0]})" if dir
-    when "deconstruct"
-      area = FactorioProtocol::Position.decode(act)
-      if area
-        x1, y1, x2, y2 = area
-        return " area=(#{'%.3f' % x1}, #{'%.3f' % y1})-(#{'%.3f' % x2}, #{'%.3f' % y2})"
-      end
-    when "open_item", "use_item", "start_repair"
-      if d.bytesize >= 4
-        eid = d.unpack1('V')
-        return " entity=##{eid}"
-      end
-    when "change_shooting_state"
-      pos = FactorioProtocol::Position.decode(act)
-      if pos && d.bytesize >= 9
-        return " shooting=#{d.getbyte(0)} pos=(#{'%.3f' % pos[0]}, #{'%.3f' % pos[1]})"
-      end
-    when "build"
-      pos = FactorioProtocol::Position.decode(act)
-      if pos && d.bytesize >= 9
-        dir = d.getbyte(8)
-        dname = FactorioTypes::DIR_NAMES[dir] || dir
-        return " pos=(#{'%.3f' % pos[0]}, #{'%.3f' % pos[1]}) dir=#{dname}"
-      end
-    when "move_on_pan"
-      pos = FactorioProtocol::Position.decode(act)
-      return " pan=(#{'%.3f' % pos[0]}, #{'%.3f' % pos[1]})" if pos
-    when "rotate_entity"
-      return " dir=#{d.getbyte(0)}"
-    when "flush_opened_entity_specific_fluid"
-      # 1-byte selector (0x00/0x01 observed). Whether it is a fluid
-      # prototype ID (prototypes.fluid order: 1=water, 4=petroleum-gas,
-      # 5=light-oil …) is unverified — the fluid may be resolved by the
-      # simulation (on_player_flushed_fluid event, Lua-only). Test: flush
-      # a KNOWN fluid and compare the byte.
-      return " selector=0x#{d.getbyte(0).to_s(16)}" if d.bytesize >= 1
-    when "flush_opened_entity_fluid"
-      return " flush" if d.bytesize >= 1
-    when "fast_entity_split"
-      return " slot=#{d.getbyte(0)}"
-    when "fast_entity_transfer"
-      dir = d.getbyte(0) == 1 ? 'put' : 'take'
-      return " #{dir}"
-    when "change_riding_state"
-      return " vehicle=#{d.unpack1('v')}" if d.bytesize >= 2
-    when "craft"
-      return " recipe_id=#{d.unpack1('V')}" if d.bytesize >= 4
-    when "cursor_transfer"
-      if d.bytesize >= 9
-        item_id = d.unpack1('v')
-        item_name = @item_db ? @item_db.name(item_id) : "item_#{item_id}"
-        action = d.unpack1('V', offset: 2)
-        act = action == 1 ? 'put' : 'clear'
-        return " #{item_name} #{act}"
-      end
-    when "open_gui"
-      if d.bytesize >= 14
-        gt = d.getbyte(0)
-        flag = d.getbyte(1)
-        # Bytes 2-5: stable entity reference (tag + instance ID)
-        ref_tag = d.getbyte(2)
-        ref_hi = d.getbyte(3)
-        ref_lo = d.unpack1('v', offset: 4)
-        ref_id = (ref_hi << 16) | ref_lo
-        # Bytes 6-9: per-call token (changes each invocation, not entity ID)
-        token = d.unpack1('V', offset: 6)
-        tick = d.unpack1('V', offset: 10) + 1
-        gui_names = { 0x30 => 'entity', 0x31 => 'entity_close' }
-        gname = gui_names[gt] || "type_#{gt}"
-        state = flag == 0 ? 'open' : 'close'
-        return " #{state} #{gname} ref=#{ref_tag}:#{ref_id} tok=#{token} tick=#{tick}"
-      elsif d.bytesize >= 6
-        # Client form (8 bytes): [gui_type][flags][tick(4)][pad(2)]
-        gt = d.getbyte(0)
-        flag = d.getbyte(1)
-        tick = d.unpack1('V', offset: 2)
-        gui_names = { 0x30 => 'entity', 0x31 => 'entity_close' }
-        gname = gui_names[gt] || "type_#{gt}"
-        state = flag == 0 ? 'open' : 'close'
-        return " #{state} #{gname} tick=#{tick}"
-      end
-    when "selected_entity_changed_very_close",
-         "selected_entity_changed_very_close_precise",
-         "selected_entity_changed_relative"
-      # NOT a decoded layout: hovering a known coal patch shows a payload
-      # (0x56 = pumpjack in the entity table) that disagrees with the hovered
-      # entity, so the leading byte is NOT the entity proto id. The real ref
-      # is buried in the body and varies with the entity's content; don't
-      # mislabel it. Show raw bytes for review.
-      return " #{d[0, 18].unpack1('H*')}"
-    when "selected_entity_cleared"
-      # Client: [tick(4)][pad(4)]; server echo: [55 ff ff ff][token(4)] (or
-      # [41 ff ff ff]). The 0x54-echo heuristic the old code used was wrong —
-      # real echoes start 55 ff ff ff — so unconsumed S→C echoes printed the
-      # ref as if it were a tick (0xffffff55 -> 4294967125).
-      if d.bytesize >= 8 && d.getbyte(0) == 0x55
-        return " tok=#{d.unpack1('V', offset: 5)}"
-      elsif d.bytesize >= 8
-        tick = d.unpack1('V', offset: 0)
-        return " tick=#{tick}"
-      end
-    when "zoom_around_point"
-      if d.bytesize >= 24
-        a, b, c = d.unpack('E3')
-        return " (#{'%.2f' % a}, #{'%.2f' % b}, #{'%.2f' % c})"
-      end
-    when "render_mode_changed"
-      return " mode=#{d.getbyte(0)}" if d.bytesize >= 1
-    when "remote_view_surface"
-      if d.bytesize >= 4
-        surf_id = d[0, 4].unpack1('N')
-        return " surface=#{surf_id}"
-      end
-    when "setup_assembling_machine"
-      return " recipe=#{d.unpack1('v')}" if d.bytesize >= 2
-    when "connect_rolling_stock", "disconnect_rolling_stock"
-      return " ref=#{d.unpack1('V')}" if d.bytesize >= 4
-    when "pipette"
-      if d.bytesize >= 9
-        src = d.getbyte(0)
-        ref = d.unpack1('V', offset: 1)
-        qual = d.getbyte(8)
-        # src=0 (inventory/quickbar): ref is the ITEM prototype id
-        # (`prototypes.item` order). src=4 (world entity): ref is the ENTITY
-        # prototype id (`prototypes.entity` order) — capture-verified against
-        # the live server: refs like 87=stone-furnace, 149=iron-ore,
-        # 148=copper-ore. NOT an item id (item 87=nuclear-reactor,
-        # 149=carbon — those never appear pipetted from the world) and NOT an
-        # entity unit_number.
-        if src == 0 && @item_db
-          return " #{@item_db.name(ref)} qual=#{qual}"
-        elsif src == 4 && @entity_db
-          return " entity=#{@entity_db.name(ref)} qual=#{qual}"
-        end
-        return " src=#{src} ref=#{ref} qual=#{qual}"
-      end
-    when "stack_transfer", "inventory_transfer"
-      if d.bytesize >= 5
-        item_id = d.unpack1('v')
-        item_name = @item_db ? @item_db.name(item_id) : "item_#{item_id}"
-        count = d.unpack1('v', offset: 2)
-        return " #{item_name} count=#{count}"
-      end
-    when "quick_bar_set_slot", "quick_bar_pick_slot",
-         "quick_bar_set_selected_page", "change_active_quick_bar"
-      qb = FactorioProtocol::QuickBar.decode(act)
-      return " #{quickbar_str(qb)}" if qb.is_a?(Hash)
-    when "copy"
-      return " flags=#{d.unpack1('v')}" if d.bytesize >= 2
-    when "cheat"
-      return ''
-    end
-
-    return '' unless @options[:dump_raw_types]
-    hex = d.bytes.first(8).map { |b| '%02x' % b }.join
-    " [#{hex}#{d.bytesize > 8 ? '..' : ''}]"
+    @presenter.format(act)
   end
 
   # Quickbar slot/page state from the quickbar input actions, kept in
@@ -1113,23 +911,22 @@ class FactorioPacketTools
   # slot lands on is the one the player last switched to.
   #
   # S→C player_join_game carries the joining player's GAME INDEX as the
-  # action's player and their name in the body: 6-byte peer/mode header,
-  # [u8 name len], name, 2 trailing bytes. This is the client-mode
-  # id→name binding NewPeerInfo cannot provide (it only has the network
-  # peer id), so persist it. Example: sheburator joins at game index 352.
+  # action's player and their name in the body (decoded by
+  # FactorioProtocol::PlayerJoin). This is the client-mode id→name binding
+  # NewPeerInfo cannot provide (it only has the network peer id), so persist
+  # it. Example: sheburator joins at game index 352.
   def bind_player_join(act)
-    data = act[:data]
-    idx = act[:game_player]
-    return unless data && idx.to_i.positive?
-    len = data.getbyte(6)
-    return unless len && len.positive? && len <= 64 && data.bytesize >= 7 + len
-    name = data.byteslice(7, len).to_s.force_encoding(Encoding::UTF_8)
-    return unless name.valid_encoding? && !name.strip.empty?
+    join = FactorioProtocol::PlayerJoin.decode(act)
+    return unless join
+    bind_player_index(join[:name], join[:index])
+  end
+
+  # One identity write for every path that binds a game index to a name:
+  # server-mode join confirm, client self-index confirm, S→C player_join_game.
+  def bind_player_index(name, idx)
     @player_db[idx] = { name: name, locale: nil }
     @player_db.remove_other_entries_for(name, idx)
     @attrs.set_index(name, idx)
-  rescue StandardError
-    nil
   end
 
   # Returns TRUE when the action could not be decoded, or named a page/slot
@@ -1202,15 +999,7 @@ class FactorioPacketTools
   # names: the quickbar is stored and read as wire ids (see
   # PlayerDatabase#set_quickbar_slot), so nothing here needs item_db.
   def quickbar_str(qb)
-    return " page=#{qb[:page]}" if qb.key?(:page)
-    s = +" slot=#{qb[:slot]}"
-    if qb.key?(:src) && qb[:op] != 0
-      s << ' (cleared)'
-    else
-      s << " item=#{qb[:item]}"
-      s << " from inv##{qb[:src]}" if qb[:src]
-    end
-    s
+    @presenter.quickbar_str(qb)
   end
 
   # Send one closure to the action validator, merging the two directions the
@@ -1350,7 +1139,7 @@ class FactorioPacketTools
     # gated behind --debug. Everything important (chat, join/leave events,
     # and invalid/missing-decode warnings) prints regardless; this is only
     # the per-action dump, shown when inspecting decodes.
-    return unless @debug
+    return unless @console.debug?
     name = pname || "Player_#{act[:game_player]}"
     puts "#{log_ts(ts)}  #{arrow} #{name.ljust(16)} #{act[:name].ljust(28)}#{data_str}#{suffix}"
   end
@@ -1373,7 +1162,6 @@ class FactorioPacketTools
   def read_pcaps
     paths = Array(@options[:pcaps])
     paths = [@options[:pcap]] if paths.empty?
-    prescan_pcap_version(paths.first)
     on_start if log_consumers?
     paths.each_with_index do |path, i|
       puts "[pcap] #{i + 1}/#{paths.size} #{path}" if paths.size > 1
@@ -1383,27 +1171,6 @@ class FactorioPacketTools
         warn "[pcap] #{path}: #{e.class}: #{e.message} — stopped reading this file"
       end
     end
-  end
-
-  # Which tables a replay gets. The default is 2.0 (the only released
-  # version), so the connection request (msg 2) in a capture is only needed
-  # to spot an EXPERIMENTAL 2.1 server — and it arrives at the client's JOIN,
-  # thousands of packets in, so everything before it would decode with the
-  # 2.0 tables. Cheap fix: read the first capture once more, up to that
-  # request, and pick the tables before decoding starts. Stops at the
-  # request, so it reads a fraction of one file.
-  def prescan_pcap_version(path)
-    return unless path && @options[:protocol_version].nil?
-    PcapReader.new(path).each_packet do |_n, _ts, _src, _dst, _sp, _dp, udp, _frame|
-      next unless udp.getbyte(0) && (udp.getbyte(0) & 0x1F) == 2
-      version = FactorioProtocol.detect_version(udp)
-      next unless version
-      @protocol_version = version
-      puts "[protocol] factorio #{version} — action tables: #{FactorioProtocol.select_version(version)} (pre-scanned from #{path})"
-      break
-    end
-  rescue StandardError => e
-    warn "[pcap] version pre-scan of #{path}: #{e.class}: #{e.message} — decoding with the default tables"
   end
 
   # The messages that carry strings (username, game name, mod list, peer
@@ -1416,23 +1183,10 @@ class FactorioPacketTools
 
   # ── Interactive filter console (stdin) ──────────────────────────
 
-  # Visibility of an action line: player + action-type filters. Chat is
-  # always exempt; join/leave events and decode warnings print outside this
-  # path, so no filter ever hides them.
-  def visible?(pname, act)
-    name = pname.to_s.downcase
-    return false if @show_players.any? && !@show_players.include?(name)
-    return false if @hide_actions.include?(act[:name])
-    return false if @show_actions.any? && !@show_actions.include?(act[:name])
-    true
-  end
-
-  # Same player filtering for join/leave lines (no action criteria).
-  def player_visible?(name)
-    n = name.to_s.downcase
-    return false if @show_players.any? && !@show_players.include?(n)
-    true
-  end
+  # Output filters live in Console::ViewFilter. Kept as delegates because the
+  # packet path reads them at many sites.
+  def visible?(pname, act) = @console.visible?(pname, act)
+  def player_visible?(name) = @console.player_visible?(name)
 
   # Query the RCON roster and merge {name -> index} into the player DB, so
   # players connected at startup are named immediately. Players who join
@@ -1476,203 +1230,12 @@ class FactorioPacketTools
     @attrs.online_names
   end
 
-  # Pick the input-action SEGMENT-type mapping for the server's protocol
-  # version. Explicit options[:protocol_version] (--protocol-version) wins;
-  # else query RCON helpers.game_version once and cache in state so it is
-  # not re-queried.
-  def select_protocol_version
-    version = @options[:protocol_version] || @protocol_version
-    if version.nil? && @rcon
-      version = @rcon.server_version
-      @protocol_version = version if version
-    end
-    return unless version
-    label = FactorioProtocol.select_version(version)
-    puts "[protocol] factorio #{version} — action tables: #{label}"
-  rescue => e
-    warn "Protocol version detection failed: #{e.class}: #{e.message}"
-  end
-
-  # Same, from the wire: a joining client's connection request (msg 2)
-  # advertises the version, so a capture needs no RCON and no flag. Stashed in
-  # @protocol_version so the detected version is reused.
-  def detect_protocol_version(udp_data)
-    version = FactorioProtocol.detect_version(udp_data)
-    return unless version
-    @protocol_version = version
-    label = FactorioProtocol.select_version(version)
-    puts "[protocol] factorio #{version} — action tables: #{label} (from the connection request)"
-  rescue => e
-    warn "Protocol version detection from the connection request failed: #{e.class}: #{e.message}"
-  end
-
   # ── Interactive filter console (stdin) ──────────────────────────
 
-  # Handle one line from the interactive filter console. Called by the
-  # entry point's stdin thread; filters live in state on this instance.
-  # Chat (write_to_console) is always printed and exempt from these filters.
+  # Handle one line from the interactive filter console (stdin thread in the
+  # entry point). All commands live in lib/console.rb.
   def handle_command(line)
-    parts = line.strip.split(/\s+/)
-    return if parts.empty?
-    case parts[0]
-    when '/help', '/?'
-      puts <<~HELP
-        filter console (type a command, Enter):
-          /players                     list online players
-          /show NAME...                only show these players (* = clear)
-          /show +NAME  /show -NAME     add / remove one player
-          /actions NAME...             only show these action types
-          /noise NAME...               hide these action types
-          /debug                       toggle decoded per-action lines
-          /filter                      show current filter state
-          /stats                       print session stats
-          /model [MODEL]               show or switch LLM model at runtime (Hivemind only)
-          /try MODEL [MESSAGE]         one-off dry-run with a configured model — not persisted, not sent to game
-          /compact                     distill session into memory, then start fresh
-          /simulate NAME LANG MSG      test the translation backend with MSG in LANG
-          /locales                     list per-player language overrides
-          /locales NAME LANG[,...]     set a player's languages (- clears) e.g. /locales KrlosUltimate en,pt
-      HELP
-    when '/players'
-      puts "online (#{online_players.size}): #{online_players.join(', ')}"
-    when '/filter'
-      puts "show_players=#{@show_players.inspect}"
-      puts "show_actions=#{@show_actions.inspect} hide_actions=#{@hide_actions.inspect}"
-      puts "debug=#{@debug}"
-    when '/show'  then modify_filter(:@show_players, parts[1..])
-    when '/actions' then modify_filter(:@show_actions, parts[1..])
-    when '/noise' then modify_filter(:@hide_actions, parts[1..])
-    when '/debug'
-      @debug = !@debug
-      puts "decoded per-action lines: #{@debug ? 'SHOWN' : 'hidden'}"
-    when '/stats'
-      print_summary
-    when '/model'
-      if @plugins[:hivemind].nil?
-        puts "hivemind disabled (no HIVE_API_KEY or init failed) — model N/A"
-      elsif parts[1].nil?
-        puts "model: #{@plugins[:hivemind].model} (configured in config-hivemind.yaml)"
-        puts "available: #{@plugins[:hivemind].models.join(', ')}"
-        puts "usage: /model <model-id>"
-      else
-        model = parts[1..].join(' ').strip.gsub(/\A["']|["']\z/, '')
-        puts @plugins[:hivemind].switch_model!(model)
-      end
-    when '/try'
-      if @plugins[:hivemind].nil?
-        puts "hivemind disabled — cannot try"
-      elsif parts[1].nil?
-        puts "usage: /try <model> [message]  — e.g. /try gpt-4o hivemind how is the factory?"
-        puts "       replays last trigger with MODEL one-off (not persisted, not sent to game)"
-      else
-        model = parts[1].strip.gsub(/\A["']|["']\z/, '')
-        msg = parts[2..]&.join(' ')
-        msg = nil if msg && msg.strip.empty?
-        puts @plugins[:hivemind].try_model!(model, msg)
-      end
-    when '/simulate'
-      # Test the translation backend directly: translate MSG from LANG to English.
-      # Usage: /simulate <player_name> <language_code> <message>
-      # (player_name is decorative — the backend has no per-player state.)
-      if @plugins[:translation].nil?
-        puts 'translation agent not enabled — cannot simulate'
-        return
-      end
-      if parts[1].nil? || parts[2].nil?
-        puts 'usage: /simulate <player_name> <language_code> <message>'
-        puts 'example: /simulate dlruen ru "Zdravstvuyte"'
-        return
-      end
-      player_name = parts[1]
-      lang_code = parts[2]
-      # Rejoin the rest as the message (may contain spaces); strip wrapping
-      # quotes so the documented `... "some text"` form works.
-      msg = parts[3..]&.join(' ')&.gsub(/\A["']|["']\z/, '')
-      if msg.nil? || msg.strip.empty?
-        puts 'usage: /simulate <player_name> <language_code> <message>'
-        return
-      end
-      begin
-        translated = @plugins[:translation]&.simulate_translation(player_name, lang_code, msg)
-        puts "[simulate] player=#{player_name} lang=#{lang_code} msg='#{msg}' => translated='#{translated}'"
-      rescue StandardError => e
-        warn "[simulate] error: #{e.class}: #{e.message}"
-      end
-    when '/locales'
-      if @player_db.nil?
-        puts 'no player db — cannot manage locale overrides'
-      elsif parts[1].nil?
-        # bare /locales: list every override
-        all = @player_db.all_locale_overrides
-        puts all.empty? ? 'no locale overrides' : all.map { |n, l| "#{n}: #{l.join(',')}" }.join("\n")
-      elsif parts[2].nil?
-        # /locales NAME: show the override
-        langs = @player_db.locale_overrides(parts[1])
-        puts langs.to_a.empty? ? "#{parts[1]}: no override (game locale used)" : "#{parts[1]}: #{langs.join(',')}"
-      else
-        # /locales NAME en,pt   or   /locales NAME - (clear)
-        if parts[2] == '-'
-          @player_db.set_locale_overrides(parts[1], [])
-          puts "/locales #{parts[1]}: cleared"
-        else
-          langs = parts[2..].join(',').split(',').filter_map { |l|
-            b = l.split('-').first&.downcase&.strip
-            b unless b.empty?
-          }.uniq
-          @player_db.set_locale_overrides(parts[1], langs)
-          puts "/locales #{parts[1]}: #{langs.join(',')}"
-        end
-      end
-    when '/compact'
-      # Compaction is one of Hivemind's own plugins (config-hivemind.yaml
-      # `plugins:`); the only other way in is no running agent. Past that
-      # compact_memory! itself returns false for a disabled memory store, so
-      # the session is kept and nothing is cleared.
-      hivemind = @plugins[:hivemind]
-      unless hivemind&.plugin?(:compaction)
-        puts 'memory compaction unavailable (no agent, or the compaction plugin is off in config-hivemind.yaml) — session NOT cleared'
-        return
-      end
-      # Runs in a background thread so the console stays responsive (the
-      # compaction LLM call takes seconds; it queues behind any live ask).
-      # The session is wiped only after a SUCCESSFUL pass — if compaction
-      # is disabled or errors, compact_memory! returns false and the
-      # session is kept. Both calls serialize on the agent mutex.
-      Thread.new do
-        if hivemind.compact_memory!('manual')
-          # Trim, don't wipe: drop the messages the pass saw (minus a
-          # recent tail kept for flow); mid-pass console lines survive.
-          hivemind.trim_session_after_compaction!
-        else
-          puts 'memory compaction FAILED — session kept (see [hivemind] error above)'
-        end
-      end
-      puts 'memory compaction started — session resets when done (see [hivemind] logs)'
-    else
-      puts "unknown command #{parts[0]} — try /help"
-    end
-  rescue StandardError => e
-    warn "filter console error: #{e.class}: #{e.message}"
-  end
-
-  # /show|/actions|/noise argument handling: replace mode (bare names),
-  # +add / -remove modifiers, or * to clear. Filters are downcased.
-  def modify_filter(iv, args)
-    list = instance_variable_get(iv)
-    if args.nil? || args.empty?
-      puts "#{iv}: #{list.inspect}"
-    elsif args == ['*']
-      list = []
-    elsif args.first.start_with?('+', '-')
-      args.each do |a|
-        name = a[1..].downcase
-        a.start_with?('+') ? list = (list + [name]).uniq : list -= [name]
-      end
-    else
-      list = args.map(&:downcase)
-    end
-    instance_variable_set(iv, list)
-    puts "#{iv}: #{list.inspect}"
+    @console.handle(line)
   end
 
   private
@@ -1890,20 +1453,52 @@ class FactorioPacketTools
   end
 
   # Read a save (zip or a directory whose latest save is picked) and merge
-  # its whole roster into players-cache.json via the extract tool, then
-  # reload the in-memory cache. Shared by the live map-download seed and the
-  # startup save-seed. Returns false (and warns) on any failure; never raises.
+  # its whole roster into the in-memory player DB. Save parsing and the
+  # index anchoring live in FactorioSave/PlayerDatabase; this is only the
+  # label + logging. Shared by the live map-download seed and the startup
+  # save-seed. Returns false (and warns) on any failure; never raises.
   def roster_from_save(save, verbose: false, label: 'roster-save')
-    tool = File.expand_path('../tools/extract_players_from_save.rb', __dir__)
-    out = IO.popen([RbConfig.ruby, tool, save, @options[:player_db], '--merge'], err: [:child, :out], &:read)
-    unless $?.success?
-      warn "[#{label}] seeding failed for #{save}:\n#{out}"
+    scan = FactorioSave.scan_save(save)
+    records = scan.records
+    if records.empty?
+      warn "[#{label}] no candidate names in #{save} — not a level.dat stream?"
       return false
     end
-    @player_db.reload!
+    known = @player_db.name_ids
+    index = scan.indexed(known)
+    if index.by_index.empty?
+      warn "[#{label}] no player records in #{save}"
+      return false
+    end
+    dropped = @player_db.merge_save_roster(index.by_index)
     @roster_ready = true # the save's roster is authoritative now
     if verbose
-      puts out.lines.grep(/\A(?:roster|new|play time):/).map { |l| "[#{label}] #{l}" }
+      if known.empty?
+        puts "[#{label}] candidates: #{records.size}   no known players in the cache — roster taken from the record structure alone"
+      else
+        puts "[#{label}] candidates: #{records.size}   known names anchoring the run: #{index.anchored}/#{index.known_count}"
+      end
+      if index.absent.any?
+        puts "[#{label}] note: #{index.absent.size} cached player(s) joined after this save: " \
+             "#{index.absent.first(5).inspect}#{'…' if index.absent.size > 5}"
+      end
+      if index.mismatched.any?
+        puts "[#{label}] [warn] #{index.mismatched.size} known name(s) disagree with the run: #{index.mismatched.first(5).join(', ')}"
+        puts "[#{label}] [warn] replacing those cache entries with the save's indexes (the save is authoritative)"
+      end
+      by_index = index.by_index
+      keys = by_index.keys
+      ticks = by_index.values.sum { |r| r[:online_time_ticks] || 0 }
+      puts "[#{label}] roster: #{by_index.size} players (indexes #{keys.min}..#{keys.max})"
+      puts "[#{label}] play time: #{by_index.values.count { |r| r[:online_time_ticks] }} records, #{ticks} ticks total " \
+           "(#{'%.0f' % (ticks / 60 / 3600.0)} h), save tick #{scan.save_tick}, pair slots #{scan.slots.inspect}"
+      locales = by_index.values.count { |r| r[:locale] }
+      puts "[#{label}] locale: #{locales}/#{by_index.size} records (#{by_index.values.count { |r| r[:locale] == 'en' }} en)"
+      colors = by_index.values.count { |r| r[:color] }
+      puts "[#{label}] color: #{colors}/#{by_index.size} records (#{by_index.values.map { |r| r[:color] }.compact.uniq.size} distinct)"
+      added = by_index.values.map { |r| r[:name] }.reject { |name| known.key?(name) }
+      puts "[#{label}] new: #{added.size} -> #{added.first(10).inspect}#{'…' if added.size > 10}"
+      puts "[#{label}] dropped #{dropped} stale duplicate name id(s)" if dropped.positive?
     end
     true
   rescue StandardError => e
@@ -1970,4 +1565,7 @@ class FactorioPacketTools
     # The writer timestamps the stem on open; print the file it actually made.
     puts "capturing to #{@pcap_writer.path}#{retention_hint}"
   end
+
+  # Console host API (lib/console.rb).
+  public :online_players, :print_summary
 end

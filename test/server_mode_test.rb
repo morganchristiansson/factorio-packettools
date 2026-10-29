@@ -26,11 +26,9 @@ class TestServerMode < Minitest::Test
   CLIENT_IP = '192.168.1.50'
 
   def setup
-    FactorioProtocol.reset_version
   end
 
   def teardown
-    FactorioProtocol.reset_version
   end
 
   # A fixture packet, with the action tables its own version needs: the
@@ -39,7 +37,6 @@ class TestServerMode < Minitest::Test
   def fixture_packet(name)
     fx = REAL_PACKET_FIXTURES.find { |f| f[:name] == name }
     raise "no fixture #{name}" unless fx
-    FactorioProtocol.select_version(fx[:version] || '2.1')
     [fx[:hex]].pack('H*')
   end
 
@@ -72,7 +69,7 @@ class TestServerMode < Minitest::Test
     tick = [1_700_000_000].pack('Q<')
     count_flagged = [0x01].pack('C')  # count=0, has_segments
     seg_count = [1].pack('C')
-    seg = [104].pack('C')              # seg_type = write_to_console (2.0)
+    seg = [107].pack('C')              # seg_type = write_to_console (2.1)
     seg += [green].pack('V')           # blue (4 bytes, arbitrary)
     seg += [green].pack('C')           # green (uint16v, player)
     seg += [total].pack('C')           # total_segs (uint32v)
@@ -449,7 +446,7 @@ class TestServerMode < Minitest::Test
     # attrs — one RCON round trip per join, not one per feature. The Lua is
     # pinned to the two documented getter signatures: 2.0 takes a flat index
     # (verified live on 2.0.77), 2.1 takes (page, slot) — the same version
-    # split select_version uses for the action tables. Both normalise to the
+    # split the RCON getter signatures use. Both normalise to the
     # flat key, so the fold is one Ruby path. Print-only, so there is no
     # write_file for_player to guard.
     qb_lua = join_query_lua(7, '2.0.77')
@@ -620,8 +617,10 @@ class TestServerMode < Minitest::Test
         # so nothing is kept. A writer that got no frames deletes its empty file.
         refute File.exist?(near_writer.path), 'a nameless player is not a desync'
 
-        FactorioProtocol.select_version('2.0')
-        far_packet = fixture_packet('client_chat_player_356_escaped_index')
+        # A chat segment from player 401: far outside the known roster, so
+        # the strict/offline window must flag it (synthetic 2.1 packet).
+        far_packet = build_segment_packet("\x15\x1dwe dont need it to".b,
+                                          total: 1, no: 0, green: 400)
         _, far = run_sniffer(server: true, host_ips: [SERVER_IP], player_db: nil,
                              strict_player_ids: false, real_unknown_writer: true) do |s|
           s.instance_variable_get(:@player_db)[1] = {name: 'known'}
@@ -636,7 +635,6 @@ class TestServerMode < Minitest::Test
       end
     end
   ensure
-    FactorioProtocol.reset_version
   end
 
   def test_strict_player_ids_defaults_on_live_off_replay
@@ -760,7 +758,6 @@ class TestServerMode < Minitest::Test
   # ── Test 10: split chat messages reassembled across packets ──────────
 
   def test_split_chat_reassembled_across_packets
-    FactorioProtocol.select_version('2.0.77')  # segment 104 = write_to_console
     # Segment metadata: total_segs/seg_no mark messages split across packets.
     # Each packet carries ONE segment; the agent must receive the merged text.
     messages = []
@@ -782,7 +779,6 @@ class TestServerMode < Minitest::Test
     assert_equal ['we dont need it to be 2 lanes'], messages,
                  "split chat reassembled (got #{messages.inspect})"
   ensure
-    FactorioProtocol.reset_version
   end
 
   # A stale partial group must not contaminate a later message that reuses
@@ -795,7 +791,6 @@ class TestServerMode < Minitest::Test
   # ("at hitting the bots" merged into "uranium will be back…"). Client mode
   # so the S→C echo is analyzed (server mode drops S→C entirely).
   def test_stale_chat_segment_not_merged_into_next_message
-    FactorioProtocol.select_version('2.1')
     output, = run_sniffer(player_db: nil) do |sniffer|
       ts = 1_700_000_000.0
       # Stranded S→C continuation of an earlier message (never completes).
@@ -813,7 +808,6 @@ class TestServerMode < Minitest::Test
     refute_includes output, 'baat hitting the bots', 'stale continuation not merged into new message'
     refute_includes output, '"uranium', 'seg0 header bytes not leaked into text'
   ensure
-    FactorioProtocol.reset_version
   end
 
   # ── Test 11: always-on auto-named captures ────────────────────────────
@@ -988,59 +982,6 @@ class TestServerMode < Minitest::Test
       File.write(path, JSON.generate({'1' => {'name' => 'alice', 'quickbar' => 'nonsense'}}))
       assert_nil PlayerDatabase.new(path).quickbar(1), 'a non-array quickbar is ignored'
     end
-  end
-
-  # ── Quickbar: bad indices from a desynced closure are forwarded for
-  # later length correction, not silently dropped ───────────────────────
-
-  def test_quickbar_desync_forwards_frame_to_unknown_writer
-    FactorioProtocol.select_version('2.0')
-    db = PlayerDatabase.new(nil)
-    db[1] = {name: 'alice'}
-    sniffer = make_test_sniffer(server: true, host_ips: [SERVER_IP], player_db: nil, validate: true)
-    sniffer.instance_variable_set(:@player_db, db)
-    unknown = FakePcapWriter.new('unknown.packets.pcap')
-    sniffer.instance_variable_set(:@unknown_writer, unknown)
-
-    # A 2.0 C→S closure holding one quick_bar_set_slot whose slot byte is
-    # 0xFF — parsed without hit_unknown, so the generic flag never sees it,
-    # yet no such slot exists. Player delta 1 = alice, a known player, so
-    # the generic roster check stays quiet and only the quickbar guard can
-    # flag the frame.
-    closure = lambda do |type, payload|
-      [0x06, 0x06, 0, 0, 0, 0].pack('C*') + [0].pack('Q<') + [0x02].pack('C') +
-        [type, 1].pack('C2') + payload + [0, 0, 0, 0, 0, 0, 0, 0].pack('C*')
-    end
-    frame_for = ->(udp) { ("\x00" * 14 + udp).b }
-
-    capture_io do
-      sniffer.send(:process_packet, 1, 1.0, CLIENT_IP, SERVER_IP, 34197, 34197,
-                   closure.call(230, [30, 0xFF, 0, 0xFF, 0xFF, 0x4E, 0x11, 0x61, 0x06].pack('C*')),
-                   frame_for.call(closure.call(230, [30, 0xFF, 0, 0xFF, 0xFF, 0x4E, 0x11, 0x61, 0x06].pack('C*'))))
-    end
-    assert_equal 1, unknown.records.size, 'slot 0xFF forwarded to the unknown-packet corpus'
-    assert_nil db.quickbar(1), 'nothing stored for a slot that cannot exist'
-
-    # a page byte that big is the same story
-    unknown.records.clear
-    page_udp = closure.call(232, [0, 0x80].pack('C2'))
-    capture_io do
-      sniffer.send(:process_packet, 2, 2.0, CLIENT_IP, SERVER_IP, 34197, 34197, page_udp, frame_for.call(page_udp))
-    end
-    assert_equal 1, unknown.records.size, 'page 0x80 forwarded'
-    assert_equal 0, db.quickbar_page(1), 'page unchanged'
-
-    # …and a real slot is neither forwarded nor rejected
-    unknown.records.clear
-    ok_udp = closure.call(230, [30, 3, 0, 0xFF, 0xFF, 0x4E, 0x11, 0x61, 0x06].pack('C*'))
-    capture_io do
-      sniffer.send(:process_packet, 3, 3.0, CLIENT_IP, SERVER_IP, 34197, 34197, ok_udp, frame_for.call(ok_udp))
-    end
-    assert_empty unknown.records, 'a valid quickbar action is not flagged'
-    assert_equal 30, db.quickbar(1)[0][3], 'and it is stored'
-  ensure
-    sniffer&.instance_variable_get(:@pcap_writer)&.close
-    FactorioProtocol.reset_version
   end
 
   # ── Chat: a '?' in the output means the payload wasn't valid UTF-8 ────

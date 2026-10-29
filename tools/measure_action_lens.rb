@@ -1,7 +1,7 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
-# Measure and audit the 2.0 client→server input-action payload lengths.
+# Measure and audit the 2.1 client→server input-action payload lengths.
 #
 # Every C→S heartbeat ends with an 8-byte [tick(4)][pad(4)] block, so a tick
 # closure's action bytes end at a known offset: with every action's length known
@@ -45,7 +45,6 @@ abort 'usage: measure_action_lens.rb [--check|--decide|--type N] [--json] PCAP..
 # The measured lengths live IN the action table now (input_actions_21.rb):
 # `lens` here is the table's fixed lengths, and --check re-verifies them
 # against the wire — the table IS the measured artifact.
-FactorioProtocol.select_version('2.1')
 lens = FactorioProtocol.actions.select { |_t, (_n, l)| !l.nil? }.transform_values { |(_n, l)| l }
 name = ->(t) { FactorioProtocol.actions[t]&.first || '** UNIDENTIFIED **' }
 CODE = ActionLenSolver::CODE_PARSED
@@ -134,7 +133,7 @@ ActionLenSolver.each_payload(args) do |data|
   count, area_start, = b
   actions, = ActionLenSolver.walk(data, area_start, count, walk)
   unk = actions.map(&:first).uniq.reject do |t|
-    walk.key?(t) || CODE.include?(t) || FactorioProtocol::ACTIONS_20[t]&.last == 0
+    walk.key?(t) || CODE.include?(t) || FactorioProtocol.actions[t]&.last == 0
   end
   next if unk.empty?
   parsed = (FactorioProtocol.parse_udp_payload(data) rescue nil)

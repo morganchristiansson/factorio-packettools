@@ -1,12 +1,9 @@
 # Input Actions Reference
 
-Input-action IDs are **version-dependent**: 2.0 and 2.1 use different
-wire values (start_walking 67 vs 69, zoom_around_point 123 vs 128, …).
-The table below is the 2.1 mapping; the 2.0 mapping lives in
-`lib/input_actions_20.rb` (defines dump + validated internal actions).
-`FactorioProtocol.select_version` picks per server version, and
-`tools/validate_actions.rb` re-validates IDs against `/toggle-action-logging`
-output. See [protocol-notes.md](protocol-notes.md).
+The table below is the 2.1 stable mapping, the only action table the
+decoder uses. 2.0 is retired (`git tag protocol-2.0-final` keeps the old
+reference table). `tools/validate_actions.rb` re-validates IDs against
+`/toggle-action-logging` output. See [protocol-notes.md](protocol-notes.md).
 
 | ID | Name |
 |----|------|

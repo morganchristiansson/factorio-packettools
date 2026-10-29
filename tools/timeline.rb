@@ -1,17 +1,15 @@
 #!/usr/bin/env ruby
 # Per-player action timeline around a time window, to correlate who was where.
-# Usage: ruby tools/timeline.rb CAPTURE --player N [--start HH:MM:SS] [--end HH:MM:SS] [--ver 2.0|2.1]
+# Usage: ruby tools/timeline.rb CAPTURE --player N [--start HH:MM:SS] [--end HH:MM:SS]
 require 'time'
 require_relative '../lib/pcap'
 require_relative '../lib/factorio_protocol'
 
-VER = (ARGV.find_index('--ver') ? ARGV[ARGV.find_index('--ver') + 1] : '2.0')
 path = ARGV.reject { |a| a.start_with?('--') }.first
 PLAYER = (ARGV.find_index('--player') ? ARGV[ARGV.find_index('--player') + 1].to_i : nil)
 START = ARGV.find_index('--start') ? ARGV[ARGV.find_index('--start') + 1] : nil
 ENDT = ARGV.find_index('--end') ? ARGV[ARGV.find_index('--end') + 1] : nil
 abort "usage: ruby tools/timeline.rb CAPTURE --player N [--start HH:MM:SS] [--end HH:MM:SS]" unless path && PLAYER
-FactorioProtocol.select_version(VER)
 
 t0 = START ? Time.parse(START) : nil
 t1 = ENDT ? Time.parse(ENDT) : nil

@@ -103,9 +103,8 @@ rcon.print(helpers.game_version)   -- → "2.0.77"
 
 `helpers.game_version` exists on 2.0.x and 2.1.x (`game.version` does NOT
 — `LuaGameScript` has no `version` key). Used by
-`lib/rcon_client.rb#server_version` to pick the protocol's segment-type
-mapping (`FactorioProtocol.select_version`; chat segment type is 104 on
-2.0, 106 on 2.1 — see docs/protocol-notes.md).
+`lib/rcon_client.rb#server_version` for the version-dependent quickbar
+getter (2.0 flat index vs 2.1 page/slot).
 
 ## prototypes.* — wire prototype IDs
 
@@ -167,8 +166,7 @@ skipped rather than mistaken for an empty bar.
 | 2.1 | `get_quick_bar_slot(page_index, slot_index)` — two uint8s | 0-based page/slot (assumed, like the wire's `quick_bar_set_selected_page` byte — untested, no 2.1 server here) |
 
 `RconClient#player_attrs_for_lua` builds the loop from
-`RconClient#server_version` (memoised `helpers.game_version` — the same
-version string `FactorioProtocol.select_version` uses for the action tables),
+`RconClient#server_version` (memoised `helpers.game_version`),
 via `quickbar_page_args?`: 2.0.x → flat loop, anything else → the two-argument
 loop, unknown → the verifiable 2.0 shape. Both normalise to the same flat key
 in the payload, so the page/slot fold is one Ruby path

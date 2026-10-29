@@ -126,13 +126,11 @@ only, so it cannot bind packet actions to players.
   ONE auth reply, the gem's default expects two and times out.
 - `/sc` (silent) instead of `/c` so commands don't print to players.
 
-Protocol version detection (`RconClient#server_version`):
-`rcon.print(helpers.game_version)` → `"2.0.77"`. The sniffer uses it to
-pick the input-action tables (`FactorioProtocol.select_version`) — both
-main actions and segments differ between 2.0 and 2.1 (start_walking 67 vs
-69, write_to_console 104 vs 106). `--protocol-version 2.0` overrides
-(pcap analysis). `tools/validate_actions.rb` re-validates IDs against
-`/toggle-action-logging` output. See docs/protocol-notes.md.
+Protocol version (`RconClient#server_version`):
+`rcon.print(helpers.game_version)` → `"2.1.14"`. Used for the
+version-dependent RCON quickbar getter; input actions use the fixed 2.1
+table (2.0 is retired). `tools/validate_actions.rb` re-validates IDs
+against `/toggle-action-logging` output. See docs/protocol-notes.md.
 
 `tools/rcon.rb` — CLI wrapper: `status`, `players`, `exec`, `raw`; env
 overrides `RCON_HOST` / `RCON_PORT` / `RCON_PASSWORD`.

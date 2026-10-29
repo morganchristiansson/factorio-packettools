@@ -80,6 +80,44 @@ class PlayerDatabase
     end
   end
 
+  # name -> [id, ...] for anchoring a save roster. A name can own more than
+  # one id in a cache carried across saves; callers must see all of them.
+  def name_ids
+    ids = Hash.new { |h, k| h[k] = [] }
+    @players.each { |id, rec| ids[rec[:name]] << id if rec.is_a?(Hash) && rec[:name] }
+    ids.default_proc = nil
+    ids
+  end
+
+  # Merge a save's anchored roster (game index -> record) into the cache.
+  # The save is authoritative for id -> name; a locale/color the cache already
+  # has is never overwritten. Old ids for a name the save moved are dropped,
+  # and that entry's fields follow the player to the new id. Returns the
+  # number of stale duplicate ids dropped.
+  def merge_save_roster(roster)
+    @mutex.synchronize do
+      named = roster.transform_values { |r| r[:name] }
+      merged = {}
+      named.each do |id, name|
+        old_id = @players[id] ? id : @players.find { |_, r| r[:name] == name }&.first
+        base = old_id ? @players[old_id] : {}
+        merged[id] = (base || {}).merge(name: name)
+      end
+      roster.each { |id, r| merged[id][:locale] ||= r[:locale] if r[:locale] }
+      roster.each { |id, r| merged[id][:color] ||= r[:color] if r[:color] }
+      stale = @players.keys.reject { |id| merged.key?(id) }.select do |id|
+        name = @players[id][:name]
+        current = name && named.value?(name)
+        current && named.key(name) != id
+      end
+      (@players.keys - merged.keys - stale).sort_by(&:to_i).each { |id| merged[id] = @players[id] }
+      @players = merged
+      rebuild_index
+      persist
+      stale.size
+    end
+  end
+
   def lookup(id)
     p = @players[id]
     p ? p[:name] : "Player_#{id}"

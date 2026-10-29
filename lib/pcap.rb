@@ -5,6 +5,42 @@ require 'stringio'
 require 'tempfile'
 require 'fileutils'
 
+# Link-layer -> UDP framing shared by the offline reader and live capture.
+# Both get raw libpcap frames; only this module knows where the IP header is
+# (DLT differences) and how to format the address pair. No frame object: the
+# callers need the same tuple they always did.
+module PcapFormat
+  HEADER_SIZE = {
+    0 => 4,     # DLT_NULL
+    1 => 14,    # DLT_EN10MB
+    113 => 16,  # DLT_LINUX_SLL
+    276 => 20,  # DLT_LINUX_SLL2
+  }.freeze
+
+  # => [src_ip, dst_ip, sport, dport, udp_data, ip_packet] or nil.
+  def self.udp(frame, datalink:)
+    header = HEADER_SIZE[datalink]
+    return nil unless header && frame.bytesize > header
+    raw = frame.byteslice(header, frame.bytesize - header)
+    return nil if raw.nil? || raw.bytesize < 28 || raw.getbyte(9) != 17
+    ihl = (raw.getbyte(0) & 0x0f) * 4
+    return nil if raw.bytesize < ihl + 8
+    udp = raw.byteslice(ihl + 8, raw.bytesize - ihl - 8)
+    return nil if udp.nil? || udp.empty?
+    ["#{raw.getbyte(12)}.#{raw.getbyte(13)}.#{raw.getbyte(14)}.#{raw.getbyte(15)}",
+     "#{raw.getbyte(16)}.#{raw.getbyte(17)}.#{raw.getbyte(18)}.#{raw.getbyte(19)}",
+     raw.unpack1('n', offset: ihl), raw.unpack1('n', offset: ihl + 2),
+     udp, raw]
+  end
+
+  # TransferBlock (msg 13): [u8 msg][u32 block][503 bytes] => [block, payload].
+  def self.transfer_block(udp)
+    return nil if udp.bytesize <= 5
+    return nil unless (udp.getbyte(0) & 0x1F) == 13
+    [udp.unpack1('V', offset: 1), udp.byteslice(5, udp.bytesize - 5).to_s]
+  end
+end
+
 # PCAP Writer (for saving live capture)
 # ─────────────────────────────────────────────────────────────────────
 class PcapWriter
@@ -234,33 +270,16 @@ class PcapReader
     $VERBOSE = nil
     require 'pcaprub'
     capture = PCAPRUB::Pcap.open_offline(path)
-    header_size = case capture.datalink
-                 when PCAPRUB::Pcap::DLT_NULL then 4
-                 when PCAPRUB::Pcap::DLT_EN10MB then 14
-                 when PCAPRUB::Pcap::DLT_LINUX_SLL then 16
-                 when 276 # DLT_LINUX_SLL2
-                   20
-                 else 0
-                 end
+    datalink = capture.datalink
     pkt_num = 0
     capture.each_packet do |packet|
       pkt_num += 1
       frame = packet.data
-      raw = frame[header_size..]
-      next if raw.nil? || raw.bytesize < 28 || raw.getbyte(9) != 17
-
-      ihl = (raw.getbyte(0) & 0x0f) * 4
-      next if raw.bytesize < ihl + 8
-      udp_data = raw[ihl + 8, raw.bytesize - ihl - 8]
-      next if udp_data.nil? || udp_data.empty?
-
+      udp = PcapFormat.udp(frame, datalink: datalink)
+      next unless udp
+      src, dst, sport, dport, udp_data, = udp
       yield(pkt_num, packet.time + packet.microsec / 1_000_000.0,
-            # getbyte + interpolation, NOT raw[12..15].bytes.join('.'):
-            # measured 4.5x faster, and this runs twice per packet.
-            "#{raw.getbyte(12)}.#{raw.getbyte(13)}.#{raw.getbyte(14)}.#{raw.getbyte(15)}",
-            "#{raw.getbyte(16)}.#{raw.getbyte(17)}.#{raw.getbyte(18)}.#{raw.getbyte(19)}",
-            raw.unpack1('n', offset: ihl), raw.unpack1('n', offset: ihl + 2),
-            udp_data, frame)
+            src, dst, sport, dport, udp_data, frame)
     end
   ensure
     capture&.close

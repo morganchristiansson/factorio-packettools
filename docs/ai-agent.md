@@ -195,10 +195,7 @@ player chat ──► write_to_console action (C→S packet)
   `FactorioPacketTools#log_action`. No server-side mods or log tailing needed —
   chat is read straight off the wire. Note: chat arrives as an input-action
   **segment** whose type follows the server's `defines.input_action`
-  (2.0: 104, 2.1: 106). The sniffer auto-detects the protocol version via
-  RCON `/version` (server mode) and switches the segment map
-  (`FactorioProtocol.select_version`); `--protocol-version 2.0` overrides
-  for pcap analysis.
+  (2.1: 107). The decoder uses the fixed 2.1 table; 2.0 is retired.
 - **Trigger**: any message containing `hivemind` (case-insensitive), or
   the bot-appreciation replies `good bot` / `goodbot` (players answering a
   Hivemind reply) — both go through the same LLM path, so the response is

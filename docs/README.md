@@ -84,17 +84,10 @@ The player index is computed as: `player = (previous_player + delta) & 0xFFFF`
 where `previous_player` starts at `0xFFFF` (65535) at the beginning of each
 tick closure.
 
-> **Version note**: input-action IDs are version-dependent (2.0 vs 2.1
-> differ — start_walking 67 vs 69, write_to_console 104 vs 106, etc.).
-> **2.0 is the default** and the only released version; the 2.1 table is an
-> experimental build's dump, selected only when the wire says 2.1.
-> `FactorioProtocol.select_version` picks both the main and segment maps
-> (and the measured C→S lengths, which exist for 2.0 only); the sniffer
-> auto-detects via RCON `helpers.game_version`, the connection request, or
-> `protocol_version:` in config.yaml. Verified with
-> `tools/validate_actions.rb`.
-> See [protocol-notes.md](protocol-notes.md) and
-> [lib/input_actions_20.rb](../lib/input_actions_20.rb).
+> **Version note**: the decoder uses the 2.1 stable input-action table
+> only. 2.0 is retired and removed from the runtime (`git tag
+> protocol-2.0-final` keeps the old reference table). Re-validate IDs with
+> `tools/validate_actions.rb`. See [protocol-notes.md](protocol-notes.md).
 
 ### Variable-Length Integer Encoding
 

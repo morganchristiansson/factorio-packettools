@@ -1,8 +1,8 @@
 #!/usr/bin/env ruby
 # Recover the player roster (game index -> name, play time, last-online, locale)
-# from a Factorio save. The parsing lives in lib/factorio_save.rb (the save's
-# string container + the player-record fields); this is the CLI: anchor the run
-# against players-cache.json, report, optionally merge.
+# from a Factorio save. The parsing, anchoring and merge live in the library
+# (lib/factorio_save.rb + lib/player_db.rb); this is only the CLI: report,
+# optionally merge.
 #
 # The roster is an array of LuaPlayer records in GAME-INDEX ORDER (see
 # docs/save/level-dat.md). A record is found by its name field; the play-time
@@ -25,127 +25,59 @@
 # last_online_tick:, locale:}}, plus what was added.
 
 require 'json'
-require 'zlib'
 require_relative '../lib/factorio_save'
+require_relative '../lib/player_db'
 
 SAVE = ARGV.find { |a| !a.start_with?('--') } or abort(<<~USAGE)
   usage: ruby tools/extract_players_from_save.rb SAVE.zip|level.dat [players-cache.json] [--merge]
 USAGE
-CACHE = ARGV.reject { |a| a.start_with?('--') }[1] || 'players-cache.json'
+CACHE = ARGV.reject { |a| a.start_with?('--') }[1] || PlayerDatabase::DEFAULT_CACHE_BASENAME
 MERGE = ARGV.include?('--merge')
 
-# The decompressed level.dat stream, chunk by chunk (~1 MiB each).
-def each_chunk(path)
-  return enum_for(:each_chunk, path) unless block_given?
-  if File.extname(path) == '.zip'
-    # Chunks are zlib-compressed individually and MUST be joined in name
-    # order (zip entry order is random).
-    names = IO.popen(['unzip', '-Z1', path], &:read).lines.map(&:strip)
-    names.grep(%r{/level\.dat\d*\z}).sort_by { |n| n[%r{level\.dat(\d*)\z}, 1].to_i }.each do |n|
-      yield Zlib::Inflate.inflate(IO.popen(['unzip', '-p', path, n], 'rb', &:read))
-    end
-  else
-    File.open(path, 'rb') do |f|
-      while (chunk = f.read(1 << 20))
-        yield chunk
-      end
-    end
-  end
-end
-
-roster_scan = FactorioSave::Roster.new(each_chunk(SAVE))
-records = roster_scan.records
+scan = FactorioSave.scan_save(SAVE)
+records = scan.records
 abort 'no candidate names found — not a level.dat stream?' if records.empty?
 
-# A PLAYER RECORD is a name with a play-time/last-online pair in front of it:
-# exactly the 338 records in our save have one, against ~280 prototype names
-# and chat strings carrying the same name signature.
-roster_records = records.select { |r| r[:online_time_ticks] }
-
-cache = File.exist?(CACHE) ? JSON.parse(File.read(CACHE)) : {}
-# A name can appear at MORE than one index in a cache carried across saves
-# (the game renumbers players when a save is loaded into a fresh world, and
-# old ids are deliberately kept). Keep every candidate: choosing one would
-# let a stale duplicate masquerade as the current index.
-cache_ids = Hash.new { |h, k| h[k] = [] }
-cache.each { |id, rec| cache_ids[rec['name']] << id.to_i if rec.is_a?(Hash) && rec['name'] }
-cache_ids.default_proc = nil # reading a missing name must not grow the map
-
-# Anchor: index - position is constant across the run. With no cache to anchor
-# on we ASSUME the run starts at index 1 (verified on 2.0.77, where index 0
-# has no record) — and a join seen on the wire later corrects it anyway
-# (PlayerDatabase#remove_other_entries_for).
-offsets = Hash.new(0)
-roster_records.each_with_index do |r, i|
-  cache_ids.fetch(r[:name], []).each { |id| offsets[id - i] += 1 }
+db = PlayerDatabase.new(CACHE)
+known = db.name_ids
+index = scan.indexed(known)
+roster = index.by_index
+if roster.empty?
+  abort 'no player records found — not a level.dat stream?'
 end
-if cache_ids.empty?
-  shift = 1
+
+if known.empty?
   puts 'no known players in the cache — roster taken from the record structure alone'
 else
-  shift = offsets.empty? ? 1 : offsets.max_by { |_, v| v }.first
-  # Count NAMES that land on the run's index, not raw offset votes.
-  anchored = roster_records.each_with_index.count do |r, i|
-    cache_ids.fetch(r[:name], []).include?(i + shift)
-  end
-  puts "candidates: #{records.size}   known names anchoring the run: #{anchored}/#{cache_ids.size}"
+  puts "candidates: #{records.size}   known names anchoring the run: #{index.anchored}/#{index.known_count}"
 end
-mismatched = roster_records.each_with_index.reject do |r, i|
-  ids = cache_ids.fetch(r[:name], [])
-  ids.empty? || ids.include?(i + shift)
-end.map { |r, i| "#{r[:name]}@#{i} (cache index #{cache_ids[r[:name]].join('|')}, run says #{i + shift})" }
-# A cached player the save does NOT have is normal: they joined after this
-# save was written. A name at a DIFFERENT index is a stale duplicate id (old
-# world / bad join); flag it, then let the save's index replace it.
-absent = cache_ids.keys - roster_records.map { |r| r[:name] }
-if absent.any?
-  puts "note: #{absent.size} cached player(s) joined after this save: #{absent.first(5).inspect}#{'…' if absent.size > 5}"
-end
-if mismatched.any?
-  puts "[warn] #{mismatched.size} known name(s) disagree with the run: #{mismatched.first(5).join(', ')}"
+if index.mismatched.any?
+  puts "[warn] #{index.mismatched.size} known name(s) disagree with the run: #{index.mismatched.first(5).join(', ')}"
   puts '[warn] replacing those cache entries with the save\'s indexes (the save is authoritative)'
 end
+if index.absent.any?
+  puts "note: #{index.absent.size} cached player(s) joined after this save: #{index.absent.first(5).inspect}#{'…' if index.absent.size > 5}"
+end
 
-roster = roster_records.each_with_index.to_h { |r, i| [i + shift, r] } # index -> record
 puts "roster: #{roster.size} players (indexes #{roster.keys.min}..#{roster.keys.max})"
 ticks = roster.values.sum { |r| r[:online_time_ticks] || 0 }
 puts "play time: #{roster.values.count { |r| r[:online_time_ticks] }} records, #{ticks} ticks total " \
-     "(#{(ticks / 60 / 3600.0).round} h), save tick #{roster_scan.save_tick}, pair slots #{roster_scan.slots.inspect}"
+     "(#{'%.0f' % (ticks / 60 / 3600.0)} h), save tick #{scan.save_tick}, pair slots #{scan.slots.inspect}"
 locales = roster.values.count { |r| r[:locale] }
 puts "locale: #{locales}/#{roster.size} records (#{roster.values.count { |r| r[:locale] == 'en' }} en)"
 colors = roster.values.count { |r| r[:color] }
 puts "color: #{colors}/#{roster.size} records (#{roster.values.map { |r| r[:color] }.compact.uniq.size} distinct)"
 
 named = roster.transform_values { |r| r[:name] }
-added = named.reject { |_, name| cache_ids.key?(name) } # the mismatch check passed, so these are new
+added = named.reject { |_, name| known.key?(name) }
 puts "new: #{added.size} -> #{added.values.first(10).inspect}#{'…' if added.size > 10}"
-renamed = named.select { |id, name| cache_ids.key?(name) && !cache_ids[name].include?(id) }
-puts "renamed: #{renamed.map { |id, n| "#{id}: #{cache_ids[n].join('|')} -> #{n}" }.join(', ')}" if renamed.any?
+renamed = named.select { |id, name| known.key?(name) && !known[name].include?(id) }
+puts "renamed: #{renamed.map { |id, n| "#{id}: #{known[n].join('|')} -> #{n}" }.join(', ')}" if renamed.any?
 
 if MERGE
-  merged = {}
-  named.each do |id, name|
-    # Keep the fields we already had: at this id, else at an old duplicate id
-    # for the same name (a renumbered player keeps their colour/quickbar).
-    base = cache[id.to_s] || (cache_ids[name] || []).filter_map { |old_id| cache[old_id.to_s] }.first || {}
-    merged[id.to_s] = base.merge('name' => name)
-  end
-  # a locale the save knows and the cache does not (packets/RCON win):
-  # ||= so a known locale is never overwritten, and a missing one stays missing
-  roster.each { |id, r| merged[id.to_s]['locale'] ||= r[:locale] if r[:locale] }
-  roster.each { |id, r| merged[id.to_s]['color'] ||= r[:color] if r[:color] }
-  # Drop the old id for any name the save has at a different index; keep
-  # genuinely stale ids (names the save does not have) — they joined later.
-  stale_duplicates = cache.keys.reject { |id| merged.key?(id) }.select do |id|
-    rec = cache[id]
-    name = rec.is_a?(Hash) && rec['name']
-    current_id = name && named.key(name)
-    current_id && current_id.to_s != id.to_s
-  end
-  (cache.keys - merged.keys - stale_duplicates).sort_by(&:to_i).each { |k| merged[k] = cache[k] } # keep real stale ids
-  File.write(CACHE, JSON.pretty_generate(merged))
-  puts "dropped #{stale_duplicates.size} stale duplicate name id(s)" if stale_duplicates.any?
-  puts "wrote #{CACHE} (#{merged.size} players)"
+  dropped = db.merge_save_roster(roster)
+  puts "dropped #{dropped} stale duplicate name id(s)" if dropped.positive?
+  puts "wrote #{CACHE} (#{db.players.size} players)"
 else
   out = roster.to_h { |id, r|
     [id.to_s, {name: r[:name], online_time_ticks: r[:online_time_ticks],
