@@ -165,7 +165,7 @@ class TestServerMode < Minitest::Test
 
   # The sniffer reaches hivemind through the emit bus now (@plugins), so the
   # stubs speak the feature shapes: on_chat(source, author, text, player_id),
-  # on_player_event(kind, player). close_events is what finish calls on a
+  # on_player_event(kind, player, reason, ticks). close_events is what finish calls on a
   # feature.
   class PluginsDouble
     def initialize(hivemind: nil) = @hivemind = hivemind
@@ -180,7 +180,7 @@ class TestServerMode < Minitest::Test
     events = []
     agent = Object.new
     agent.define_singleton_method(:events) { events }
-    agent.define_singleton_method(:on_player_event) { |kind, name| events << [kind, name] }
+    agent.define_singleton_method(:on_player_event) { |kind, name, *rest| events << [kind, name] }
     agent.define_singleton_method(:on_chat) { |_source, _author, _text, _player_id = nil| }
     agent.define_singleton_method(:close_events) {}
     agent
@@ -1143,17 +1143,17 @@ class TestServerMode < Minitest::Test
       # playing on the new save only ADDS to the base, live ticks grow with it
       attrs.connect('alice', 1_000)
       assert_equal 5_000 + 250, attrs.online_time_ticks('alice', 1_250)
-      # a leave inside the save is not a reset. The sniffer hands on_player_left
+      # a leave inside the save is not a reset. The sniffer hands on_player_event
       # the FULL total (this-save + the earlier-saves base); it strips the base,
       # so feed it 5_000 (base) + 300 (this-save) like the live code does.
-      backup.on_player_left('alice', 5_000 + 300)
+      backup.on_player_event(:left, 'alice', :quit, 5_000 + 300)
       assert_equal 5_000, backup.base_ticks('alice')
 
       # our own mirror can UNDERCOUNT a player we never seeded from RCON
       # (PlayerAttrs base 0), and a drop from it is not a reset — taking it
       # for one would invent play time. Only the game's number may lower it.
       # 5_000 (base) + 12 (this-save the undercounting mirror sees).
-      backup.on_player_left('alice', 5_000 + 12)
+      backup.on_player_event(:left, 'alice', :quit, 5_000 + 12)
       assert_equal 5_000, backup.base_ticks('alice'), 'a mirror number never invents time'
       roster[0][:online_time] = 0 # the new save is still detected, by RCON
       backup.on_start
@@ -1162,7 +1162,7 @@ class TestServerMode < Minitest::Test
       # survives a restart (a fresh feature + a fresh PlayerAttrs read the file)
       fresh_attrs = PlayerAttrs.new
       fresh = build_backup(rcon: rcon, path: path, attrs: fresh_attrs)
-      fresh.on_player_left('bob', 42) # an unknown player just gets a mark
+      fresh.on_player_event(:left, 'bob', :quit, 42) # an unknown player just gets a mark
       fresh.on_start # the startup roster is what re-pushes bases after a restart
       assert_equal 5_300, fresh.base_ticks('alice'), 'the base outlives the process'
       assert_equal 5_300, fresh_attrs.online_time_ticks('alice', nil)
@@ -1216,10 +1216,10 @@ class TestServerMode < Minitest::Test
       # she leaves and rejoins the SAME save: still no save change, still no
       # restore. This is the regression the leave-only seen update caused —
       # the base used to lift online_time_seen past the game's number, so every
-      # same-save reconnect then dropped under seen and restored. on_player_left
+      # same-save reconnect then dropped under seen and restored. on_player_event
       # now strips the base first, so the clock only drops at a real save change.
       calls.clear
-      backup.on_player_left('alice', 5_000 + 60) # base + this-save, as the sniffer passes
+      backup.on_player_event(:left, 'alice', :quit, 5_000 + 60) # base + this-save, as the sniffer passes
       backup.on_join_enriched('alice', 4, quickbar: defaults, color: [0.0, 0.3, 0.8, 1.0],
                               online_time: 60) # same save: online_time didn't drop
       assert_equal 0, calls.size, 'no restore on a same-save reconnect'
@@ -1472,7 +1472,7 @@ class TestServerMode < Minitest::Test
     refute sniffer.instance_variable_get(:@timeout_watchdog),
            'no watchdog thread in tests (no :interface)'
     agent = Object.new
-    agent.define_singleton_method(:on_player_event) { |kind, name| wd_events << [kind, name] }
+    agent.define_singleton_method(:on_player_event) { |kind, name, *rest| wd_events << [kind, name] }
     agent.define_singleton_method(:close_events) {}
     sniffer.instance_variable_set(:@plugins, PluginsDouble.new(hivemind: agent))
     sniffer.instance_variable_set(:@show_players, [])
@@ -1489,8 +1489,8 @@ class TestServerMode < Minitest::Test
     output, = capture_io { sniffer.send(:check_heartbeat_timeouts) }
     refute attrs.online_names.include?('stale'), 'stale player removed from the live roster'
     assert attrs.online_names.include?('alive'), 'recently-heartbeat player kept'
-    assert wd_events.include?([:timeout, 'stale']), 'agent got on_player_event(:timeout)'
-    refute wd_events.include?([:timeout, 'alive']), 'alive player did not fire timeout'
+    assert wd_events.include?([:left, 'stale']), 'agent got on_player_event(:left, :timeout)'
+    refute wd_events.include?([:left, 'alive']), 'alive player did not fire a leave'
     assert_includes output, 'stale timed out', 'console prints the timeout line'
     assert_includes output, 'no heartbeat', 'console prints the timeout reason'
 
@@ -1514,7 +1514,7 @@ class TestServerMode < Minitest::Test
     players['joiner'][:hb] = now - (FactorioPacketTools::HEARTBEAT_TIMEOUT + 5)
     output, = capture_io { sniffer.send(:check_heartbeat_timeouts) }
     refute attrs.online_names.include?('joiner'), 'unseeded joiner timed out without raising'
-    assert wd_events.include?([:timeout, 'joiner']), 'agent got on_player_event(:timeout) for joiner'
+    assert wd_events.include?([:left, 'joiner']), 'agent got on_player_event(:left, :timeout) for joiner'
     assert_includes output, 'joiner timed out', 'console prints the unseeded joiner timeout'
     assert_includes output, 'no heartbeat', 'console prints the timeout reason'
 
@@ -1535,7 +1535,7 @@ class TestServerMode < Minitest::Test
     players['gone'][:hb] = now - (FactorioPacketTools::HEARTBEAT_TIMEOUT + 5)
     wd_events.clear
     output, = capture_io { sniffer.send(:check_heartbeat_timeouts) }
-    assert wd_events.include?([:timeout, 'gone']), 'disconnected roster player still fires the timeout'
+    assert wd_events.include?([:left, 'gone']), 'disconnected roster player still fires the timeout'
     refute attrs.online_names.include?('gone'), 'roster player removed from roster'
     assert_includes output, 'gone timed out', 'console prints the timeout'
     assert_includes output, 'no heartbeat', 'console prints the timeout reason'
@@ -1548,7 +1548,7 @@ class TestServerMode < Minitest::Test
     agent = Object.new
     agent.define_singleton_method(:msgs) { messages }
     agent.define_singleton_method(:on_chat) { |_source, _author, text, _player_id = nil| messages << text }
-    agent.define_singleton_method(:on_player_event) { |_kind, _name| }
+    agent.define_singleton_method(:on_player_event) { |*| }
     agent.define_singleton_method(:close_events) {}
     agent
   end

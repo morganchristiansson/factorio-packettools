@@ -310,15 +310,6 @@ class FactorioPacketTools
     @plugins.emit(:on_join_enriched, name, index, attrs)
   end
 
-  # A player left the game — clean quit (the C→S PeerDisconnect, or the
-  # S→C broadcast in client mode) or the heartbeat watchdog. Their play time
-  # for THIS save, already folded into PlayerAttrs: the last moment the
-  # player_backup feature can record what the current save is worth before a
-  # new one starts on top of it.
-  def on_player_left(name, online_time_ticks)
-    @plugins.emit(:on_player_left, name, online_time_ticks)
-  end
-
   # A player changed their colour: the 4 UNORM bytes R,G,B,A (0..255) from the
   # set_player_color action (2.0 wire 296, 2.1 311), as [r,g,b,a] 0..1. On the
   # packet thread, and only while the value actually CHANGES — the colour
@@ -713,8 +704,7 @@ class FactorioPacketTools
           unnamed = pname.nil? || pname.start_with?('Player_')
           pname = nil if unnamed
           @attrs.disconnect(pname, @game_tick) if pname
-          @plugins.emit(:on_player_event, :left, pname) if pname
-          @plugins.emit(:on_player_left, pname, @attrs.online_time_ticks(pname, nil)) if pname
+          @plugins.emit(:on_player_event, :left, pname, :quit, @attrs.online_time_ticks(pname, nil)) if pname
           ts_str = Time.at(ts).strftime('%H:%M:%S.%L')
           if pname
             puts "#{ts_str}  #{pname} left the game" if player_visible?(pname)
@@ -1325,8 +1315,7 @@ class FactorioPacketTools
     name = entry && entry[0]
     return unless name
     @attrs.disconnect(name, @game_tick)
-    @plugins.emit(:on_player_event, :left, name)
-    @plugins.emit(:on_player_left, name, @attrs.online_time_ticks(name, nil))
+    @plugins.emit(:on_player_event, :left, name, :quit, @attrs.online_time_ticks(name, nil))
     ts_str = Time.at(ts).strftime('%H:%M:%S.%L')
     puts "#{ts_str}  #{name} left the game" if player_visible?(name)
   end
@@ -1373,8 +1362,7 @@ class FactorioPacketTools
     # Liveness comes from packet-derived heartbeats, not periodic
     # RCON roster refreshes (load_roster stays as-is on startup/reload).
     @attrs.disconnect(name, @game_tick)
-    @plugins.emit(:on_player_event, :timeout, name)
-    @plugins.emit(:on_player_left, name, @attrs.online_time_ticks(name, nil))
+    @plugins.emit(:on_player_event, :left, name, :timeout, @attrs.online_time_ticks(name, nil))
     ts_str = Time.now.strftime('%H:%M:%S.%L')
     puts "#{ts_str}  #{name} timed out (no heartbeat for #{idle.round}s) — likely crashed or disconnected; may re-join" if player_visible?(name)
   end

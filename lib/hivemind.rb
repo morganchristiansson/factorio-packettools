@@ -514,8 +514,8 @@ class HivemindAgent
   # Joins include the player's total play time from RCON (online_time,
   # ticks — formatted as days/hours like the context snapshot) and get an
   # LLM-generated personal greeting (see greet_join).
-  def on_player_event(kind, player, now: Process.clock_gettime(Process::CLOCK_MONOTONIC))
-    enqueue(:handle_player_event, kind, player, now: now)
+  def on_player_event(kind, player, reason = nil, _ticks = nil, now: Process.clock_gettime(Process::CLOCK_MONOTONIC))
+    enqueue(:handle_player_event, kind, player, reason, _ticks, now: now)
   end
 
   # Reached by the host's single log-tailer thread (emit(:on_log_line)): the
@@ -529,7 +529,7 @@ class HivemindAgent
   # The heavy join/leave handler, on this agent's worker (the sniffer emits
   # on_player_event on the bus; :joined runs an RCON attrs query and maybe a
   # greeting LLM call, so it must not run on the capture thread).
-  def handle_player_event(kind, player, now: Process.clock_gettime(Process::CLOCK_MONOTONIC))
+  def handle_player_event(kind, player, reason = nil, _ticks = nil, now: Process.clock_gettime(Process::CLOCK_MONOTONIC))
     name = clean_text(player)
     return if name.empty?
     case kind
@@ -544,12 +544,14 @@ class HivemindAgent
       append_history(nil, line)
       greet_join(name, line, attrs, now: now)
     when :left
-      append_history(nil, "#{name} left the game")
-    when :timeout
-      # No clean PeerDisconnect was seen — heartbeat just stopped (crash,
-      # power/network loss). The player may re-join; the LLM should know the
-      # roster changed either way.
-      append_history(nil, "#{name} timed out (no heartbeat) — likely crashed or disconnected; may re-join")
+      if reason == :timeout
+        # No clean PeerDisconnect was seen — heartbeat just stopped (crash,
+        # power/network loss). The player may re-join; the LLM should know the
+        # roster changed either way.
+        append_history(nil, "#{name} timed out (no heartbeat) — likely crashed or disconnected; may re-join")
+      else
+        append_history(nil, "#{name} left the game")
+      end
     end
   end
 

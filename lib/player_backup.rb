@@ -167,8 +167,14 @@ class PlayerBackup
   # lifts `seen` past what the game reports) and the player's bar and colour
   # get restored on every reconnect instead of only on the first join of a
   # new save.
-  def on_player_left(name, online_time_ticks)
-    this_save = online_time_ticks.to_i - base_ticks(name)
+  def on_player_event(kind, name, _reason = nil, ticks = nil)
+    return unless kind == :left
+    # A leave (clean :quit or :timeout) — the sniffer hands PlayerAttrs'
+    # FULL live total (this-save + the earlier-saves base that PlayerAttrs
+    # adds back on read, folded by disconnect first). reason is ignored: a
+    # timeout is still a leave the save clock has stopped on. Stripping our
+    # own base recovers this-save ticks (the assumption sync_times relies on).
+    this_save = ticks.to_i - base_ticks(name)
     sync_times([[name, this_save]], exact: false)
   end
 
