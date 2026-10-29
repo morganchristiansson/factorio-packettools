@@ -41,8 +41,8 @@ module FactorioProtocol
   # mod settings the deterministic sim needs. The inverse of
   # ConnectionConfirmPacket#parse_confirm:
   #   client_id(4) server_id(4) instance_id(4) username
-  #   flag(0) session_token client_timestamp connection_id(8)
-  #   [u8 count] mods + settings tree
+  #   flag(0) session_token client_timestamp coreChecksum(4) prototypeChecksum(4)
+  #   [uint32v count] mods + settings tree
   # `mods:` is the [[name, "2.0", crc, trailing_byte], ...] shape
   # parse_client_mods returns. `settings:` defaults to an EMPTY tree
   # (LIST, count 0 — `05 00` + a u32 0, 6 bytes), which decodes back to {}
@@ -51,8 +51,12 @@ module FactorioProtocol
   # A client joins TWICE: once with no session token (the pre-auth attempt)
   # and once with the token the server handed back. One confirm is enough to
   # get a token-less peer accepted on a server that needs no auth.
-  # `connection_id:` is the raw 8 bytes of the per-connection id.
-  def self.build_connection_confirm(username:, connection_id:, client_id: 0, server_id: 0,
+  # `checksums:` is the 8 bytes the server compares: coreChecksum(4, uint32 LE)
+  # then prototypeListChecksum(4, uint32 LE). Their names came from the
+  # factorio_dissector; the capture-era code called the pair a connection id,
+  # which is why a wrong pair is refused as CoreModMismatch/
+  # PrototypeChecksumMismatch rather than as an auth error.
+  def self.build_connection_confirm(username:, checksums:, client_id: 0, server_id: 0,
                                     instance_id: 0, token: '', client_time: '',
                                     mods: [], settings: nil, message_id: 1)
     mods_blob = +''.b
@@ -66,8 +70,8 @@ module FactorioProtocol
       [client_id, server_id, instance_id].pack('V3') +
       encode_string(username) +
       [0].pack('C') + encode_string(token) + encode_string(client_time) +
-      connection_id.b +
-      [mods.length].pack('C') + mods_blob +
+      checksums.b +
+      encode_uint32v(mods.length) + mods_blob +
       (settings || build_empty_settings)
   end
 

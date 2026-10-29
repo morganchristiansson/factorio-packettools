@@ -28,6 +28,8 @@ class FactorioClient
     @version = version
     @build = build
     @actions = []
+    @segments = []
+    @chat_seq = 0
     @received = 0
     @blocks_received = 0
     @next_block_request = 0
@@ -90,6 +92,7 @@ class FactorioClient
     @stream_recv_wall = nil
     @client_state = 0
     @state2_sent = nil
+    @segments = []
     @map_download_started = false
     @blocks_received = 0
     @next_block_request = 0
@@ -117,14 +120,18 @@ class FactorioClient
     @remote_ip = @socket.peeraddr[3]  # resolved IP for pcap frame headers
 
     @client_id = 0xdedb3eda
-    @connection_id = [0x75, 0xb5, 0x9e, 0xf9, 0x34, 0x91, 0x5b, 0x36].pack('C*')
+    # coreChecksum + prototypeListChecksum (uint32 LE each). The server refuses
+    # a mismatch as CoreModMismatch / PrototypeChecksumMismatch. These are
+    # 2.1.23 with the test server's base+recycler (tools/test_server.sh):
+    # factorio-current.log prints "Checksum for core" / "Prototype list checksum".
+    @checksums = [3_668_028_660, 2_725_040_850].pack('V2')
 
-    mods = [['base', '2.0.77', 1879415942]]
+    mods = [['base', '2.1.23', 3_864_816_957], ['recycler', '2.1.23', 3_293_728_126]]
 
     5.times do |attempt|
       log("Handshake attempt #{attempt + 1}/5...")
       send_packet(FactorioProtocol.build_connection_request(version: version, build: build,
-                                                           client_id: @client_id))
+                                                           client_id: @client_id, has_random: true))
       raw3 = await(3, timeout)
       unless raw3
         log("No msg 3 received, retrying...")
@@ -201,7 +208,7 @@ class FactorioClient
     # Non-fragmented msg 4 with msg_id=1
     send_packet(FactorioProtocol.build_connection_confirm(
       username: @username,
-      connection_id: @connection_id,
+      checksums: @checksums,
       client_id: @assigned_client_id,
       server_id: server_id,
       instance_id: instance_id,
@@ -277,6 +284,13 @@ class FactorioClient
 
   def send_action(type, player_delta, data = '')
     @actions << [type, player_delta, data.b]
+  end
+
+  # Queue a chat/console line. write_to_console is a SEGMENT on the wire (see
+  # FactorioProtocol.build_chat_segment); `player` is the 1-indexed game index.
+  def send_chat(text, player:)
+    @chat_seq += 1
+    @segments << FactorioProtocol.build_chat_segment(player, text, blue: @chat_seq)
   end
 
   private
@@ -558,6 +572,12 @@ class FactorioClient
           acts = @actions.map { |t, d, data| FactorioProtocol.build_input_action(t, d, data) }.join
           closures = [[@closure_tick, @actions.size, acts]]
           @actions = []
+        end
+        # Segments ride the last closure of the beat; an empty tick range
+        # leaves them queued for the next beat rather than inventing a tick.
+        if @segments.any? && !closures.empty?
+          closures[-1] = closures[-1] + [@segments]
+          @segments = []
         end
         send_packet(FactorioProtocol.build_client_heartbeat(
                       seq: @seq, closures: closures, next_receive: (@server_tick || 0) + 1,

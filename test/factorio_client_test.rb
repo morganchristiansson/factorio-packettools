@@ -63,7 +63,7 @@ class FactorioClientBuildTest < Minitest::Test
 
   def test_connection_confirm_without_a_session_rebuilds_the_captured_bytes
     built = FactorioProtocol.build_connection_confirm(
-      username: 'ruihd', connection_id: ['75b59ef968f372c4'].pack('H*'), client_id: 0xb8de19aa,
+      username: 'ruihd', checksums: ['75b59ef968f372c4'].pack('H*'), client_id: 0xb8de19aa,
       server_id: 0xddee7d53, instance_id: 0x4a922104
     )
     assert_equal MSG4_NO_SESSION[0, 32], built[0, 32] # through the connection id
@@ -78,7 +78,7 @@ class FactorioClientBuildTest < Minitest::Test
   def test_connection_confirm_with_a_token_decodes_back
     token = 'CnKURLRPoP8F1IPmvCL11w=='
     built = FactorioProtocol.build_connection_confirm(
-      username: 'Jeff-nf', connection_id: ['75b59ef968f372c4'].pack('H*'), client_id: 0xbcabeab1,
+      username: 'Jeff-nf', checksums: ['75b59ef968f372c4'].pack('H*'), client_id: 0xbcabeab1,
       server_id: 0x33fa48d7, instance_id: 0x858242f1, token: token,
       client_time: '261003145007', mods: [['base', '2.0.77', 1879415942]]
     )
