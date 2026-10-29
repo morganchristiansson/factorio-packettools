@@ -16,13 +16,12 @@ require_relative '../factorio-packettools'
 class TestMapDownload < Minitest::Test
   BLOCKS = 12
 
-  # one block per player, each exactly MapDownload::BLOCK_SIZE bytes
-  def block_bytes(n)
-    ["#{n}:".ljust(MapDownload::BLOCK_SIZE, 'x').b]
-  end
-
-  def stream_bytes
-    (0...BLOCKS).map { |i| block_bytes(i).first }.join
+  # A synthetic save archive: the reassembler only cares that the stream is
+  # a complete ZIP (starts with a local header, ends with an EOCD).
+  def stream_bytes(fill = 'x')
+    head = "PK\x03\x04".b
+    tail = "PK\x05\x06".b
+    head + (fill * (BLOCKS * MapDownload::BLOCK_SIZE - head.bytesize - tail.bytesize)).b + tail
   end
 
   def feed(dl, bytes = stream_bytes)
@@ -64,10 +63,6 @@ class TestMapDownload < Minitest::Test
     assert_equal 7, number
     assert_equal MapDownload::BLOCK_SIZE, payload.bytesize
     assert_nil LiveCapture.transfer_block("\x00" * 60) # not a msg 13
-    @dl = MapDownload.new(dir: @dir, quiet: 0.05) { |zip, n| @done = [zip, n] }
-    @dl.add_block(number, payload)
-    _zip, blocks = await
-    assert_equal 1, blocks
   end
 
   # LiveCapture invokes the transfer-block hook through #call (callable
@@ -77,9 +72,9 @@ class TestMapDownload < Minitest::Test
     number, payload = LiveCapture.transfer_block(transfer_frame(7))
     @dl = MapDownload.new(dir: @dir, quiet: 0.05) { |zip, n| @done = [zip, n] }
     assert_respond_to @dl, :call
+    before = @dl.blocks_seen
     @dl.call(number, payload)
-    _zip, blocks = await
-    assert_equal 1, blocks
+    assert_equal before + 1, @dl.blocks_seen
   end
 
   def test_assembles_contiguous_blocks_into_one_archive
@@ -108,10 +103,27 @@ class TestMapDownload < Minitest::Test
     feed(@dl)
     await # the first download is taken once the stream goes quiet
     @done = nil
-    feed(@dl, block_bytes(99).first)
+    feed(@dl, stream_bytes('B'))
     await
     assert_equal 2, seen.size
     assert_equal stream_bytes, seen.first
+    assert_equal stream_bytes('B'), seen.last
+  end
+
+  # A contiguous prefix of the archive is still not a save: without the EOCD
+  # the roster scan gets no level.dat chunks. Keep it for diagnosis, never
+  # offer it to the roster seed.
+  def test_an_incomplete_archive_is_kept_but_not_offered
+    incomplete = 0
+    @dl = MapDownload.new(dir: @dir, quiet: 0.05, on_incomplete: -> { incomplete += 1 }) do |zip, n|
+      @done = [zip, n]
+    end
+    feed(@dl, stream_bytes[0, 5 * MapDownload::BLOCK_SIZE])
+    sleep 0.3
+    assert_nil @done
+    assert_equal 0, @dl.downloads
+    assert_equal 1, incomplete, 'host asked for its disk-save fallback'
+    assert Dir.glob(File.join(@dir, 'map-download-*.zip')).any?, 'incomplete stream kept for inspection'
   end
 
   def test_retransmitted_blocks_are_kept_once
@@ -157,6 +169,24 @@ class TestMapDownload < Minitest::Test
                  db.players.transform_values { |p| p[:name] })
     assert_equal %w[alice bob carol], JSON.parse(File.read(cache)).values.map { |v| v['name'] }
     assert_includes output, '[map-download] roster: 3 players'
+  end
+
+  # A client join must not touch the disk save, even when the first S→C
+  # heartbeat arrives before the first map-download block (live 20261029:
+  # the heartbeat arrived first and the stale disk scan ran pointlessly).
+  def test_client_join_skips_the_disk_save_before_any_map_block
+    Dir.mktmpdir do |dir|
+      Dir.chdir(dir) do
+        sniffer = FactorioPacketTools.new({player_db: File.join(dir, 'players-cache.json')},
+                                          pcap_writer: FakeWriter.new)
+        sniffer.instance_variable_get(:@options)[:roster_save] = dir
+        sniffer.instance_variable_set(:@join_seen, true)
+        sniffer.instance_variable_set(:@map_download, Struct.new(:blocks_seen).new(0))
+        output, = capture_io { sniffer.send(:maybe_seed_roster_from_disk) }
+        assert_includes output, 'disk save seed skipped'
+        assert_nil sniffer.instance_variable_get(:@disk_seed_thread)
+      end
+    end
   end
 
   # roster_save: startup disk-seed — a directory picks the newest save, an

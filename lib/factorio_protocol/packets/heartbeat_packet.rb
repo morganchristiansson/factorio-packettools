@@ -22,11 +22,10 @@ module FactorioProtocol
     # action's own ID.
     BT_RECORD = 10
     # C→S separator: 00 00 00 <id> 00, then a 00 00 00 tail. S→C echoes use
-    # 01 01 00 <id> 00 between records and an 01 01 00 tail (the 01 01 is the
-    # echo flag, not the record's data). Measured on client-20261028-102801
-    # pkt 13/18/23: two records + 01 01 00 b5 00 + record + 01 01 00, then
-    # the next real action. Reading only the C→S marker stopped after one
-    # record and re-parsed the rest as stop_walking/nothing phantoms.
+    # three marker bytes + <id> 00 between records; the marker is 01 01 00 on
+    # the older 2.1 captures and 01 00 01 on the current stable wire
+    # (client-20261029-111409 pkt 32; the old exact 01 01 00 test stopped
+    # after one record and re-parsed the rest as stop_walking/nothing).
     BT_RECORD_MARK = "\x00\x00\x00\xAB\x00".b.freeze
     BT_RECORD_MARK_SC = "\x01\x01\x00".b.freeze
     BT_TAIL = "\x00\x00\x00".b.freeze
@@ -353,7 +352,7 @@ module FactorioProtocol
                  else
                    b0 == 0x01 &&
                      (data.getbyte(o + 1) || 0) <= 0x01 &&
-                     data.getbyte(o + 2).zero? &&
+                     (data.getbyte(o + 2) || 0) <= 0x01 &&
                      data.getbyte(o + 3) == type &&
                      data.getbyte(o + 4).zero?
                  end
@@ -371,7 +370,8 @@ module FactorioProtocol
         if is_server
           b0 = data.getbyte(o)
           tail_ok = b0 == 0x00 ? data[o, 3] == BT_TAIL
-                               : b0 == 0x01 && (data.getbyte(o + 1) || 0) <= 0x01 && data.getbyte(o + 2).zero?
+                               : b0 == 0x01 && (data.getbyte(o + 1) || 0) <= 0x01 &&
+                                 (data.getbyte(o + 2) || 0) <= 0x01
           alen += 3 if tail_ok
         elsif is_last && data[o, 3] == BT_TAIL && (data.getbyte(o + 3) || 0) != 0x00
           alen += 3

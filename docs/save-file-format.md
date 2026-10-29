@@ -86,14 +86,22 @@ the fix: it is the server's own save, and it carries the whole roster.
 **Live (the normal path).** Every msg 13 TransferBlock the client receives is
 handed to `lib/map_download.rb` from the capture thread — a hash store under a
 mutex, nothing else. A worker thread waits for the stream to go quiet (5 s),
-concatenates blocks 0..N into `captures/map-download-<ts>.zip` and runs
-`tools/extract_players_from_save.rb` on it with `--merge`, then reloads the
-in-memory cache, so the running session knows the names. The archive is
-deleted once the roster is out of it (the pcap keeps the blocks if you asked
-for `capture: save`/`full`). A download with a hole in it (capture loss) is
-reported and skipped — the zip's central directory lives at the end, so a
-partial archive is not a usable save. No new config: it turns itself on in
-client mode, because that is the only mode that needs it.
+concatenates blocks 0..N into `captures/map-download-<ts>.zip`, scans the
+roster in-process (`FactorioSave` + `PlayerDatabase#merge_save_roster`), and
+updates the running session. The archive is deleted once the roster is out of
+it (the pcap keeps the blocks if you asked for `capture: save`/`full`). A
+download missing block 0 or any block before the last is reported and skipped;
+a contiguous stream that is not a complete ZIP (no EOCD) is also skipped but
+**kept** for inspection — the zip's central directory lives at the end, so a
+partial archive is not a usable save. The block cap is 4M (≈2 GB); a real save
+here is ~120 MB / 240k blocks, so a lower cap must never be reintroduced. No
+new config: it turns itself on in client mode, because that is the only mode
+that needs it. `roster_save:` is only the fallback: client mode defers the
+disk scan until the first S→C heartbeat and skips it when the joining client's
+C→S `ClientChangedState` shows a join (2 CONNECTED → 3 DOWNLOADING → 4 →
+6 → 7 INGAME) or a map download is arriving (same save, newer). It still runs
+when the sniffer was started while already in-game (no state transition) or
+when the download fails.
 
 **Offline** (the same two steps by hand, e.g. after the fact):
 

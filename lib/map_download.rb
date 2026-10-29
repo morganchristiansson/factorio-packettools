@@ -23,27 +23,36 @@ class MapDownload
   # block of a download is followed by silence, and a partial download is
   # harmless (see #process).
   QUIET_SECONDS = 5.0
-  # Sanity bound: 200k blocks = 100 MB, far above any real save (41 MB).
-  MAX_BLOCKS = 200_000
+  # Sanity bound, not a size opinion: a real save can exceed 120 MB (240k
+  # blocks — the old 200k cap silently truncated it). 4M blocks ≈ 2 GB.
+  MAX_BLOCKS = 4_000_000
 
   attr_reader :blocks_seen, :downloads
 
-  def initialize(dir:, quiet: QUIET_SECONDS, &on_complete)
+  def initialize(dir:, quiet: QUIET_SECONDS, on_incomplete: nil, &on_complete)
     @dir = dir
     @quiet = quiet
     @on_complete = on_complete
+    @on_incomplete = on_incomplete
     @blocks = {}
     @mutex = Mutex.new
     @cv = ConditionVariable.new
     @blocks_seen = 0
     @downloads = 0
+    @cap_warned = false
     @thread = Thread.new { work }
   end
 
   # Called from the capture thread — keep it to a hash store.
   def add_block(number, payload)
     @mutex.synchronize do
-      return if @blocks.size >= MAX_BLOCKS
+      if @blocks.size >= MAX_BLOCKS
+        unless @cap_warned
+          warn "[map-download] block cap #{MAX_BLOCKS} reached (#{@blocks.size} blocks) — remaining blocks dropped"
+          @cap_warned = true
+        end
+        return
+      end
       return if @blocks.key?(number) # a retransmit; keep the first copy
       @blocks[number] = payload
       @blocks_seen += 1
@@ -104,15 +113,28 @@ class MapDownload
   # say so rather than seeding a roster from a broken file.
   def process(blocks)
     numbers = blocks.keys.sort
-    missing = numbers.first.upto(numbers.last).reject { |bn| blocks.key?(bn) }
+    missing = 0.upto(numbers.last).reject { |bn| blocks.key?(bn) }
     if missing.any?
-      warn "[map-download] #{blocks.size} blocks, #{missing.size} missing (e.g. #{missing.first(3).inspect}) " \
-           '— capture loss, roster not seeded'
+      warn "[map-download] #{blocks.size} blocks, #{missing.size} missing from 0..#{numbers.last} " \
+           "(e.g. #{missing.first(3).inspect}) — capture loss, roster not seeded"
+      @on_incomplete&.call
       return
     end
+    data = numbers.map { |bn| blocks[bn] }.join
     path = File.join(@dir, "map-download-#{Time.now.strftime('%Y%m%d-%H%M%S')}.zip")
-    File.binwrite(path, numbers.map { |bn| blocks[bn] }.join)
+    unless data.start_with?("PK\x03\x04".b) && data.include?("PK\x05\x06".b)
+      # Keep the evidence: a truncated stream is what we need to diagnose,
+      # and the previous code deleted it before anyone could look.
+      File.binwrite(path, data)
+      warn "[map-download] #{blocks.size} blocks (0..#{numbers.last}, #{data.bytesize} bytes) " \
+           "— incomplete archive (first #{data.byteslice(0, 4).bytes.map { |b| format('%02x', b) }.join}) " \
+           "— kept #{path}"
+      @on_incomplete&.call
+      return
+    end
+    File.binwrite(path, data)
     @downloads += 1
     @on_complete&.call(path, blocks.size)
   end
+
 end

@@ -82,6 +82,9 @@ class FactorioPacketTools
     @unknown_names = {} # undecoded action type -> how often we saw it
     @invalid_player_ids = {} # invalid player index -> how often we flagged it
     @invalid_join_keys = {} # misdecoded join (kind:id) -> already warned
+    @disk_seed_started = false # client-mode disk-save fallback decision made
+    @join_seen = false # this client connected while we were watching
+    @client_state = nil # last ClientChangedState seen from our client
     @max_peer_id = nil # highest S→C peer id, for NewPeerInfo validation
     @fed_action_sigs = {} # tick => action signature already sent to the validator
     # log_path: explicit factorio-current.log from config.yaml (nil = auto-detect
@@ -399,10 +402,13 @@ class FactorioPacketTools
       # learned from the packet stream).
       load_roster if @rcon
       load_player_attrs if @rcon
-      # A configured save (roster_save:) seeds the roster from disk — the
-      # up-to-date roster on restart without RCON (client mode) or as a
-      # complement to it (server mode, e.g. players who are offline now).
-      seed_roster_from_disk_save if @options[:roster_save]
+      # Server mode has no map download: the disk save is the only startup
+      # roster source, so scan it synchronously. Client mode DEFERS it (see
+      # maybe_seed_roster_from_disk): a fresh join's map download is the
+      # same save and newer, so loading the stale disk copy would be pure
+      # redundancy. The disk copy remains the fallback for starting while
+      # already in-game (no join => no download) and for a failed download.
+      seed_roster_from_disk_save if @options[:roster_save] && @options[:server]
       on_start if @rcon || log_consumers?
       # The single log-tailer thread (emits :on_log_line to the plugin bus).
       # Started after on_start so consumers are built first; idempotent. Needs
@@ -580,6 +586,11 @@ class FactorioPacketTools
     @stats[:factorio_packets] += 1
     hdr = parsed[:header]
 
+    # Client mode: the first S→C heartbeat means either we are already in a
+    # running game (no join/download will come — use the disk save) or a
+    # join's map download has started/finished (the network copy wins).
+    maybe_seed_roster_from_disk if hdr[:msg_type] == 7
+
     # Connection confirm carries this client's username. The packet is sent
     # by the client, so src_ip identifies us for self-index learning. A new
     # connection (e.g. joining a second server) may assign a new game index,
@@ -597,6 +608,7 @@ class FactorioPacketTools
         else
           @self_ip = src_ip
           @self_name = cc[:username]
+          @join_seen = true
         end
       end
     end
@@ -609,6 +621,7 @@ class FactorioPacketTools
     # from the save/RCON roster and from heartbeat actions.
     if parsed[:connection_accept]
       ca = parsed[:connection_accept]
+      @join_seen = true unless @options[:server]
       ts_str = Time.at(ts).strftime('%H:%M:%S.%L')
       puts "#{ts_str}  [server]  game=\"#{ca[:game_name]}\" host=#{ca[:server_username]}"
       ca[:peers].each do |p|
@@ -644,6 +657,16 @@ class FactorioPacketTools
     # synchronizer actions
     join_misdecode = false
     hb[:sync_actions]&.each do |sa|
+      # The joining client's own state machine (C→S ClientChangedState):
+      # 2 CONNECTED → 3 DOWNLOADING → 4 LOADING → 6 WAITING_TCL → 7 INGAME.
+      # Seeing any transition means a join started while we were watching;
+      # an already-in-game start never sends one. This is the clean join
+      # signal, independent of whether the first heartbeat beats the first
+      # map-download block.
+      if sa[:name] == 'ClientChangedState' && sa[:state]
+        @client_state = sa[:state]
+        @join_seen = true
+      end
       if sa[:username]  # NewPeerInfo — a player joined (or is this client)
         # A join appends to the per-connection peer list: the next peer id is
         # max + 1. A different id is stream damage, not a player (and the
@@ -653,7 +676,12 @@ class FactorioPacketTools
         # late, the next real join can legitimately jump (803 -> 833). A real
         # join is therefore any id ABOVE the last one we saw, not exactly +1.
         # Going backwards is the misdecode (or a reused/duplicate peer).
-        if sa[:peer_id] && @max_peer_id && sa[:peer_id] <= @max_peer_id
+        # Equal is not damage when it is the SAME peer/name: our own join is
+        # listed by ConnectionAcceptOrDeny first, then announced again as
+        # NewPeerInfo (live: peer 880 -> morganc twice). A different name or
+        # a lower id is still a misdecode.
+        already_known = @peer_names[sa[:peer_id]] == sa[:username]
+        if sa[:peer_id] && @max_peer_id && sa[:peer_id] <= @max_peer_id && !already_known
           join_misdecode = true
           note_invalid_join(:peer_id, sa[:peer_id], sa[:username], @max_peer_id + 1)
           next
@@ -1408,15 +1436,15 @@ class FactorioPacketTools
   # disk and RCON, so it does neither.
   def map_download_hook
     return nil if @options[:server] || !@options[:interface] || @options[:player_db].nil?
-    @map_download ||= MapDownload.new(dir: default_capture_dir) do |zip, blocks|
+    @map_download ||= MapDownload.new(dir: default_capture_dir,
+                                      on_incomplete: -> { start_disk_seed }) do |zip, blocks|
       seed_roster_from_save(zip, blocks)
     end
   end
 
   # Runs on the MapDownload worker thread, never the capture thread. The
-  # roster scan is the tool's job (it is the tested implementation), so this
-  # shells out to it and reloads the in-memory cache afterwards — otherwise
-  # the names would only reach the file, not the running session.
+  # roster scan lives in FactorioSave/PlayerDatabase; this only labels it and
+  # drops the temporary archive once the roster is out of it.
   def seed_roster_from_save(zip, blocks)
     roster_from_save(zip, verbose: true, label: 'map-download')
     # the roster was the point; the pcap keeps the blocks if wanted
@@ -1425,13 +1453,36 @@ class FactorioPacketTools
     warn "[map-download] roster seeding failed: #{e.class}: #{e.message}"
   end
 
+  # Client-mode disk-save fallback: only decide once, when the first S→C
+  # heartbeat proves the connection is live. If we watched this client join
+  # (connection accept/confirm or a ClientChangedState) OR a map download is
+  # already arriving, that join's save is the same file and newer — skip the
+  # disk scan entirely. The heartbeat can arrive BEFORE the first transfer
+  # block, so join_seen must decide too. Otherwise we started while already
+  # in-game, and the disk save is the only source for the players already there.
+  def maybe_seed_roster_from_disk
+    return unless @options[:roster_save] && !@options[:server] && @map_download
+    return if @disk_seed_started
+    @disk_seed_started = true
+    if @join_seen || @map_download.blocks_seen.positive?
+      puts '[roster-save] join/map download in progress — disk save seed skipped'
+    else
+      start_disk_seed
+    end
+  end
+
+  # One background disk scan per session (also the map-download failure
+  # fallback). PlayerDatabase serializes the merge with the capture thread.
+  def start_disk_seed
+    @disk_seed_started = true
+    return if @disk_seed_thread
+    @disk_seed_thread = Thread.new { seed_roster_from_disk_save }
+  end
+
   # Startup roster seed from a configured save path (config.yaml
   # `roster_save:`): either a path to a save file directly, or a directory
-  # from which the most recently written save is read. Gives the up-to-date
-  # roster on restart without RCON (client mode) or as a complement to it
-  # (server mode — players offline now are still in the save). Missing path
-  # or a save that refuses to merge is a warn, not a crash. Runs at startup
-  # so a new autosave re-seeds it.
+  # from which the most recently written save is read. In server mode this
+  # runs at startup; in client mode it is the deferred fallback above.
   def seed_roster_from_disk_save
     spec = File.expand_path(@options[:roster_save]) # expand ~; YAML keeps it literal
     save = File.directory?(spec) ? latest_save(spec) : spec

@@ -628,6 +628,17 @@ REAL_PACKET_FIXTURES = [
     ],
   },
   {
+    name: 's2c_build_terrain_stable_separator',
+    description: 'S→C build_terrain with TWO 10-byte records separated by 01 00 01 b5 00 and ending 01 00 01, then 2x266 (client-20261029-111409 pkt 32, tick 30131362). Regression: the exact 01 01 00 separator from older 2.1 captures stopped after one record and invented stop_walking/nothing + Unknown(113) Player_456.',
+    hex: '070689decc01a2c4cb01000000000a5501cd7c88b2a1c4cb0100000000b5ff0d01ea7105000982fdff000f010001b5004d710500ea81fdff000f010001ff0a010077ff0a01397b',
+    actions: [
+      { type: 181, name: 'build_terrain', game_player: 270,
+        data: 'ea7105000982fdff000f010001b5004d710500ea81fdff000f010001' },
+      { type: 266, name: 'selected_entity_changed_very_close', game_player: 270, data: '77' },
+      { type: 266, name: 'selected_entity_changed_very_close', game_player: 327, data: '7b' },
+    ],
+  },
+  {
     name: 's2c_build_terrain_two_records',
     description: 'S→C build_terrain with TWO 10-byte records separated by 01 01 00 b5 00 and ending 01 01 00, then a 266 (pkt 13, tick 24774869). Regression: only the C→S 00 00 00 b5 00 separator was known, so parsing stopped after one record and invented stop_walking/nothing actions.',
     hex: '2706e8d57a01d5087a0100000000085501b4605616d4087a0100000000b5e6942e00003d2700000008010100b5002c2f00003d2700000008010100ff0a010098',

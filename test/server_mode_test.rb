@@ -722,6 +722,42 @@ class TestServerMode < Minitest::Test
     assert_empty events, 'msg 14 from unknown src_ip → no leave event'
   end
 
+  # A fresh join's C→S ClientChangedState is the state machine's clean
+  # "we watched this client join" signal (no state transition when the
+  # sniffer starts while already in-game).
+  def test_client_changed_state_marks_a_join
+    packet = FactorioProtocol.build_client_heartbeat(
+      seq: 1, closures: [], next_receive: 1,
+      sync_actions: [FactorioProtocol.build_sync_action(0x03, [3].pack('C'))]
+    )
+    _, sniffer = run_sniffer(server: false, host_ips: [CLIENT_IP], player_db: nil) do |s|
+      s.send(:process_packet, 1, 1_700_000_000.0, CLIENT_IP, SERVER_IP,
+               34_197, 34_197, packet, "\x00" * 14 + packet)
+    end
+    assert_equal 3, sniffer.instance_variable_get(:@client_state)
+    assert sniffer.instance_variable_get(:@join_seen)
+  end
+
+  # Our own join appears twice: ConnectionAcceptOrDeny lists the peer, then
+  # NewPeerInfo announces the same id/name. The second is not a misdecode.
+  def test_duplicate_new_peer_info_for_a_known_peer_is_not_a_misdecode
+    Dir.mktmpdir do |dir|
+      Dir.chdir(dir) do
+        packet = FactorioProtocol.build_header(7) + [0x10].pack('C') + [1].pack('V') +
+                 FactorioProtocol.encode_uint32v(1) + "\x02".b +
+                 FactorioProtocol.encode_string('morganc') + [880].pack('v')
+        _, sniffer = run_sniffer(server: false, host_ips: [SERVER_IP], player_db: nil) do |s|
+          s.instance_variable_set(:@self_name, 'morganc')
+          s.instance_variable_set(:@max_peer_id, 880)
+          s.instance_variable_get(:@peer_names)[880] = 'morganc'
+          s.send(:process_packet, 1, 1_700_000_000.0, SERVER_IP, CLIENT_IP,
+                   34_197, 34_197, packet, "\x00" * 14 + packet)
+        end
+        assert_equal 0, sniffer.instance_variable_get(:@stats)[:invalid_join]
+      end
+    end
+  end
+
   # A join must append to the player list (max index + 1), never jump to a
   # misdecoded high index. The frame is kept; the cache is not poisoned.
   def test_misdecoded_join_index_is_flagged_and_not_cached
