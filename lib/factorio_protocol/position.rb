@@ -29,12 +29,12 @@ module FactorioProtocol
       d = act[:data]
       return nil unless d && act[:name]
       case act[:name]
-      when 'build', 'begin_mining_terrain', 'move_on_pan'
+      when :build, :begin_mining_terrain, :move_on_pan
         FactorioTypes::TilePos.from_data(d)&.to_tiles
-      when 'change_shooting_state'
+      when :change_shooting_state
         return nil if d.bytesize < 9
         [d.unpack1('V', offset: 1) / 256.0, d.unpack1('V', offset: 5) / 256.0]
-      when 'deconstruct'
+      when :deconstruct
         rect = FactorioTypes::TileRect.from_data(d)
         return nil unless rect
         [*rect.top_left.to_tiles, *rect.bottom_right.to_tiles]
@@ -48,10 +48,10 @@ module FactorioProtocol
       d = act[:data]
       return nil unless d
       case act[:name]
-      when 'start_walking'
+      when :start_walking
         return nil if d.bytesize < 16
         [d.unpack1('E', offset: 0), d.unpack1('E', offset: 8)]
-      when 'drop_item'
+      when :drop_item
         return nil if d.bytesize < 8
         [d.unpack1('E', offset: 0)]
       end

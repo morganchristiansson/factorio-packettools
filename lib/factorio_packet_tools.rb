@@ -872,7 +872,7 @@ class FactorioPacketTools
         # main list carries its MEASURED length, so the rest of the packet
         # still parses and hit_unknown never fires — without this the frame
         # holding the action we cannot decode was thrown away.
-        if act[:name].to_s.start_with?('Unknown')
+        if act[:name].is_a?(String)
           @stats[:unknown] += 1
           @unknown_names[act[:name]] = @unknown_names.fetch(act[:name], 0) + 1
           keep_frame = true
@@ -880,7 +880,7 @@ class FactorioPacketTools
         # NOT `keep_frame ||= track_quickbar(act)`: that would short-circuit
         # and skip the tracking itself on every action after the first hit.
         keep_frame = true if track_quickbar(act)
-        bind_player_join(act) if act[:name] == 'player_join_game'
+        bind_player_join(act) if act[:name] == :player_join_game
         log_action(ts, act, hdr[:msg_type] == 7, ghost: @ghost_mode, raw_frame: raw_frame)
       end
       # Runtime action-ID validation (action_validator plugin): the decoded
@@ -971,7 +971,7 @@ class FactorioPacketTools
     return false unless qb            # not a quickbar action
     if qb.key?(:page)
       !@player_db.set_quickbar_page(act[:game_player], qb[:page])
-    elsif act[:name] == 'quick_bar_set_slot'
+    elsif act[:name] == :quick_bar_set_slot
       # op 1 = clear the slot (drop its filter)
       item = qb[:op] == 0 ? qb[:item] : nil
       !@player_db.set_quickbar_slot(act[:game_player], @player_db.quickbar_page(act[:game_player]),
@@ -1108,7 +1108,7 @@ class FactorioPacketTools
     # the agent — chat is the important signal, filters are for action
     # spam. Split messages are reassembled across packets
     # (chat_action_data) before decoding.
-    if act[:name] == 'write_to_console'
+    if act[:name] == :write_to_console
       data = chat_action_data(act, pname, ts)
       if data
         # A '?' in the printed chat means decode_chat's scrub() replaced
@@ -1139,7 +1139,7 @@ class FactorioPacketTools
     # we run, without waiting for their next join. A colour with no NAME
     # (an index we never bound) is dropped: the cache is keyed by name, and a
     # nameless record would poison whoever takes that slot later.
-    if act[:name] == 'set_player_color' && act[:data]&.bytesize == 4 && pname &&
+    if act[:name] == :set_player_color && act[:data]&.bytesize == 4 && pname &&
        !pname.start_with?('Player_')
       rgba = act[:data].unpack('C4').map { |v| (v / 255.0).round(4) }
       @player_db[pid] = { color: rgba }
@@ -1148,17 +1148,17 @@ class FactorioPacketTools
 
     return unless visible?(pname, act)
 
-    return if act[:name].start_with?('Unknown')
+    return if act[:name].is_a?(String)
     # Skip server-internal actions (no real player)
     return if act[:game_player] <= 0
     # Skip 'nothing' (type 0) - these are server padding/metadata after echoed actions
     return if act[:type] == 0
     # Skip server_tick_info (type 84) - server wrapper action (hash+tick) in every server heartbeat
-    return if act[:name] == 'server_tick_info'
+    return if act[:name] == :server_tick_info
 
     # Format action data (position, entity refs, etc.)
     data_str = format_action_data(act)
-    suffix = ghost && act[:name] == 'build' ? ' [ghost]' : ''
+    suffix = ghost && act[:name] == :build ? ' [ghost]' : ''
     if @options[:dump_raw_types]
       hex = act[:data] ? act[:data].unpack1('H*') : ''
       data_str += " [#{hex}]"
@@ -1169,7 +1169,7 @@ class FactorioPacketTools
     # the per-action dump, shown when inspecting decodes.
     return unless @console.debug?
     name = pname || "Player_#{act[:game_player]}"
-    puts "#{log_ts(ts)}  #{arrow} #{name.ljust(16)} #{act[:name].ljust(28)}#{data_str}#{suffix}"
+    puts "#{log_ts(ts)}  #{arrow} #{name.ljust(16)} #{act[:name].to_s.ljust(28)}#{data_str}#{suffix}"
   end
 
   # Console timestamp. Built at the PRINT sites only: formatting it per

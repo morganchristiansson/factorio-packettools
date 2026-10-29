@@ -132,7 +132,7 @@ def report_wire_ids(votes, table, options)
   known.each { |id, name| suggest[id] = name unless best_name[id] }
   best_name.each { |id, (name, _)| suggest[id] = name }
   puts "\n== Suggested table (confirmed overrides) =="
-  suggest.sort.each { |id, name| puts "  #{id} => [#{name.inspect}, #{table[id]&.last.inspect}]," }
+  suggest.sort.each { |id, name| puts "  #{id} => [:#{normalize(name.to_s)}, #{table[id]&.last.inspect}]," }
 end
 
 # ── Replay: single-threaded paced merge of capture + log ───────────

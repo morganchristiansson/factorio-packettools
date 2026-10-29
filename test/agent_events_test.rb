@@ -57,7 +57,7 @@ class TestAgentEvents < Minitest::Test
     Dir.mktmpdir do |dir|
       sniffer = FactorioPacketTools.new({player_db: nil}, pcap_writer: PcapWriter.new("#{dir}/capture.pcap"))
       sniffer.instance_variable_set(:@plugins, PluginsDouble.new(translation: translation, hivemind: hivemind))
-      action = {name: 'write_to_console', game_player: 1, type: 1, data: "\x01\x02hi".b}
+      action = {name: :write_to_console, game_player: 1, type: 1, data: "\x01\x02hi".b}
       capture_io do
         Timeout.timeout(1) do
           sniffer.send(:log_action, Time.now.to_f, action, false)

@@ -220,7 +220,7 @@ module FactorioProtocol
         # EMB_music/n700hybs appeared as the offline Toxmi/RojaRosa/
         # ummwhocares/klwht6). The action validator converts back to the
         # log's 0-indexed convention itself.
-        tc[:actions].reject! { |a| a[:name] == 'server_tick_info' }
+        tc[:actions].reject! { |a| a[:name] == :server_tick_info }
         tc[:hit_unknown] = false
       end
 
@@ -335,7 +335,7 @@ module FactorioProtocol
       # rest of the closure (685 of the tail's flagged packets).
       # The separator that follows each record re-uses the action's own id
       # as its marker byte.
-      if type == 181 && name == 'build_terrain'
+      if type == 181 && name == :build_terrain
         mark = ([0, 0, 0, type].pack('C4') + "\x00").b
         o = offset
         alen = 0
@@ -385,13 +385,13 @@ module FactorioProtocol
         adata = ''.b
       elsif alen.nil?
         case name
-        when 'remote_view_surface' # read 4 bytes for surface ID, then stop
+        when :remote_view_surface # read 4 bytes for surface ID, then stop
           if offset + 4 <= data.bytesize
             adata = data[offset, 4]
             offset += 4
           end
           hit_unknown = true  # stop parsing further actions in this tick
-        when 'write_to_console'
+        when :write_to_console
           s_off, s_len = decode_uint32v(data, offset)
           if s_len && s_off + s_len <= data.bytesize
             adata = data[offset, s_off - offset + s_len]

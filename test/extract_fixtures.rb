@@ -36,7 +36,7 @@ PcapReader.new('factorio_capture.pcap').each_packet do |pkt_num, _ts, _src, _dst
       collected = false
 
       # Deconstruct with area (expect 16 bytes)
-      if act[:name] == 'deconstruct' && act[:data]&.bytesize.to_i >= 16 && !collected
+      if act[:name] == :deconstruct && act[:data]&.bytesize.to_i >= 16 && !collected
         x1 = act[:data].unpack1('i', offset: 0)
         y1 = act[:data].unpack1('i', offset: 4)
         x2 = act[:data].unpack1('i', offset: 8)
@@ -53,7 +53,7 @@ PcapReader.new('factorio_capture.pcap').each_packet do |pkt_num, _ts, _src, _dst
       end
 
       # Build with position
-      if act[:name] == 'build' && act[:data]&.bytesize.to_i >= 9 && !collected
+      if act[:name] == :build && act[:data]&.bytesize.to_i >= 9 && !collected
         bx = act[:data].unpack1('i', offset: 0)
         by = act[:data].unpack1('i', offset: 4)
         dir = act[:data].getbyte(8)
@@ -68,7 +68,7 @@ PcapReader.new('factorio_capture.pcap').each_packet do |pkt_num, _ts, _src, _dst
       end
 
       # Chat message (write_to_console)
-      if act[:name] == 'write_to_console' && act[:data]&.bytesize.to_i >= 3 && !collected
+      if act[:name] == :write_to_console && act[:data]&.bytesize.to_i >= 3 && !collected
         d = act[:data]
         marker_names = { 0x05 => 'segment', 0x3d => 'server_echo_3d',
                          0x01 => 'server_echo_01', 0x04 => 'non_segment' }
@@ -93,7 +93,7 @@ PcapReader.new('factorio_capture.pcap').each_packet do |pkt_num, _ts, _src, _dst
       if tc[:actions]&.size.to_i >= 2 && !collected
         names = tc[:actions].map { |a| a[:name] }
         # Prefer deconstruct as first action, but any multi-action is useful
-        if names[0] == 'deconstruct'
+        if names[0] == :deconstruct
           desc = <<~DESC.chomp
             Multi-action server heartbeat (first=#{names[0]})
             Actions: #{names.join(', ')}

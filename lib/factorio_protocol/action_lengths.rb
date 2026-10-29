@@ -24,7 +24,7 @@ module FactorioProtocol
       # computes from structure, not a byte count) — otherwise a nil alen
       # would be overwritten to 11/10 and the action would consume bytes
       # that belong to the next one.
-      if name == 'build' && !alen.nil?
+      if name == :build && !alen.nil?
         # The marker (01 01) means a drag build: 21 bytes in both directions
         # (S→C echoes the same two records — fixture s2c_drag_build_then_chat).
         # The ghost flag (00) makes 10. "is_drag" is only "this closure has
@@ -59,17 +59,17 @@ module FactorioProtocol
       # actions and the following real action (Zoom/266/StopWalking) was
       # shifted or turned into Unknown(255)/Unknown(51)
       # (client-20261028-102801 pkt 13792, 14067, 23175).
-      if name == 'remote_view_surface'
+      if name == :remote_view_surface
         alen = 24
-      elsif name == 'open_logistics_gui'
+      elsif name == :open_logistics_gui
         alen = 28 # same body in both directions (C→S pkt 153329)
-      elsif is_server && name == 'send_stacks_to_trash'
+      elsif is_server && name == :send_stacks_to_trash
         alen = 17
-      elsif is_server && name == 'deconstruct'
+      elsif is_server && name == :deconstruct
         alen = 23 # 16-byte area + 7-byte echo metadata (00000180000001)
-      elsif is_server && name == 'selected_entity_changed_based_on_unit_number'
+      elsif is_server && name == :selected_entity_changed_based_on_unit_number
         alen = 8 # S→C echo carries the unit-number reference
-      elsif is_server && name == 'player_join_game'
+      elsif is_server && name == :player_join_game
         # Join echo: 6-byte peer/mode header, [u8 name len], the name, then
         # 2 trailing bytes => 9 + name length (16 for a 7-char name, pkt
         # 17772; 19 for a 10-char name, pkt 30236). Decode the name here:
@@ -82,22 +82,22 @@ module FactorioProtocol
           raw = data.byteslice(offset + 7, name_len).to_s.force_encoding(Encoding::UTF_8)
           join_name = raw if raw.valid_encoding? && !raw.strip.empty?
         end
-      elsif is_server && name == 'set_logistic_filter_item'
+      elsif is_server && name == :set_logistic_filter_item
         # S→C echo body is 22B, plus a 1B zero tail when present (the next
         # byte is 0; pkt 53819: 22B body + 00, then StopMovement type 32).
         # pkt 37042's next byte is zoom's 0x81, so that body is just 22.
         alen = (offset + 23 <= data.bytesize && data.getbyte(offset + 22) == 0x00) ? 23 : 22
-      elsif is_server && name == 'upgrade'
+      elsif is_server && name == :upgrade
         alen = 23 # S→C echo body (23B upgrade record)
-      elsif is_server && name == 'go_to_train_station'
+      elsif is_server && name == :go_to_train_station
         alen = 13 # S→C echo body (station reference)
-      elsif is_server && name == 'set_ghost_cursor'
+      elsif is_server && name == :set_ghost_cursor
         alen = 3 # S→C echo body
-      elsif name == 'set_circuit_condition'
+      elsif name == :set_circuit_condition
         alen = 11 # condition record, both directions (C→S pkt 212842)
-      elsif is_server && name == 'cancel_upgrade'
+      elsif is_server && name == :cancel_upgrade
         alen = 22 # S→C echo body (upgrade record)
-      elsif is_server && name == 'cursor_transfer'
+      elsif is_server && name == :cursor_transfer
         # S→C echo is 16B (C→S table length), except when the 16th byte is
         # the 0xFF escape that starts the next action header: then it is 15B
         # (pkt 36236 cursor + 268 vs pkt 11188 cursor + 266).
@@ -105,50 +105,50 @@ module FactorioProtocol
         # or a bare close_gui type 0x3d (pkt 126774).
         nxt = offset + 16 <= data.bytesize ? data.getbyte(offset + 15) : nil
         alen = (nxt == 0xFF || nxt == 0x3D) ? 15 : 16
-      elsif is_server && name == 'inventory_transfer'
+      elsif is_server && name == :inventory_transfer
         alen = 17 # S→C echo body (C→S table is 16)
-      elsif is_server && name == 'change_train_wait_condition'
+      elsif is_server && name == :change_train_wait_condition
         alen = 19 # S→C echo body (pkt 4353, next action at +19)
-      elsif is_server && name == 'change_train_wait_condition_data'
+      elsif is_server && name == :change_train_wait_condition_data
         alen = 33 # S→C echo body (pkt 3692/5583)
-      elsif is_server && name == 'remove_train_station'
+      elsif is_server && name == :remove_train_station
         alen = 13 # S→C echo body (pkt 81262, next 266 at +13)
-      elsif is_server && name == 'set_inventory_bar'
+      elsif is_server && name == :set_inventory_bar
         alen = 5 # S→C echo body (C→S table is 6; pkt 6437)
-      elsif is_server && name == 'start_research'
+      elsif is_server && name == :start_research
         alen = 2 # S→C echo body (pkt 15831)
-      elsif is_server && name == 'remove_pin'
+      elsif is_server && name == :remove_pin
         alen = 4 # S→C echo body (pkt 118232)
-      elsif is_server && name == 'move_research'
+      elsif is_server && name == :move_research
         alen = 10 # S→C echo body (pkt 222493)
-      elsif is_server && name == 'build_rail'
+      elsif is_server && name == :build_rail
         alen = 20 # S→C echo body (pkt 211190/216116)
-      elsif is_server && name == 'modify_decider_combinator_condition'
+      elsif is_server && name == :modify_decider_combinator_condition
         alen = 19 # S→C echo body (pkt 2989, next 266 at +19)
-      elsif name == 'set_circuit_mode_of_operation'
+      elsif name == :set_circuit_mode_of_operation
         alen = 2 # both directions (C→S table 12 is wrong; S→C pkt 15607, C→S pkt 212212)
-      elsif is_server && name == 'request_missing_construction_materials'
+      elsif is_server && name == :request_missing_construction_materials
         alen = 1 # S→C echo body (pkt 22665)
-      elsif is_server && name == 'cursor_split'
+      elsif is_server && name == :cursor_split
         # S→C echo body: 15 bytes, plus a 1-byte tail unless the next byte
         # already starts an escaped action type (0xFF; pkt 38324 tick
         # 27622321). The 16-byte form was pkt 115862.
         alen = (offset + 15 < data.bytesize && data.getbyte(offset + 15) != 0xFF) ? 16 : 15
-      elsif name == 'set_entity_color'
+      elsif name == :set_entity_color
         alen = 4 # RGBA bytes, repeated per action (C→S pkt 171, no cache entry at +4)
-      elsif name == 'remote_view_entity'
+      elsif name == :remote_view_entity
         alen = 19 # C→S body (pkt 27418705; next is the +8 closure trailer)
-      elsif is_server && name == 'quick_bar_pick_slot'
+      elsif is_server && name == :quick_bar_pick_slot
         alen = 4 # S→C echo carries page/slot (f6 58 00 07 01 00; pkt 19200)
-      elsif is_server && name == 'select_mapper_slot_to'
+      elsif is_server && name == :select_mapper_slot_to
         alen = 9 # S→C echo body (pkt 97857)
-      elsif name == 'cancel_deconstruct'
+      elsif name == :cancel_deconstruct
         alen = 23 # C→S body (pkt 57175, next 266 at +23)
-      elsif name == 'spawn_item'
+      elsif name == :spawn_item
         alen = 2 # C→S body (pkt 159065, next 266 at +2)
-      elsif name == 'trash_not_requested_items'
+      elsif name == :trash_not_requested_items
         alen = 1 # C→S bool body (pkt 6714)
-      elsif name == 'player_music_changed'
+      elsif name == :player_music_changed
         if is_server
           # S→C echo: [u8 length][track id string] ("fulgora-3", "gleba-10");
           # a zero length is the bare 1-byte form (pkt 13977).
@@ -157,20 +157,20 @@ module FactorioProtocol
         else
           alen = 1
         end
-      elsif name == 'edit_display_panel'
+      elsif name == :edit_display_panel
         # [u8 string length][string] — the panel title/path (pkt 200908:
         # 0x0c + "Armor Chest\n", then CloseGui).
         len = data.getbyte(offset)
         alen = (len && offset + 1 + len <= data.bytesize) ? 1 + len : nil
-      elsif name == 'copy'
+      elsif name == :copy
         alen = 22 # echo body in BOTH directions (C→S pkt 158050, S→C pkt 158058)
-      elsif is_server && name == 'select_item_filter'
+      elsif is_server && name == :select_item_filter
         alen = 6 # S→C echo body (filter slot record)
-      elsif name == 'player_locale_changed'
+      elsif name == :player_locale_changed
         # [uint32v len][locale bytes] — variable length, locale codes differ.
         v_off, len = decode_uint32v(data, offset)
         alen = (len && v_off + len <= data.bytesize) ? v_off - offset + len : nil
-      elsif name == 'player_clicked_gps_tag'
+      elsif name == :player_clicked_gps_tag
         # [x u32][y u32][uint32v len][surface] — variable string.
         v_off, len = decode_uint32v(data, offset + 8)
         alen = (len && v_off + len <= data.bytesize) ? v_off - offset + len : nil
@@ -184,7 +184,7 @@ module FactorioProtocol
       #     with a bogus player delta).
       #   Server echo: 14 bytes when it appends entity ref + token + tick,
       #     else the bare 2-byte form [gui_type][flags] (no entity info).
-      if name == 'open_gui'
+      if name == :open_gui
         # S→C: the GUI open echo carries NO body — the next action starts right
         # after the delta (server-observed pkt 21540: open_gui p88 then
         # stop_drag_build p88; pkt 41860: open_gui p88 then 266 p269). The old
@@ -201,7 +201,7 @@ module FactorioProtocol
       # over-consumed 14 bytes, overran the closure, and the unconditional
       # `tc[:hit_unknown] = false` reset then read the packet tail as a phantom
       # PeerDisconnect sync (giant peer_id → bogus "Player_49xxx left the game").
-      if name == 'open_character_gui' || name == 'open_blueprint_library_gui'
+      if name == :open_character_gui || name == :open_blueprint_library_gui
         alen = 1
       end
 
@@ -222,7 +222,7 @@ module FactorioProtocol
       # (or blanket 0) is wrong: assuming 8 overruns a short leave broadcast
       # into a phantom sync action (→ bogus "Player_34177 left the game",
       # client-20261027-211335 pkt 8568).
-      if name == 'selected_entity_cleared'
+      if name == :selected_entity_cleared
         alen = if is_server
           (data.getbyte(offset) == 0x55 && offset + 8 <= data.bytesize) ? 8 : 0
         else
@@ -245,7 +245,7 @@ module FactorioProtocol
       # `01 0f <closure_tick> 0000` (SkippedTickClosure) read, one byte in,
       # as `count=2` + a phantom PeerDisconnect with peer_id=0xAE60=44640
       # ("Player_44641 left the game").
-      if alen && %w[close_gui zoom_around_point move_on_pan close_remote_view
+      if alen && %i[close_gui zoom_around_point move_on_pan close_remote_view
                     change_picking_state selected_entity_changed_very_close
                     selected_entity_changed_very_close_precise
                     selected_entity_changed_relative

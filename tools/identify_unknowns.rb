@@ -38,7 +38,7 @@ FILES.each do |path|
       end
       hb[:tick_closures].each do |tc|
         (tc[:actions] || []).each do |a|
-          next unless a[:hit_unknown] || a[:name].to_s =~ /Unknown/
+          next unless a[:hit_unknown] || a[:name].is_a?(String)
           key = a[:name] || "Unknown(#{a[:type]})"
           e = actions[key]
           e[:count] += 1

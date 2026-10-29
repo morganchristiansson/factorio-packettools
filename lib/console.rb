@@ -20,8 +20,8 @@ class ViewFilter
   def visible?(pname, act)
     name = pname.to_s.downcase
     return false if @show_players.any? && !@show_players.include?(name)
-    return false if @hide_actions.include?(act[:name])
-    return false if @show_actions.any? && !@show_actions.include?(act[:name])
+    return false if @hide_actions.include?(act[:name].to_s)
+    return false if @show_actions.any? && !@show_actions.include?(act[:name].to_s)
     true
   end
 

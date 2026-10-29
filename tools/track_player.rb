@@ -60,7 +60,7 @@ PcapReader.new(path).each_packet do |_, ts, src, dst, sport, dport, udp, _|
     (tc[:actions] || []).each do |a|
       next unless a[:game_player] == PLAYER
       case a[:name]
-      when 'start_walking'
+      when :start_walking
         d = a[:data]
         next unless d && d.bytesize >= 16
         dx = d.unpack('E', offset: 0).first
@@ -75,17 +75,17 @@ PcapReader.new(path).each_packet do |_, ts, src, dst, sport, dport, udp, _|
         end
         last_tick = tick
         walking = true
-      when 'stop_walking'
+      when :stop_walking
         pos = advance!(pos, dir, last_tick, tick, SPEED) if walking
         walking = false
         last_tick = tick
-      when 'selected_entity_changed_relative'
+      when :selected_entity_changed_relative
         d = a[:data]
         if d && d.bytesize >= 4
           last_off = [d.unpack('s<', offset: 0).first / 256.0,
                       d.unpack('s<', offset: 2).first / 256.0, tick]
         end
-      when 'build'
+      when :build
         # advance to now, then anchor: player = build_pos - cursor_offset
         pos = advance!(pos, dir, last_tick, tick, SPEED) if walking
         d = a[:data]
@@ -96,7 +96,7 @@ PcapReader.new(path).each_packet do |_, ts, src, dst, sport, dport, udp, _|
           pos = [bx - last_off[0], by - last_off[1]]
           anchors += 1
         end
-      when 'begin_mining', 'stop_mining'
+      when :begin_mining, :stop_mining
         pos = advance!(pos, dir, last_tick, tick, SPEED) if walking
         target = nil
         off_age = last_off ? tick - last_off[2] : nil
@@ -115,4 +115,4 @@ PcapReader.new(path).each_packet do |_, ts, src, dst, sport, dport, udp, _|
 end
 
 puts "player p#{PLAYER}  #{T0.strftime('%H:%M:%S')}..#{T1.strftime('%H:%M:%S')}  speed=#{SPEED} tiles/tick  anchors=#{anchors}"
-rows.each { |t, tick, name, ppos, tgt, a| puts "#{t.strftime('%H:%M:%S.%L')} tick #{tick} #{name.ljust(12)} #{ppos} #{tgt}" }
+rows.each { |t, tick, name, ppos, tgt, a| puts "#{t.strftime('%H:%M:%S.%L')} tick #{tick} #{name.to_s.ljust(12)} #{ppos} #{tgt}" }

@@ -198,7 +198,7 @@ class ActionValidator
     @mutex.synchronize do
       note_wire_actions_for_state(wire.size)
       return if @logging_on == false # no log lines to join — don't buffer
-      wire.each { |a| @unknown_seen[a[:type]] += 1 if a[:name].to_s.start_with?('Unknown') }
+      wire.each { |a| @unknown_seen[a[:type]] += 1 if a[:name].is_a?(String) }
       # Segment payloads (chat, blueprint-shelf updates) are not input actions
       # and never appear as `Action performed` lines — keep them out of the
       # wire sequence or every shelf update becomes a phantom mismatch.
@@ -207,7 +207,7 @@ class ActionValidator
         # write_to_console DOES get one `Action performed` line when its
         # LAST segment arrives. Exclude everything else that is segmented.
         if a[:total_segs] &&
-           !(a[:name] == 'write_to_console' && a[:seg_no].to_i == a[:total_segs] - 1)
+           !(a[:name] == :write_to_console && a[:seg_no].to_i == a[:total_segs] - 1)
           next []
         end
         n = build_terrain_actions(a)
@@ -465,7 +465,7 @@ class ActionValidator
   # the log prints one BuildTerrain line per record. The payload is N*13
   # bytes plus a 2-byte `b5 00` separator between records, i.e. 15N-2.
   def build_terrain_actions(action)
-    return 1 unless action[:name] == 'build_terrain' && action[:data]
+    return 1 unless action[:name] == :build_terrain && action[:data]
     len = action[:data].bytesize
     n = (len + 2) / 15
     (n >= 1 && n * 15 - 2 == len) ? n : 1
@@ -507,7 +507,7 @@ class ActionValidator
     @votes[wire_type][log_name] += 1
     wire_name = FactorioProtocol.action_name(wire_type)
     offset_note = log_tick == 0 ? '' : " (log at tick #{actual_log_tick}, offset +#{log_tick})"
-    if wire_name.start_with?('Unknown')
+    if wire_name.is_a?(String)
       @stats[:not_in_table] += 1
     elsif normalize(wire_name) == normalize(log_name)
       @stats[:ok] += 1

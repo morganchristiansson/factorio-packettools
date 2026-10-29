@@ -120,7 +120,7 @@ class FactorioClientBuildTest < Minitest::Test
     assert_equal 1, hb[:tick_closures][0][:actions].size
     a = hb[:tick_closures][0][:actions][0]
     assert_equal 312, a[:type]
-    assert_equal 'set_player_color', a[:name]
+    assert_equal :set_player_color, a[:name]
     assert_equal 3, a[:game_player] # (0xFFFF + delta 3) & 0xFFFF = 2, +1 = 3
     assert_equal "\x01\x02\x03\x04".b, a[:data]
   end

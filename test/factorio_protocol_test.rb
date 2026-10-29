@@ -43,7 +43,7 @@ class TestFactorioProtocol < Minitest::Test
   def test_deconstruct_data_length
     entry = FactorioProtocol::ACTIONS_21[132]
     refute_nil entry
-    assert_equal 'deconstruct', entry[0]
+    assert_equal :deconstruct, entry[0]
     assert_equal 16, entry[1], 'deconstruct should be 16 bytes (area selection)'
   end
 
@@ -58,7 +58,7 @@ class TestFactorioProtocol < Minitest::Test
     result = FactorioProtocol.parse_udp_payload(pkt)
     actions = extract_actions(result)
     assert_equal 1, actions.size, 'metadata after first action should be filtered'
-    assert_equal 'deconstruct', actions[0][:name]
+    assert_equal :deconstruct, actions[0][:name]
     assert_equal 2, actions[0][:game_player]
 
     d = actions[0][:data]
@@ -84,7 +84,7 @@ class TestFactorioProtocol < Minitest::Test
     result = FactorioProtocol.parse_udp_payload(pkt)
     actions = extract_actions(result)
     assert_equal 2, actions.size, 'both real actions kept (no wrapper to strip)'
-    assert_equal 'deconstruct', actions[0][:name]
+    assert_equal :deconstruct, actions[0][:name]
     assert_equal 2, actions[0][:game_player]
   end
 
@@ -98,7 +98,7 @@ class TestFactorioProtocol < Minitest::Test
     result = FactorioProtocol.parse_udp_payload(pkt)
     actions = extract_actions(result)
     assert_equal 1, actions.size, 'server_tick_info wrapper should be stripped'
-    assert_equal 'deconstruct', actions[0][:name]
+    assert_equal :deconstruct, actions[0][:name]
     # wire 0-indexed; decoded game_player is the user-facing 1-indexed Lua id
     assert_equal 3, actions[0][:game_player]
   end
@@ -200,7 +200,7 @@ class TestFactorioProtocol < Minitest::Test
 
   def test_build_data_length
     entry = FactorioProtocol::ACTIONS_21[69]
-    assert_equal ['build', 16], entry
+    assert_equal [:build, 16], entry
   end
 
   def test_build_decodes_position_and_dir
@@ -216,7 +216,7 @@ class TestFactorioProtocol < Minitest::Test
     result = FactorioProtocol.parse_udp_payload(pkt)
     actions = extract_actions(result)
     assert_equal 1, actions.size
-    assert_equal 'build', actions[0][:name]
+    assert_equal :build, actions[0][:name]
 
     d = actions[0][:data]
     bx = d.unpack1('i', offset: 0)
@@ -366,9 +366,9 @@ class TestFactorioProtocol < Minitest::Test
     # corrects this via merge. Without the correction, the parser would name
     # type 107 "change_active_item_group_for_crafting" and never hit the
     # write_to_console name-based hack.
-    assert_equal 'write_to_console', FactorioProtocol.action_name(107)
-    assert_equal 'gui_confirmed', FactorioProtocol.action_name(106)
-    assert_equal 'market_offer', FactorioProtocol.action_name(108)
+    assert_equal :write_to_console, FactorioProtocol.action_name(107)
+    assert_equal :gui_confirmed, FactorioProtocol.action_name(106)
+    assert_equal :market_offer, FactorioProtocol.action_name(108)
     assert_nil FactorioProtocol.action_len(107)
   end
 
@@ -385,7 +385,7 @@ class TestFactorioProtocol < Minitest::Test
     actions = extract_actions(result)
     assert_equal 1, actions.size
     assert_equal 107, actions[0][:type]
-    assert_equal 'write_to_console', actions[0][:name]
+    assert_equal :write_to_console, actions[0][:name]
     assert_equal '/reset', FactorioProtocol.decode_chat(actions[0][:data])
   end
 
@@ -402,7 +402,7 @@ class TestFactorioProtocol < Minitest::Test
     actions = extract_actions(result)
     assert_equal 1, actions.size
     assert_equal 107, actions[0][:type]
-    assert_equal 'write_to_console', actions[0][:name]
+    assert_equal :write_to_console, actions[0][:name]
     assert_equal '/evolution', FactorioProtocol.decode_chat(actions[0][:data])
   end
 
@@ -466,9 +466,9 @@ class TestFactorioProtocol < Minitest::Test
   # ── Action name / len lookup ───────────────────────────────────
 
   def test_action_name_known
-    assert_equal 'deconstruct', FactorioProtocol.action_name(132)
-    assert_equal 'build', FactorioProtocol.action_name(69)
-    assert_equal 'write_to_console', FactorioProtocol.action_name(107)
+    assert_equal :deconstruct, FactorioProtocol.action_name(132)
+    assert_equal :build, FactorioProtocol.action_name(69)
+    assert_equal :write_to_console, FactorioProtocol.action_name(107)
   end
 
   def test_action_name_unknown
@@ -672,27 +672,27 @@ class TestFactorioProtocol < Minitest::Test
     # set_slot: [item][slot][op][src u16][client tick u32] — substation (30)
     # into slot 0, out of inventory slot 32, stamped 17 ticks before the
     # closure tick 107036661 (0x06613FE2).
-    set = qb.decode(name: 'quick_bar_set_slot',
+    set = qb.decode(name: :quick_bar_set_slot,
                     data: ['1e00002000e23f6106'].pack('H*'))
     assert_equal({item: 30, slot: 0, op: 0, src: 32, tick: 0x06613FE2}, set)
 
     # op 1 = clear, src 0xFFFF = no source
-    clear = qb.decode(name: 'quick_bar_set_slot',
+    clear = qb.decode(name: :quick_bar_set_slot,
                       data: ['200001ffff01920100'].pack('H*'))
     assert_equal 1, clear[:op], 'op 1 clears the slot'
     assert_nil clear[:src], '0xFFFF means "no source"'
 
     # pick_slot is 4 bytes (was decoded as 0, which ate the next action)
-    pick = qb.decode(name: 'quick_bar_pick_slot', data: ['1e000100'].pack('H*'))
+    pick = qb.decode(name: :quick_bar_pick_slot, data: ['1e000100'].pack('H*'))
     assert_equal({item: 30, slot: 0, op: 1}, pick)
-    assert_equal :undecodable, qb.decode(name: 'quick_bar_pick_slot', data: ['1e0001'].pack('H*')),
+    assert_equal :undecodable, qb.decode(name: :quick_bar_pick_slot, data: ['1e0001'].pack('H*')),
                  'a payload of the wrong size is :undecodable, not a guess'
-    assert_nil qb.decode(name: 'use_item', data: ['1e0001'].pack('H*')),
+    assert_nil qb.decode(name: :use_item, data: ['1e0001'].pack('H*')),
                  'a non-quickbar action decodes to nil, so callers can tell the two apart'
 
     # page: byte 1 of set_selected_page, byte 0 of change_active_quick_bar
-    assert_equal({page: 2}, qb.decode(name: 'quick_bar_set_selected_page', data: ['0002'].pack('H*')))
-    assert_equal({page: 2}, qb.decode(name: 'change_active_quick_bar', data: ['02'].pack('H*')))
+    assert_equal({page: 2}, qb.decode(name: :quick_bar_set_selected_page, data: ['0002'].pack('H*')))
+    assert_equal({page: 2}, qb.decode(name: :change_active_quick_bar, data: ['02'].pack('H*')))
     # The 2.0 pin for pick_slot's wire length (4 bytes: the action after it
     # survives) died with the 2.0 lens; stable 2.1's pick_slot length is
     # unmeasured (table 0, never in the capture set).

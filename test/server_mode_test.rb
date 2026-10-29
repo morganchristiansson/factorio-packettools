@@ -258,7 +258,7 @@ class TestServerMode < Minitest::Test
     sniffer = make_test_sniffer(server: true, host_ips: [SERVER_IP])
     data = [0x80, 0x2e, 0x02, 0x00, 0x80, 0x55, 0x00, 0x00, 0x06].pack('C*').b
     assert_equal ' pos=(558.500, 85.500) dir=southeast',
-                 sniffer.send(:format_action_data, { name: 'build', data: data })
+                 sniffer.send(:format_action_data, { name: :build, data: data })
   end
 
   # ── Test 4: server mode auto-detection ────────────────────────────────
@@ -1031,7 +1031,7 @@ class TestServerMode < Minitest::Test
     sniffer.instance_variable_set(:@unknown_writer, unknown)
     frame = ("\x00" * 14 + 'chat').b
 
-    act = ->(data) { {name: 'write_to_console', game_player: 1, type: 1, data: data} }
+    act = ->(data) { {name: :write_to_console, game_player: 1, type: 1, data: data} }
     capture_io { sniffer.send(:log_action, 1.0, act.call("\x04ol\xe1".b), false, raw_frame: frame) }
     assert_equal 1, unknown.records.size, 'invalid UTF-8 chat forwarded to the unknown-packet corpus'
 
@@ -1259,7 +1259,7 @@ class TestServerMode < Minitest::Test
       sniffer.instance_variable_set(:@player_db, db)
       db[3] = { name: 'karada' }
       # 2.0 wire 296 = set_player_color; the name comes from the game index
-      act = { name: 'set_player_color', type: 296, game_player: 3,
+      act = { name: :set_player_color, type: 296, game_player: 3,
               data: [255, 255, 255, 127].pack('C4') }
       capture_io { sniffer.send(:log_action, 0, act, false) }
       assert_equal [1.0, 1.0, 1.0, 0.498], db[3][:color],
@@ -1270,7 +1270,7 @@ class TestServerMode < Minitest::Test
 
       # An unknown player (no name bound to that index) is left alone: a
       # colour with no owner would poison whoever takes that slot later.
-      other = { name: 'set_player_color', type: 296, game_player: 9, data: "\x00\x00\x00\x7F".b }
+      other = { name: :set_player_color, type: 296, game_player: 9, data: "\x00\x00\x00\x7F".b }
       capture_io { sniffer.send(:log_action, 0, other, false) }
       assert_nil db[9], 'no name, no write — the packet path never invents a record'
     end

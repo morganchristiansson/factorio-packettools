@@ -44,17 +44,17 @@ module FactorioProtocol
     def self.decode(act)
       d = act[:data]
       case act[:name]
-      when 'quick_bar_set_slot'
+      when :quick_bar_set_slot
         return :undecodable unless d && d.bytesize == 9
         src = d.unpack1('v', offset: 3)
         {item: d.getbyte(0), slot: d.getbyte(1), op: d.getbyte(2),
          src: (src == 0xFFFF ? nil : src), tick: d.unpack1('V', offset: 5)}
-      when 'quick_bar_pick_slot'
+      when :quick_bar_pick_slot
         return :undecodable unless d && d.bytesize == 4
         {item: d.getbyte(0), slot: d.getbyte(1), op: d.getbyte(2)}
-      when 'quick_bar_set_selected_page'
+      when :quick_bar_set_selected_page
         d && d.bytesize >= 2 ? {page: d.getbyte(1)} : :undecodable
-      when 'change_active_quick_bar'
+      when :change_active_quick_bar
         d && !d.empty? ? {page: d.getbyte(0)} : :undecodable
       end
     end

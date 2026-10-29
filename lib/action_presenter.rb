@@ -19,7 +19,7 @@ class ActionPresenter
     d = act[:data]
 
     case act[:name]
-    when "start_walking"
+    when :start_walking
       dir = FactorioProtocol::Position.direction(act)
       if dir && dir.size >= 2
         x, y = dir
@@ -36,62 +36,62 @@ class ActionPresenter
           return " dir=(#{'%.1f' % x}, #{'%.1f' % y})"
         end
       end
-    when "begin_mining_terrain"
+    when :begin_mining_terrain
       pos = FactorioProtocol::Position.decode(act)
       return " pos=(#{'%.3f' % pos[0]}, #{'%.3f' % pos[1]})" if pos
-    when "drop_item"
+    when :drop_item
       # 8-byte payload is a DIRECTION double, not a position (verified
       # 2026-08-16). Print it as a direction to avoid emitting a bogus
       # position from the raw i32s.
       dir = FactorioProtocol::Position.direction(act)
       return " dir=(#{'%.2f' % dir[0]})" if dir
-    when "deconstruct"
+    when :deconstruct
       area = FactorioProtocol::Position.decode(act)
       if area
         x1, y1, x2, y2 = area
         return " area=(#{'%.3f' % x1}, #{'%.3f' % y1})-(#{'%.3f' % x2}, #{'%.3f' % y2})"
       end
-    when "open_item", "use_item", "start_repair"
+    when :open_item, :use_item, :start_repair
       if d.bytesize >= 4
         eid = d.unpack1('V')
         return " entity=##{eid}"
       end
-    when "change_shooting_state"
+    when :change_shooting_state
       pos = FactorioProtocol::Position.decode(act)
       if pos && d.bytesize >= 9
         return " shooting=#{d.getbyte(0)} pos=(#{'%.3f' % pos[0]}, #{'%.3f' % pos[1]})"
       end
-    when "build"
+    when :build
       pos = FactorioProtocol::Position.decode(act)
       if pos && d.bytesize >= 9
         dir = d.getbyte(8)
         dname = FactorioTypes::DIR_NAMES[dir] || dir
         return " pos=(#{'%.3f' % pos[0]}, #{'%.3f' % pos[1]}) dir=#{dname}"
       end
-    when "move_on_pan"
+    when :move_on_pan
       pos = FactorioProtocol::Position.decode(act)
       return " pan=(#{'%.3f' % pos[0]}, #{'%.3f' % pos[1]})" if pos
-    when "rotate_entity"
+    when :rotate_entity
       return " dir=#{d.getbyte(0)}"
-    when "flush_opened_entity_specific_fluid"
+    when :flush_opened_entity_specific_fluid
       # 1-byte selector (0x00/0x01 observed). Whether it is a fluid
       # prototype ID (prototypes.fluid order: 1=water, 4=petroleum-gas,
       # 5=light-oil …) is unverified — the fluid may be resolved by the
       # simulation (on_player_flushed_fluid event, Lua-only). Test: flush
       # a KNOWN fluid and compare the byte.
       return " selector=0x#{d.getbyte(0).to_s(16)}" if d.bytesize >= 1
-    when "flush_opened_entity_fluid"
+    when :flush_opened_entity_fluid
       return " flush" if d.bytesize >= 1
-    when "fast_entity_split"
+    when :fast_entity_split
       return " slot=#{d.getbyte(0)}"
-    when "fast_entity_transfer"
+    when :fast_entity_transfer
       dir = d.getbyte(0) == 1 ? 'put' : 'take'
       return " #{dir}"
-    when "change_riding_state"
+    when :change_riding_state
       return " vehicle=#{d.unpack1('v')}" if d.bytesize >= 2
-    when "craft"
+    when :craft
       return " recipe_id=#{d.unpack1('V')}" if d.bytesize >= 4
-    when "cursor_transfer"
+    when :cursor_transfer
       if d.bytesize >= 9
         item_id = d.unpack1('v')
         item_name = @item_db ? @item_db.name(item_id) : "item_#{item_id}"
@@ -99,7 +99,7 @@ class ActionPresenter
         act = action == 1 ? 'put' : 'clear'
         return " #{item_name} #{act}"
       end
-    when "open_gui"
+    when :open_gui
       if d.bytesize >= 14
         gt = d.getbyte(0)
         flag = d.getbyte(1)
@@ -125,7 +125,7 @@ class ActionPresenter
         state = flag == 0 ? 'open' : 'close'
         return " #{state} #{gname} tick=#{tick}"
       end
-    when "selected_entity_changed_very_close",
+    when :selected_entity_changed_very_close,
          "selected_entity_changed_very_close_precise",
          "selected_entity_changed_relative"
       # NOT a decoded layout: hovering a known coal patch shows a payload
@@ -134,7 +134,7 @@ class ActionPresenter
       # is buried in the body and varies with the entity's content; don't
       # mislabel it. Show raw bytes for review.
       return " #{d[0, 18].unpack1('H*')}"
-    when "selected_entity_cleared"
+    when :selected_entity_cleared
       # Client: [tick(4)][pad(4)]; server echo: [55 ff ff ff][token(4)] (or
       # [41 ff ff ff]). The 0x54-echo heuristic the old code used was wrong —
       # real echoes start 55 ff ff ff — so unconsumed S→C echoes printed the
@@ -145,23 +145,23 @@ class ActionPresenter
         tick = d.unpack1('V', offset: 0)
         return " tick=#{tick}"
       end
-    when "zoom_around_point"
+    when :zoom_around_point
       if d.bytesize >= 24
         a, b, c = d.unpack('E3')
         return " (#{'%.2f' % a}, #{'%.2f' % b}, #{'%.2f' % c})"
       end
-    when "render_mode_changed"
+    when :render_mode_changed
       return " mode=#{d.getbyte(0)}" if d.bytesize >= 1
-    when "remote_view_surface"
+    when :remote_view_surface
       if d.bytesize >= 4
         surf_id = d[0, 4].unpack1('N')
         return " surface=#{surf_id}"
       end
-    when "setup_assembling_machine"
+    when :setup_assembling_machine
       return " recipe=#{d.unpack1('v')}" if d.bytesize >= 2
-    when "connect_rolling_stock", "disconnect_rolling_stock"
+    when :connect_rolling_stock, :disconnect_rolling_stock
       return " ref=#{d.unpack1('V')}" if d.bytesize >= 4
-    when "pipette"
+    when :pipette
       if d.bytesize >= 9
         src = d.getbyte(0)
         ref = d.unpack1('V', offset: 1)
@@ -180,20 +180,20 @@ class ActionPresenter
         end
         return " src=#{src} ref=#{ref} qual=#{qual}"
       end
-    when "stack_transfer", "inventory_transfer"
+    when :stack_transfer, :inventory_transfer
       if d.bytesize >= 5
         item_id = d.unpack1('v')
         item_name = @item_db ? @item_db.name(item_id) : "item_#{item_id}"
         count = d.unpack1('v', offset: 2)
         return " #{item_name} count=#{count}"
       end
-    when "quick_bar_set_slot", "quick_bar_pick_slot",
-         "quick_bar_set_selected_page", "change_active_quick_bar"
+    when :quick_bar_set_slot, :quick_bar_pick_slot,
+         :quick_bar_set_selected_page, :change_active_quick_bar
       qb = FactorioProtocol::QuickBar.decode(act)
       return " #{quickbar_str(qb)}" if qb.is_a?(Hash)
-    when "copy"
+    when :copy
       return " flags=#{d.unpack1('v')}" if d.bytesize >= 2
-    when "cheat"
+    when :cheat
       return ''
     end
 
