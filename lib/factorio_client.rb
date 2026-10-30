@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'socket'
+require_relative 'factorio_data'
 require_relative 'factorio_protocol'
 require_relative 'factorio_protocol/build'
 require_relative 'factorio_save'
@@ -71,8 +72,11 @@ class FactorioClient
     return [@version, @build] if @version
     info = FactorioServerProbe.info("#{@host}:#{@port}")
     raise "#{@host}:#{@port} did not answer a GameInformationRequest" unless info
+    # msg 17 carries each mod's CRC32 with its name/version; that is the exact
+    # list the server compares our msg-4 confirm against.
+    @mods = info[:mods]
     log("#{@host}:#{@port} — #{info[:name].to_s.strip} #{info[:version]} build #{info[:build]}, " \
-        "#{info[:players].length} players, #{info[:mods].length} mods")
+        "#{info[:players].length} players, #{@mods.length} mods")
     [info[:version], info[:build]]
   end
 
@@ -120,13 +124,18 @@ class FactorioClient
     @remote_ip = @socket.peeraddr[3]  # resolved IP for pcap frame headers
 
     @client_id = 0xdedb3eda
-    # coreChecksum + prototypeListChecksum (uint32 LE each). The server refuses
-    # a mismatch as CoreModMismatch / PrototypeChecksumMismatch. These are
-    # 2.1.23 with the test server's base+recycler (tools/test_server.sh):
-    # factorio-current.log prints "Checksum for core" / "Prototype list checksum".
-    @checksums = [3_668_028_660, 2_725_040_850].pack('V2')
+    # coreChecksum + prototypeListChecksum (uint32 LE each). These are not in
+    # msg 17 and cannot be derived from the mod CRCs; ask the local Factorio
+    # data stage once (cached across reconnects). A mismatch is refused as
+    # CoreModMismatch / PrototypeChecksumMismatch.
+    local = FactorioData.cached(save_data: false)
+    @checksums = [local.core, local.prototype_list].pack('V2')
+    server_mod_names = (@mods || []).map(&:first).sort
+    if !server_mod_names.empty? && local.mods.keys.sort != server_mod_names
+      log("WARNING: local data mods #{local.mods.keys.sort.inspect} != server mods #{server_mod_names.inspect}")
+    end
 
-    mods = [['base', '2.1.23', 3_864_816_957], ['recycler', '2.1.23', 3_293_728_126]]
+    mods = @mods || []
 
     5.times do |attempt|
       log("Handshake attempt #{attempt + 1}/5...")

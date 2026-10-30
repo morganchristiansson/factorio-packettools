@@ -289,7 +289,12 @@ module FactorioProtocol
     nm.times do
       pos2, l = decode_uint32v(p, pos)
       return nil if l.nil? || p.bytesize < pos2 + l + 7
-      info[:mods] << [p[pos2, l], p[pos2 + l, 3].bytes.join('.')]
+      # name + 3-byte version + u32 CRC32, then the next length-prefixed
+      # name. The CRC is the same per-mod checksum the server prints as
+      # "Checksum of <mod>" and the client repeats in msg 4, so a probe is
+      # enough to learn a server's whole mod list (tools/query_server.rb
+      # prints only name+version).
+      info[:mods] << [p[pos2, l], p[pos2 + l, 3].bytes.join('.'), p[pos2 + l + 3, 4].unpack1('V')]
       pos = pos2 + l + 7
     end
     info[:tags], pos = read_info_strings(p, pos)

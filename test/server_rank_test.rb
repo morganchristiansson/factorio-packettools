@@ -64,7 +64,7 @@ class ServerRankSpec < Minitest::Test
     assert_equal 84539, info[:build]
     assert_equal '1.2.3.4:5', info[:host]
     assert_equal 4.0, info[:time_min]
-    assert_equal [['base', '2.0.77']], info[:mods]
+    assert_equal [['base', '2.0.77', 0x70059c86]], info[:mods]
     assert_equal %w[bob alice], info[:players]
     assert_equal [], info[:tags]
   end
@@ -91,7 +91,7 @@ class ServerRankSpec < Minitest::Test
                      .sub("\x00\x02\x03bob".b, "\x00\xff\x02\x00\x00\x00\x03bob".b)
     assert_equal fake_reply.bytesize + 8, ext.bytesize # anchors hit
     info = FactorioProtocol.parse_game_info(ext)
-    assert_equal [['base', '2.0.77']], info[:mods]
+    assert_equal [['base', '2.0.77', 0x70059c86]], info[:mods]
     assert_equal %w[bob alice], info[:players]
   end
 
