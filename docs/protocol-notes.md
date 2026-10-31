@@ -550,8 +550,8 @@ not the message. Order by `frag_number` until the `0x80` last-frag flag:
 `FactorioProtocol.reassemble_fragments` does exactly that (and
 `FactorioProtocol::GAME_INFO_REQUEST` builds the one-byte msg 16 that starts
 the probe) — the wire format lives with the rest of it on FactorioProtocol,
-and `lib/server_probe.rb` (`FactorioServerProbe`) is left with sockets, timeouts
-and threads — the transport only.
+and `lib/server_probe.rb` (`FactorioServerProbe`) is left with sockets
+and timeouts — the transport only.
 
 The other fragmenting message is msg 17 (GameInformationRequestReply): it
 splits the same way on a big server (its 505-mod count is the

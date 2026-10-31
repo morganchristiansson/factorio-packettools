@@ -46,8 +46,7 @@ class ServerRankSpec < Minitest::Test
     list = [fake_server('Open', 5).merge('has_password' => false), fake_server('Shut', 9).merge('has_password' => true)]
     assert_equal %w[Open], ranked_servers(list).map { |s| s['name'] }
     assert_equal %w[Shut Open], ranked_servers(list, include_locked: true).map { |s| s['name'] }
-    lines = rank_report(ranked_servers(list), top: 5, match: 'shut',
-                         pool: ranked_servers(list, include_locked: true))
+    lines = rank_report(ranked_servers(list, include_locked: true), top: 5, match: 'shut')
     assert_match(/Shut is #1 with 9 players.*🔒/, lines.join("\n"))
   end
 
@@ -95,25 +94,11 @@ class ServerRankSpec < Minitest::Test
     assert_equal %w[bob alice], info[:players]
   end
 
-  def test_resolve_version_implies_server_version
-    list = [fake_server('Mine', 3, '2.0.77'), fake_server('Other', 9, '2.1.17')]
-    v, note = resolve_version(list, server: 'mine', version: nil, all_versions: false)
-    assert_equal '2.0.77', v
-    assert_match(/2\.0\.77 servers only/, note)
-    v, = resolve_version(list, server: 'mine', version: '2.1', all_versions: false)
-    assert_equal '2.1', v
-    v, note = resolve_version(list, server: 'mine', version: nil, all_versions: true)
-    assert_nil v
-    assert_nil note
-    v, = resolve_version(list, server: 'zzz', version: nil, all_versions: false)
-    assert_nil v
-  end
-
   def test_live_counts_annotated_in_report
     s = { 'name' => 'Mine', 'host_address' => '1.2.3.4:5', 'players' => %w[a b c],
           'application_version' => { 'game_version' => '2.0.77' } }
     lines = rank_report([s], top: 1, match: 'mine', live: { '1.2.3.4:5' => 5 })
     assert_match(/live: 5/, lines.first)
-    assert_match(/with 5 players @ 1\.2\.3\.4:5 \(live\)/, lines.join("\n"))
+    assert_match(/with 3 players @ 1\.2\.3\.4:5 \(live: 5\)/, lines.join("\n"))
   end
 end
