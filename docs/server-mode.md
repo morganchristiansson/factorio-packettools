@@ -122,6 +122,19 @@ RCON data queries use `rcon.print` with `helpers.table_to_json`; the
 `player_attributes` query carries the 1-indexed game id, name, flags,
 online/afk ticks, and locale. The built-in `/players` works but lists names
 only, so it cannot bind packet actions to players.
+
+**The startup roster is the identity source.** `game.players` knows EVERY
+player of the current savefile (offline included), so the startup query
+gives us index → name for all of them — the wire carries a name only for a
+join we happened to watch, and a player who joined before the sniffer
+started has no other source. The cache (`players-cache.json`) is therefore
+seeded from that roster at startup, and it is VALID or NOTHING: it cannot
+hold more players than the save has, no index may sit above the save's
+last one, and its names must match the roster's. Fails any of those ⇒ the
+whole cache is dropped — the file is per-SAVE (game indexes are handed
+out per savefile), and a leftover from another save names a different
+player at the same index: its quickbar and colour belong to someone else,
+and the `player_backup` feature would restore them to the wrong player.
 - Auth quirk: `authenticate!(ignore_first_packet: false)` — Factorio sends
   ONE auth reply, the gem's default expects two and times out.
 - `/sc` (silent) instead of `/c` so commands don't print to players.

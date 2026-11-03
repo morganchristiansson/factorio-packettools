@@ -118,9 +118,62 @@ class PlayerDatabase
     end
   end
 
+  # The name for a game index, or the "Player_#N" placeholder when we have
+  # no name for it. NEVER nil: a record without a name (a leftover from a
+  # nameless write) used to make every read nil, and a chat printed with an
+  # empty author ("-> : hello"), which the Discord relay forwarded as a
+  # nameless message.
   def lookup(id)
     p = @players[id]
-    p ? p[:name] : "Player_#{id}"
+    name = p && p[:name]
+    name.nil? || name.empty? ? "Player_#{id}" : name
+  end
+
+  # ── The save this cache belongs to ─────────────────────────────────
+  #
+  # The game hands out game indexes PER SAVEFILE, so two different saves
+  # look the same (index 1, 2, 3 …) while holding DIFFERENT players. A
+  # cache carried over from another save is therefore not just stale, it is
+  # WRONG: the quickbar at index 5 belongs to another player, and the
+  # player_backup feature would restore it to whoever holds index 5 now.
+  #
+  # The cache is therefore VALID or it is nothing: it must be a SUBSET of
+  # this save's players — not more of them, no index above the save's last
+  # one, and the same names. A cache that fails that is dropped WHOLE (not
+  # patched: its quickbars and colours belong to other people).
+
+  # Is this cache valid for the given roster? The roster is an ARRAY of
+  # names in index order (game index N is roster[N-1]). The cache is valid
+  # only if it is a SUBSET of this save's players:
+  #   - it cannot hold MORE players than the save has (the live server
+  #     knows every player of its save, offline included);
+  #   - no index above the save's last one (that one belongs to another
+  #     savefile — the game hands out the indexes per savefile);
+  #   - and the names must match the roster's.
+  # Only the indexes the roster HAS a player for are compared — a missing
+  # entry is an older cache, not a contradiction.
+  def valid_for?(roster)
+    return false if @players.size > roster.size
+    @players.keys.each do |index|
+      return false if index > roster.size
+      name = roster[index - 1]
+      next unless name
+      mine = @players[index][:name]
+      return false if mine && mine != name
+    end
+    true
+  end
+
+  # Drop EVERY entry: the cache belongs to another savefile. Returns the
+  # number of dropped entries.
+  def clear!
+    @mutex.synchronize do
+      n = @players.size
+      @players = {}
+      rebuild_index
+      persist
+      n
+    end
   end
 
   # Names are forced to UTF-8 + scrubbed on Entry: packet-derived names can
@@ -151,6 +204,10 @@ class PlayerDatabase
       rec.delete(:name) if rec[:name].to_s.empty?
       merged = (@players[id] || {}).merge(rec)
       return if @players[id] == merged # same mapping again (a packet path re-stating it)
+      # Never CREATE a record without a name: it renders as "Player_#N" and
+      # takes a slot a real player may claim later. (An existing record keeps
+      # its name — only the fields given here change.)
+      return if !merged[:name] && !@players[id]
       @players[id] = merged
       @id_by_name[merged[:name]] = id if merged[:name]
       persist
@@ -398,7 +455,9 @@ class PlayerDatabase
       else
         nil
       end
-      rec = {name: v['name'] || v[:name], locale: v['locale'] || v[:locale], admin: admin}
+      name = v['name'] || v[:name]
+      next if name.nil? || name.to_s.empty? # a nameless record is junk — drop it
+      rec = {name: name, locale: v['locale'] || v[:locale], admin: admin}
       color = v['color'] || v[:color]
       rec[:color] = color if color.is_a?(Array) && color.length == 4
       rec[:quickbar] = v['quickbar'] if v['quickbar'].is_a?(Array)

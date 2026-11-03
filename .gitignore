@@ -16,6 +16,7 @@ mod-settings.dat
 # Runtime state
 players-cache.json
 players-locale.json
+players-backup.json
 # legacy pre-rename name (migrated on first load)
 players.json
 

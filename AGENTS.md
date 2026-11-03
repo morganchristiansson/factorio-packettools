@@ -124,11 +124,25 @@ either on a client or on the game server host (server mode, with RCON).
   `HivemindAgent#on_player_event(:joined, …)` (fires the greeting); clean
   leaves via the C→S `PeerDisconnect` sync action in the client's final
   heartbeat → `on_player_event(:left, …)` (console queue only, no reply).
-  A join appends to the sequential player list: the confirmed game index
-  must be max known index + 1 (a new player) or an index already owned by
-  the same name (returning). Anything else is flagged as a misdecoded join
-  (warned once, counted in the summary, frame kept in `unknown.packets`) and
-  NOT written to `players-cache.json`. S→C `NewPeerInfo` peer ids are
+  A join appends to the per-save player list: the confirmed game index must
+  be one the RCON roster of THIS save already owns (a returning player) or
+  above the roster's highest index (a new player, within the
+  `UNKNOWN_PLAYER_WINDOW`). "Exactly max + 1" was too strict (two players
+  can join between two heartbeats) and "max" must NOT come from
+  players-cache.json: that file is per-SAVEFILE and the game hands out
+  indexes per save, so a leftover entry from another save (index 385!)
+  made every real join look like a misdecode ("expected 386") — the join
+  was rejected, the name was never bound, and the player chatted as
+  `Player_108` forever. Startup therefore seeds the cache from the RCON
+  roster (index → NAME for EVERY player of the save, offline included —
+  the wire only carries a name for a join we happened to watch). The cache
+  is then VALID or it is NOTHING: it cannot hold more players than the
+  save has, and its names must match the roster's — otherwise the WHOLE
+  cache is dropped (its quickbars and colours belong to other people, and
+  player_backup would restore them to the wrong player). Leftovers above
+  the save's last index are dropped too. Anything else is
+  flagged as a misdecoded join (warned once, counted in the summary, frame
+  kept in `unknown.packets`) and NOT written to `players-cache.json`. S→C `NewPeerInfo` peer ids are
   validated as strictly above the last observed id (gaps are real: the
   connection-accept list only holds CURRENTLY online peers, so a late capture
   can jump 803→833); peer ids are a per-connection counter, never game indexes

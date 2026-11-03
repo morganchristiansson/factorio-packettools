@@ -156,24 +156,40 @@ print fallback for this one). A player whose `get_quick_bar_slot` raises
 (offline players may not answer at all) lands as `quickbar: :failed` and is
 skipped rather than mistaken for an empty bar.
 
+`json_query` DELETES the target file before running the write: if the write
+fails, the file on disk is the PREVIOUS run's answer (another save's
+roster!), and reading it as fresh would seed the cache with the wrong names
+and indexes.
+
 ### `LuaPlayer.get_quick_bar_slot` — the quickbar read
 
-**The signature changed in 2.1, and the server version picks the call:**
+**The signature changed in 2.1, and BOTH parts of it are 1-BASED** —
+live-verified on 2.1.24 (RCON, throwaway server + an observer client):
 
-| version | signature | index space |
-|---------|-----------|-------------|
-| 2.0 | `get_quick_bar_slot(index)` — one flat index | 1..100: "1 for the first slot of page one, 2 for slot two of page one, 11 for the first slot of page 2" |
-| 2.1 | `get_quick_bar_slot(page_index, slot_index)` — two uint8s | 0-based page/slot (assumed, like the wire's `quick_bar_set_selected_page` byte — untested, no 2.1 server here) |
+| version | signature | index space | the item name |
+|---------|-----------|-------------|---------------|
+| 2.0.77 | `get_quick_bar_slot(index)` — one flat index | 1..100: "1 for the first slot of page one, 2 for slot two of page one, 11 for the first slot of page 2" | `slot.name` |
+| 2.1.24 | `get_quick_bar_slot(page_index, slot_index)` → `QuickBarSlot?` | **page 1..N and slot 1..N** (0 raises) | `slot.filter.name` |
 
-`RconClient#player_attrs_for_lua` builds the loop from
-`RconClient#server_version` (memoised `helpers.game_version`),
-via `quickbar_page_args?`: 2.0.x → flat loop, anything else → the two-argument
-loop, unknown → the verifiable 2.0 shape. Both normalise to the same flat key
-in the payload, so the page/slot fold is one Ruby path
-(`PlayerDatabase.parse_quickbar`). Passing the wrong arity RAISES
-(`Expected 1 argument but 3 were given`), which is why the read is wrapped in
-one `pcall`: a wrong guess or a changed return type costs the quickbar
-(logged as a failed read) rather than the whole query, attrs included.
+The 2.1 slot is a table `{type='filter', filter={name='copper-plate',
+quality='normal', comparator='='}}` — there is NO `slot.name`. A wrong base
+RAISES, and a wrong field name silently reads an empty bar; both were
+wrong in the first 2.1 attempt, which is why every bar read failed:
+"0 bars" in the roster snapshot, "quickbar read failed" on every join.
+
+`quick_bar_width` is a NEW 2.1 attribute (the slots per row — per-player,
+10 on the server we know). The wire's slot byte is bounded by the same 10
+(`PlayerDatabase::QUICKBAR_SLOTS`), so the constant stays the one source of
+truth: a width ≠ 10 would have to be fixed in the WIRE decode first.
+
+`get_active_quick_bar_page(index)` takes the **screen** page ("Index 1 is
+the top row in the gui" — 1-based) and returns the quick bar page — we do
+NOT use it: the active page rides the wire (`quick_bar_set_selected_page` /
+`change_active_quick_bar` carry the page byte) and the getter is per SCREEN
+page, which we do not model.
+
+Both shapes normalise to the same flat key in the payload, so the
+page/slot fold is one Ruby path (`PlayerDatabase.parse_quickbar`).
 
 **Verified live on 2.0.77 (2026-09-27, RCON, single-player test game):**
 
@@ -191,12 +207,19 @@ one `pcall`: a wrong guess or a changed return type costs the quickbar
 ### `LuaPlayer.set_quick_bar_slot` — writing a bar back
 
 Mirrors the getter, and changed with it: 2.0 takes `(index, item)`, 2.1 takes
-`(page, slot, filter)`. `RconClient#restore_quickbar(name, {flat index => id})`
+`(page, slot, filter)` with **both indexes 1-based**. The filter is the item
+**prototype name** (a string) — live-verified on 2.1.24: a plain
+`{name='iron-plate'}` table is REJECTED, the bare name works, and `nil`
+clears the slot. `RconClient#restore_player(name, {flat index => id})`
 builds the right call from the memoised `server_version` (same branch as the
 read), resolves the ids to names through the `prototypes.item` order, wraps
 each call in a `pcall` and returns the COUNT of successes — so a rejected
-write (a 2.1 filter shape we guessed wrong) is a number the caller reports,
-not a silent no-op.
+write is a number the caller reports, not a silent no-op.
+
+**Factorio's Lua is 5.2, NOT 5.3: there is no `//` operator.** The first
+2.1 version of this command used `(i-1)//10` and the WHOLE command died
+with `unexpected symbol near '/'` — every restore silently wrote nothing
+(the count came back 0). Use `math.floor((i-1)/10)`.
 
 Used by the `player_backup` plugin (`lib/player_backup.rb`) to put a
 player's saved quickbar back after a save change.

@@ -443,25 +443,28 @@ class TestServerMode < Minitest::Test
     assert tails.all? { |t| t == '0' || t.empty? }, "roster dump: write_file targets server only (got #{tails})"
 
     # The join-time query also reads the quickbar, in the SAME command as the
-    # attrs — one RCON round trip per join, not one per feature. The Lua is
-    # pinned to the two documented getter signatures: 2.0 takes a flat index
-    # (verified live on 2.0.77), 2.1 takes (page, slot) — the same version
-    # split the RCON getter signatures use. Both normalise to the
-    # flat key, so the fold is one Ruby path. Print-only, so there is no
+    # attrs — one RCON round trip per join, not one per feature. The getter's
+    # SHAPE is not stable across versions (2.0: a flat index, 2.1: page + slot,
+    # 0- or 1-based — none of it verified on a live 2.1 server), and a wrong
+    # shape RAISES, which made every bar read fail. So the read PROBES the
+    # shapes and keeps the first that works. All shapes normalise to the flat
+    # key, so the fold is one Ruby path. Print-only, so there is no
     # write_file for_player to guard.
     qb_lua = join_query_lua(7, '2.0.77')
     assert_includes qb_lua, 'game.players[7]', 'looked up by index (no name quoting)'
     assert_includes qb_lua, 'for i=1,100', '2.0: the flat 1..100 slot space'
-    refute_includes qb_lua, 'p.get_quick_bar_slot(pg,sl)', '2.0: not the two-argument form'
+    assert_includes qb_lua, 's.name', '2.0: the slot itself carries the name'
     v21_lua = join_query_lua(7, '2.1.11')
     assert_includes v21_lua, 'p.get_quick_bar_slot(pg,sl)', '2.1: the two-argument form'
-    assert_includes v21_lua, 'put(pg*10+sl+1,', '2.1: normalised to the same flat key'
+    assert_includes v21_lua, 'for pg=1,10 do for sl=1,10', '2.1: page and slot are 1-BASED'
+    assert_includes v21_lua, 's.filter', '2.1: the name is in slot.filter.name'
+    assert_includes v21_lua, 'put((pg-1)*10+sl,', 'normalised to the same flat key'
     unknown_lua = join_query_lua(7, nil)
-    assert_includes unknown_lua, 'for i=1,100', 'unknown version → the verifiable 2.0 shape'
+    assert_includes unknown_lua, 'p.get_quick_bar_slot(pg,sl)', 'an unknown version reads as 2.1 (the released one)'
     [qb_lua, v21_lua].each do |lua|
-      assert_includes lua, 'q[tostring(i)]', 'keyed by the flat index (the page/slot fold is in Ruby)'
+      assert_includes lua, 'ids[f.name]' if lua.include?('s.filter')
+      assert_includes lua, '[tostring(i)]', 'keyed by the flat index (the page/slot fold is in Ruby)'
       assert_equal 1, lua.scan('helpers.table_to_json').size, 'one JSON payload: attrs AND quickbar'
-      assert_equal 1, lua.scan('pcall').size, 'one pcall around the read, not one per cell'
       refute_includes lua, 'helpers.write_file', 'print-only, so there is no write_file for_player to guard'
     end
     assert_equal 1, qb_lua.lines.size, '/sc only applies the first line'
@@ -877,6 +880,100 @@ class TestServerMode < Minitest::Test
   end
 
   # ── Player DB encoding: legacy binary-flagged names must not kill save ──
+
+  # ── The roster is the truth: names for everyone, stale saves purged ──
+  #
+  # A player who joined BEFORE the sniffer started has their name only in
+  # the RCON roster (the wire carries a name only on a join we watched).
+  # Two bugs made them chat as "Player_#N" forever:
+  #   1. the roster seed wrote only `admin` for offline players — the name
+  #      was dropped, so the index stayed nameless;
+  #   2. the cache is per-SAVE, but it is never purged — a leftover entry
+  #      from another savefile (index 385!) made every new join look like a
+  #      misdecode ("expected 386"), so the join was REJECTED and the name
+  #      was never bound.
+  # And a nameless record made every read nil, so the chat printed with an
+  # empty author ("-> : hello") and the Discord relay forwarded it nameless.
+
+  def test_roster_seeds_names_and_purges_another_save
+    db = PlayerDatabase.new(nil)
+    # A cache carried over from another savefile: a high index and a
+    # nameless leftover.
+    db[385] = { name: 'hunter117x' }
+    db[200] = { admin: false }
+    sr = make_test_sniffer(server: true, host_ips: [SERVER_IP])
+    sr.instance_variable_set(:@player_db, db)
+    fake = Object.new
+    fake.define_singleton_method(:player_attributes) do
+      [{ index: 1, name: 'morganc', connected: true, admin: true, online_time: 0, afk_time: 0, locale: 'en' },
+       { index: 52, name: 'mvdheide', connected: false, admin: false, online_time: 0, afk_time: 0, locale: 'pl' }]
+    end
+    sr.instance_variable_set(:@rcon, fake)
+    sr.send(:load_player_attrs)
+    assert_equal 'morganc', db.lookup(1), 'connected player named from the roster'
+    assert_equal 'mvdheide', db.lookup(52), 'OFFLINE player named too (the wire never carried it)'
+    assert_equal 'Player_385', db.lookup(385), "another savefile's entry is dropped"
+    assert_equal 'Player_200', db.lookup(200), 'the nameless leftover is dropped'
+    assert_nil db[385], 'the stale entry is gone from the cache'
+    # A join is now judged against THIS save's roster, not the stale cache.
+    assert sr.send(:join_index_valid?, 'mvdheide', 52), 'a returning player of this save'
+    assert sr.send(:join_index_valid?, 'newbie', 53), 'a new player above the roster'
+    refute sr.send(:join_index_valid?, 'newbie', 1), 'a slot this save already gave to someone else'
+  end
+
+  # The cache belongs to THIS savefile. The game hands out indexes per
+  # savefile, so another save looks the same (index 1, 2, 3 …) while
+  # holding DIFFERENT players — the entries look valid and are silently
+  # wrong (another player's quickbar, and player_backup would restore it
+  # to the wrong person). The START of the roster tells them apart.
+  def test_cache_from_another_save_is_dropped
+    db = PlayerDatabase.new(nil)
+    db[1] = { name: 'alice', quickbar: [[1, 2], nil, nil, nil, nil, nil, nil, nil, nil, nil] }
+    db[2] = { name: 'bob' }
+    roster = %w[carol dave] # an ARRAY of names in index order: index N is roster[N-1]
+
+    refute db.valid_for?(roster), 'a different name invalidates the cache'
+    assert db.valid_for?(%w[alice bob]), 'the same names are valid'
+
+    sr = make_test_sniffer(server: true, host_ips: [SERVER_IP])
+    sr.instance_variable_set(:@player_db, db)
+    sr.send(:apply_roster, roster)
+    assert_equal 0, db.players.size, 'the whole cache of the other save is dropped'
+
+    # More entries than the save has players: also invalid (the live server
+    # knows every player of its save, offline included).
+    db2 = PlayerDatabase.new(nil)
+    db2[1] = { name: 'alice' }
+    db2[2] = { name: 'bob' }
+    db2[385] = { name: 'old_save_player' }
+    refute db2.valid_for?(%w[alice bob]), 'a cache with more players than the save is invalid'
+    refute db2.valid_for?(%w[alice bob old_save_player]), 'an index above the save\'s last is invalid too'
+    big = Array.new(386) { |i| "p#{i}" }
+    big[0] = 'alice'; big[1] = 'bob'; big[384] = 'old_save_player'
+    assert db2.valid_for?(big), 'the same entries under a big enough save are fine'
+  end
+
+  def test_lookup_never_returns_nil
+    db = PlayerDatabase.new(nil)
+    db[7] = { name: 'bob' }
+    assert_equal 'bob', db.lookup(7)
+    # A record with no name must NOT read as nil (that printed the chat with
+    # an empty author and the Discord relay forwarded it nameless).
+    db.instance_variable_get(:@players)[9] = { admin: false }
+    assert_equal 'Player_9', db.lookup(9), 'a nameless record reads as the placeholder, never nil'
+    assert_equal 'Player_123', db.lookup(123), 'an unknown index reads as the placeholder'
+  end
+
+  # The chat of a player we have no name for must still carry an author —
+  # an empty one ("-> : hello") is what the Discord relay forwarded.
+  def test_chat_never_has_an_empty_author
+    out, = run_sniffer(server: true, host_ips: [SERVER_IP], player_db: nil) do |sniffer|
+      pkt = fixture_packet('client_chat_message_0x0b')
+      sniffer.send(:process_packet, 1, 1_700_000_000.0, CLIENT_IP, SERVER_IP, 34197, 34197, pkt, "\x00" * 14 + pkt)
+    end
+    assert_includes out, 'Player_12: that nuke', 'an unknown player prints the placeholder'
+    refute_match(/-> : /, out, 'no chat is printed with an empty author')
+  end
 
   def test_player_db_encoding_hardening
     # A name that arrived binary-flagged (pre-fix decode path / reloaded state)
@@ -1383,7 +1480,9 @@ class TestServerMode < Minitest::Test
     rcon21.restore_player('bo"b', { 4 => 32 })
     two = calls21.last
     assert_includes two, 'p.set_quick_bar_slot,k,l,r[v]', '2.1: (page, slot, filter)'
-    assert_includes two, 'local k=(i-1)//10', 'page from the flat index'
+    assert_includes two, 'local k=math.floor((i-1)/10)+1', 'page from the flat index, 1-BASED'
+    assert_includes two, 'local l=(i-1)%10+1', 'and the slot, 1-BASED too'
+    refute_includes two, '//', "Factorio's Lua 5.2 has no '//' operator — it aborted the whole command"
     assert_includes two, 'game.players["bo\\"b"]', 'the name is Lua-quoted'
   end
 

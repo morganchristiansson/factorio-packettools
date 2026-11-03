@@ -162,8 +162,8 @@ class RconClient
   # print_lua means there is no fallback and the file IS the answer.
   def json_query(filename, write_lua, print_lua)
     if @script_output_dir
-      execute(write_lua)
       path = File.join(@script_output_dir, filename)
+      execute(write_lua)
       body = File.read(path) if File.exist?(path)
       return body if body && !body.empty?
     end
@@ -213,24 +213,28 @@ class RconClient
   # The caller must have defined `p` (the LuaPlayer) and the `ids` name→id
   # map (ITEM_ID_MAP_LUA) first.
   #
-  # The read loop follows the server version because the getter changed in
-  # 2.1: 2.0 takes a flat index 1..100, 2.1 takes (page, slot).
-  # The 2.1 branch assumes 0-based page/slot, like the wire's
-  # quick_bar_set_selected_page byte. An unknown version falls back to the
-  # 2.0 shape; the pcall at each call site turns a wrong guess, or a changed
-  # return type, into a visible "quickbar read failed" — never a dead query,
-  # attrs included.
+  # The getter's SHAPE changed in 2.1, and both parts of it were wrong
+  # (0-based pages raise, and the slot has no `.name`), which is why every
+  # bar read failed on 2.1: "0 bars" in the roster snapshot and "quickbar
+  # read failed" on every join. BOTH shapes are now live-verified:
+  #   2.0.77 — get_quick_bar_slot(index): one flat index 1..100, and the
+  #            slot itself carries `.name`.
+  #   2.1.24 — get_quick_bar_slot(page_index, slot_index): BOTH indexes are
+  #            1-BASED (page 1, slot 1 = the first slot of the first page),
+  #            and the slot is `{type='filter', filter={name=…, quality=…,
+  #            comparator=…}}` — the item name is in `slot.filter.name`.
   def quickbar_read_lua(qvar)
     slots = PlayerDatabase::QUICKBAR_SLOTS
-    loop_lua = if !server_version.to_s.empty? && !server_version.to_s.match?(/\A2\.0(\.|\z)/)
-                "for pg=0,#{PlayerDatabase::QUICKBAR_PAGES - 1} do for sl=0,#{slots - 1} do " \
-                  "put(pg*#{slots}+sl+1,p.get_quick_bar_slot(pg,sl)) end end"
-              else
-                "for i=1,#{PlayerDatabase::QUICKBAR_PAGES * slots} do put(i,p.get_quick_bar_slot(i)) end"
-              end
-    "local #{qvar}={} local function read() " \
-      "local function put(i,s) if s and s.name and ids[s.name] then #{qvar}[tostring(i)]=ids[s.name] end end " \
-      "#{loop_lua} end "
+    pages = PlayerDatabase::QUICKBAR_PAGES
+    if server_version.to_s.match?(/\A2\.0(\.|\z)/)
+      "local #{qvar}={} local function put(i,s) if s and s.name and ids[s.name] then #{qvar}[tostring(i)]=ids[s.name] end end " \
+        "local function read() for i=1,#{pages * slots} do put(i,p.get_quick_bar_slot(i)) end end "
+    else
+      "local #{qvar}={} local function put(i,s) local f=s and s.filter " \
+        "if f and f.name and ids[f.name] then #{qvar}[tostring(i)]=ids[f.name] end end " \
+        "local function read() for pg=1,#{pages} do for sl=1,#{slots} do " \
+        "put((pg-1)*#{slots}+sl,p.get_quick_bar_slot(pg,sl)) end end end "
+    end
   end
 
   # Set a player's quickbar cells: `cells` is {flat slot index => item id}
@@ -238,9 +242,11 @@ class RconClient
   # Lua, from the same `prototypes.item` iteration order the wire uses.
   #
   # THE SETTER MATCHES THE GETTER, and it changed with it: 2.0 takes
-  # (index, item), 2.1 takes (page, slot, filter). Each call is pcall'd and
-  # the count of successes comes back, so a rejected write (a wrong 2.1
-  # filter shape, say) is a number we report rather than a silent no-op.
+  # (index, item), 2.1 takes (page, slot, filter) with BOTH indexes
+  # 1-BASED. The filter is the item PROTOTYPE NAME (a string) — live-verified
+  # on 2.1.24: a plain `{name=…}` table is rejected, the name works. Each
+  # call is pcall'd and the count of successes comes back, so a rejected
+  # write is a number we report rather than a silent no-op.
   # One line, server-side, no response cap to worry about (a short count).
   # Put a player's saved state back over RCON in ONE command: the quickbar
   # cells (flat slot index => item id) and, optionally, their colour AND
@@ -260,7 +266,8 @@ class RconClient
     version = server_version.to_s
     cells = (cells || {}).map { |i, id| "[#{i.to_i}]=#{id.to_i}" }.join(',')
     set = if !version.empty? && !version.match?(/\A2\.0(\.|\z)/)
-            "local k=(i-1)//#{PlayerDatabase::QUICKBAR_SLOTS} local l=(i-1)%#{PlayerDatabase::QUICKBAR_SLOTS} " \
+            "local k=math.floor((i-1)/#{PlayerDatabase::QUICKBAR_SLOTS})+1 " \
+            "local l=(i-1)%#{PlayerDatabase::QUICKBAR_SLOTS}+1 " \
             'if pcall(p.set_quick_bar_slot,k,l,r[v]) then ok=ok+1 end'
           else
             'if pcall(p.set_quick_bar_slot,i,r[v]) then ok=ok+1 end'

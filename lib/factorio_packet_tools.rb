@@ -76,6 +76,14 @@ class FactorioPacketTools
     # reason to call every player invalid (client mode learns the roster from
     # the map download after joining).
     @roster_ready = @player_db.players.any?
+    # The roster of the CURRENT save (RCON's game.players: every player of
+    # this savefile, offline included) as an ARRAY of names in index order:
+    # the game hands out the indexes sequentially, so game index N is
+    # roster[N-1] (a hole = no player at that index). A join is accepted
+    # when its index is one of these (a returning player) or above the
+    # highest one (a new player). Without it a stale cache from another save
+    # decides, and every join is rejected as a misdecode.
+    @roster = []
     @stats = { packets: 0, factorio_packets: 0, actions: 0, outgoing_skipped: 0, capture_skipped: 0,
                bad_string: 0, unknown: 0, desync: 0, decode_error: 0, invalid_player: 0,
                invalid_join: 0 }
@@ -778,7 +786,7 @@ class FactorioPacketTools
             puts "#{ts_str}  #{name} confirmed as game player ##{idx}"
           else
             join_misdecode = true
-            note_invalid_join(:player_index, idx, name, max_known_player_index + 1)
+            note_invalid_join(:player_index, idx, name, "a roster slot or above #{roster_max_index}")
           end
         end
       elsif @self_name && src_ip == @self_ip
@@ -798,7 +806,7 @@ class FactorioPacketTools
           end
         else
           join_misdecode = true
-          note_invalid_join(:player_index, idx, @self_name, max_known_player_index + 1)
+          note_invalid_join(:player_index, idx, @self_name, "a roster slot or above #{roster_max_index}")
         end
       end
     end
@@ -815,7 +823,7 @@ class FactorioPacketTools
     known_players = @player_db.players.keys
     known_players.concat(@attrs.roster_pairs.map { |p| p[:index] })
     decoded_players = decoded_player_ids(hb)
-    max_known_player = known_players.max.to_i
+    max_known_player = roster_max_index
     invalid_players = if known_players.empty?
                         []
                       elsif @strict_player_ids && @roster_ready
@@ -943,7 +951,9 @@ class FactorioPacketTools
   # One identity write for every path that binds a game index to a name:
   # server-mode join confirm, client self-index confirm, S→C player_join_game.
   def bind_player_index(name, idx)
-    @player_db[idx] = { name: name, locale: nil }
+    # Only the NAME: a merge that also writes `locale: nil` would wipe the
+    # locale the roster seeded for a returning player.
+    @player_db[idx] = { name: name }
     @player_db.remove_other_entries_for(name, idx)
     @attrs.set_index(name, idx)
   end
@@ -1051,19 +1061,19 @@ class FactorioPacketTools
 
   # The highest game player index we know from any authoritative source:
   # cache entries, RCON's full player dump (offline included), and attrs.
-  def max_known_player_index
-    ids = @player_db.players.keys
-    ids.concat(Array(@attrs_query).map { |a| a[:index] })
-    ids.concat(@attrs.roster_pairs.map { |p| p[:index] })
-    ids.map(&:to_i).max.to_i
-  end
 
-  # A join appends to the player list: either the name already owns that
-  # index (a returning player) or the index is exactly max + 1. Anything
-  # else is a misdecoded heartbeat/join, and must not enter the cache.
+  # A join appends to the player list of THIS save: the index is either one
+  # the roster already knows (a returning player) or above the highest index
+  # the roster has (a new player). "Exactly max + 1" is too strict: two
+  # players can join between two heartbeats, and the second one is then
+  # rejected as a misdecode and never bound.
   def join_index_valid?(name, idx)
     return false unless idx.is_a?(Integer) && idx.positive?
-    @player_db.lookup(idx) == name || idx == max_known_player_index + 1
+    return true if @player_db.lookup(idx) == name
+    return true if @roster[idx - 1] == name
+    max = roster_max_index
+    return true if idx > max && idx <= max + UNKNOWN_PLAYER_WINDOW
+    false
   end
 
   def note_invalid_join(kind, id, name, expected)
@@ -1272,8 +1282,15 @@ class FactorioPacketTools
     attrs = @attrs_query || @rcon.player_attributes
     @attrs_query = nil
     return if attrs.nil? || attrs.empty?
+    roster = roster_array(attrs.to_h { |a| [a[:index], a[:name]] })
+    apply_roster(roster)
+    @roster = roster
     attrs.each do |a|
-      @player_db[a[:index]] = {admin: a[:admin]}
+      # The RCON roster knows the NAME of every player of this save — the
+      # wire only carries it on a join we happened to watch. Writing it here
+      # is what makes a player who joined before we started stop chatting as
+      # "Player_#N".
+      @player_db[a[:index]] = roster_record(a)
       @attrs.seed(a[:name], index: a[:index], connected: a[:connected],
                    online_time: a[:online_time],
                    afk_time: a[:afk_time])  # connected seeds join the live roster
@@ -1284,6 +1301,49 @@ class FactorioPacketTools
          (admins.empty? ? 'no admins' : "admins: #{admins.join(', ')}")
   rescue => e
     warn "Player attrs seed failed: #{e.class}: #{e.message}"
+  end
+
+  # The roster row → a cache record. Only the fields the query actually
+  # answered: a nil in the record would WIPE what the packet stream learned
+  # (the merge in PlayerDatabase#[]= overwrites with nil too).
+  def roster_record(a)
+    rec = {name: a[:name]}
+    rec[:locale] = a[:locale] if a[:locale]
+    rec[:admin] = a[:admin] unless a[:admin].nil?
+    rec[:color] = a[:color] if a[:color]
+    rec
+  end
+
+  # The cache belongs to THIS save? The game hands out game indexes per
+  # savefile, so two saves look alike (index 1, 2, 3 …) while holding
+  # DIFFERENT players — a cache carried over from another save is not just
+  # stale, it is WRONG (its quickbars and colours belong to other people,
+  # and the player_backup feature would restore them to the wrong player).
+  # The START of the roster tells the two apart: if the cache names one of
+  # the first players differently, the cache is from another savefile and is
+  # dropped whole.
+  def apply_roster(roster)
+    return if @player_db.valid_for?(roster)
+    dropped = @player_db.clear!
+    puts "  [roster]  cache is from another save — dropped #{dropped} entries"
+  end
+
+  # A roster (index → name) as an ARRAY of names in index order: the game
+  # hands out the indexes sequentially, so game index N is roster[N-1] and
+  # the array's length IS the highest index. A hole (no player at that
+  # index) stays nil.
+  def roster_array(index_by_name)
+    arr = Array.new(index_by_name.keys.map(&:to_i).max.to_i)
+    index_by_name.each { |index, name| arr[index.to_i - 1] = name }
+    arr
+  end
+
+  # The highest game index this save has handed out: the roster's highest
+  # (the RCON/save roster of THIS save), or — before a roster is known —
+  # the cache's highest. ONE number for the validation window, the misdecode
+  # logging and the join check.
+  def roster_max_index
+    (@roster.size.positive? ? @roster.size : @player_db.players.keys.max).to_i
   end
 
   def print_summary
@@ -1509,7 +1569,12 @@ class FactorioPacketTools
       warn "[#{label}] no player records in #{save}"
       return false
     end
+    # The cache must belong to THIS save: the game's indexes are per
+    # savefile, so a cache from another save names a different player at
+    # the same index (and carries another player's quickbar).
+    apply_roster(roster_array(index.by_index.transform_values { |r| r[:name] }))
     dropped = @player_db.merge_save_roster(index.by_index)
+    @roster = roster_array(index.by_index.transform_values { |r| r[:name] })
     @roster_ready = true # the save's roster is authoritative now
     if verbose
       if known.empty?
