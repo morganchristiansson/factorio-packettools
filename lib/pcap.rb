@@ -17,20 +17,27 @@ module PcapFormat
     276 => 20,  # DLT_LINUX_SLL2
   }.freeze
 
-  # => [src_ip, dst_ip, sport, dport, udp_data, ip_packet] or nil.
-  def self.udp(frame, datalink:)
-    header = HEADER_SIZE[datalink]
-    return nil unless header && frame.bytesize > header
-    raw = frame.byteslice(header, frame.bytesize - header)
-    return nil if raw.nil? || raw.bytesize < 28 || raw.getbyte(9) != 17
-    ihl = (raw.getbyte(0) & 0x0f) * 4
-    return nil if raw.bytesize < ihl + 8
-    udp = raw.byteslice(ihl + 8, raw.bytesize - ihl - 8)
-    return nil if udp.nil? || udp.empty?
-    ["#{raw.getbyte(12)}.#{raw.getbyte(13)}.#{raw.getbyte(14)}.#{raw.getbyte(15)}",
-     "#{raw.getbyte(16)}.#{raw.getbyte(17)}.#{raw.getbyte(18)}.#{raw.getbyte(19)}",
-     raw.unpack1('n', offset: ihl), raw.unpack1('n', offset: ihl + 2),
-     udp, raw]
+  # => [src_ip, dst_ip, sport, dport, udp_data] or nil.
+  #
+  # Reads the IP header straight out of `frame` instead of copying it into
+  # `raw` first: every live packet and every replayed frame goes through here,
+  # and the old version made TWO byteslices of the whole datagram (the unused
+  # IP copy was ~20% of a replay). Only the UDP payload is copied now.
+  def self.udp(frame, datalink:, ips: true)
+    ip = HEADER_SIZE[datalink]
+    return nil unless ip && frame.bytesize - ip >= 28
+    return nil unless frame.getbyte(ip + 9) == 17 # UDP
+    ihl = (frame.getbyte(ip) & 0x0f) * 4
+    udp_at = ip + ihl + 8
+    return nil unless udp_at < frame.bytesize
+    src = dst = nil
+    if ips
+      src = "#{frame.getbyte(ip + 12)}.#{frame.getbyte(ip + 13)}.#{frame.getbyte(ip + 14)}.#{frame.getbyte(ip + 15)}"
+      dst = "#{frame.getbyte(ip + 16)}.#{frame.getbyte(ip + 17)}.#{frame.getbyte(ip + 18)}.#{frame.getbyte(ip + 19)}"
+    end
+    [src, dst,
+     frame.unpack1('n', offset: ip + ihl), frame.unpack1('n', offset: ip + ihl + 2),
+     frame.byteslice(udp_at, frame.bytesize - udp_at)]
   end
 
   # TransferBlock (msg 13): [u8 msg][u32 block][503 bytes] => [block, payload].
@@ -230,16 +237,16 @@ class PcapReader
     @path = path
   end
 
-  def each_packet
+  def each_packet(ips: true)
     if gzip?
       Tempfile.create(['factorio-pcap', '.pcap']) do |file|
         file.binmode
         stream_gunzip(file)
         file.flush
-        read_capture(file.path) { |*args| yield(*args) }
+        read_capture(file.path, ips: ips) { |*args| yield(*args) }
       end
     else
-      read_capture(@path) { |*args| yield(*args) }
+      read_capture(@path, ips: ips) { |*args| yield(*args) }
     end
   end
 
@@ -265,7 +272,7 @@ class PcapReader
     warn "Warning: gzip stream incomplete (#{e.message}); using what decompressed so far"
   end
 
-  def read_capture(path)
+  def read_capture(path, ips: true)
     old_verbose = $VERBOSE
     $VERBOSE = nil
     require 'pcaprub'
@@ -275,7 +282,7 @@ class PcapReader
     capture.each_packet do |packet|
       pkt_num += 1
       frame = packet.data
-      udp = PcapFormat.udp(frame, datalink: datalink)
+      udp = PcapFormat.udp(frame, datalink: datalink, ips: ips)
       next unless udp
       src, dst, sport, dport, udp_data, = udp
       yield(pkt_num, packet.time + packet.microsec / 1_000_000.0,

@@ -663,24 +663,46 @@ class TestFactorioProtocol < Minitest::Test
     refute acts[0][:hit_unknown]
   end
 
-  # Quickbar payloads, pinned from the real captures in captures/
-  # (2026-09-25, player 161). The lengths matter as much as the layout: a
-  # wrong quick_bar_pick_slot length desyncs every action after it.
+  # S→C player_leave_game metadata, pinned from server-34197-20261103-232119:
+  # the server follows the 0-byte leave action with a counted
+  # `[dropped u8][55 ff][(-index) u8][ff][ref u32]` block. MrHanniZap was
+  # dropped (flag 1); Mista64/BasedDept left cleanly (flag 0).
+  def test_player_leave_metadata_distinguishes_drop_from_clean_leave
+    dropped = extract_actions(FactorioProtocol.parse_udp_payload(
+      ['0706e2eefd00fddc6c010000000004f85e0155ffa2ff8a769975fcdc6c0100000000'].pack('H*')
+    ))
+    assert_equal 1, dropped.size, 'the metadata slot is consumed, not a phantom action'
+    assert_equal [248, 94], [dropped[0][:type], dropped[0][:game_player]]
+    assert dropped[0][:leave_dropped]
+    assert_equal 0x7599768a, dropped[0][:leave_ref]
+
+    clean = extract_actions(FactorioProtocol.parse_udp_payload(
+      ['2716728cfe006a7a6d010000000004f8800055ff80fffb179fb2697a6d01000000000101000401'].pack('H*')
+    ))
+    assert_equal 1, clean.size, 'no phantom nothing/Unknown(255) from the metadata bytes'
+    assert_equal [248, 128], [clean[0][:type], clean[0][:game_player]]
+    refute clean[0][:leave_dropped]
+    assert_equal 0xb29f17fb, clean[0][:leave_ref]
+  end
+
+  # Quickbar payloads, pinned from the real captures in captures/. The
+  # lengths matter as much as the layout: a wrong quick_bar length desyncs
+  # every action after it (the table's pick_slot 0 did exactly that).
   def test_quickbar_layouts
     qb = FactorioProtocol::QuickBar
 
-    # set_slot: [item][slot][op][src u16][client tick u32] — substation (30)
-    # into slot 0, out of inventory slot 32, stamped 17 ticks before the
-    # closure tick 107036661 (0x06613FE2).
-    set = qb.decode(name: :quick_bar_set_slot,
-                    data: ['1e00002000e23f6106'].pack('H*'))
-    assert_equal({item: 30, slot: 0, op: 0, src: 32, tick: 0x06613FE2}, set)
+    # set_slot: stable 2.1 is 5 bytes [item][slot][op][src u16] — item 1
+    # (wooden-chest) into slot 8, no source (wire sample 2026-11-03).
+    set = qb.decode(name: :quick_bar_set_slot, data: ['010800ffff'].pack('H*'))
+    assert_equal({item: 1, slot: 8, op: 0, src: nil}, set)
 
     # op 1 = clear, src 0xFFFF = no source
-    clear = qb.decode(name: :quick_bar_set_slot,
-                      data: ['200001ffff01920100'].pack('H*'))
+    clear = qb.decode(name: :quick_bar_set_slot, data: ['200001ffff'].pack('H*'))
     assert_equal 1, clear[:op], 'op 1 clears the slot'
     assert_nil clear[:src], '0xFFFF means "no source"'
+    assert_equal :undecodable,
+                 qb.decode(name: :quick_bar_set_slot, data: ['1e00002000e23f6106'].pack('H*')),
+                 'the 9-byte 2.0 form is not the stable 2.1 payload'
 
     # pick_slot is 4 bytes (was decoded as 0, which ate the next action)
     pick = qb.decode(name: :quick_bar_pick_slot, data: ['1e000100'].pack('H*'))
@@ -693,9 +715,6 @@ class TestFactorioProtocol < Minitest::Test
     # page: byte 1 of set_selected_page, byte 0 of change_active_quick_bar
     assert_equal({page: 2}, qb.decode(name: :quick_bar_set_selected_page, data: ['0002'].pack('H*')))
     assert_equal({page: 2}, qb.decode(name: :change_active_quick_bar, data: ['02'].pack('H*')))
-    # The 2.0 pin for pick_slot's wire length (4 bytes: the action after it
-    # survives) died with the 2.0 lens; stable 2.1's pick_slot length is
-    # unmeasured (table 0, never in the capture set).
   end
 
   private

@@ -495,6 +495,13 @@ class TestHivemindAgent < Minitest::Test
   end
 
 
+  def test_on_player_event_marks_a_dropped_leave
+    @agent.handle_player_event(:left, 'bob', :dropped)
+    history = @agent.instance_variable_get(:@console_queue)
+    assert_equal [nil, 'bob was dropped from the game'], history[0]
+    assert_includes @agent.send(:unread_console), 'bob was dropped from the game'
+  end
+
   # Join lines carry the player's total play time from RCON (online_time,
   # ticks) — formatted as days/hours like the context snapshot.
   def test_on_player_event_includes_playtime_from_rcon

@@ -1328,16 +1328,17 @@ class FactorioPacketTools
       name = @player_db.lookup(action[:game_player])
       return unless name
       @s2c_joined.delete(name)
-      leave_player(name, ts)
+      leave_player(name, ts, reason: action[:leave_dropped] ? :dropped : :quit)
     end
   end
 
-  def leave_player(name, ts, require_online: true)
+  def leave_player(name, ts, require_online: true, reason: :quit)
     return false if require_online && !@attrs.online_names.include?(name)
     @attrs.disconnect(name, @game_tick)
-    @plugins.emit(:on_player_event, :left, name, :quit, @attrs.online_time_ticks(name, nil))
+    @plugins.emit(:on_player_event, :left, name, reason, @attrs.online_time_ticks(name, nil))
     ts_str = Time.at(ts).strftime('%H:%M:%S.%L')
-    puts "#{ts_str}  #{name} left the game" if player_visible?(name)
+    text = reason == :dropped ? 'was dropped from the game' : 'left the game'
+    puts "#{ts_str}  #{name} #{text}" if player_visible?(name)
     true
   end
 

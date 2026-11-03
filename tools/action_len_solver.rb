@@ -32,6 +32,19 @@ module ActionLenSolver
   # the table's 0-length entries (that is how a `nothing` is stepped over),
   # plus the parser's own lengths for the content-defined actions.
   def walk_lens_for(data, lens, exclude = nil)
+    walk = base_walk(lens, exclude)
+    parsed = parsed_lengths(data, CODE_PARSED)
+    parsed.empty? ? walk : walk.merge(parsed)
+  end
+
+  # The corpus lens plus the table's 0-length entries, built ONCE per lens:
+  # rebuilding it per payload is a ~330-entry merge, and the walk calls it
+  # several times per packet. Keyed by IDENTITY (`equal?`) so a mutated lens
+  # is never served stale numbers; the callers here never mutate it.
+  def base_walk(lens, exclude)
+    if @walk_lens.equal?(lens) && @walk_exclude == exclude
+      return @walk_base
+    end
     walk = lens.dup
     walk.delete(exclude) if exclude
     FactorioProtocol.actions.each do |t, (_n, len)|
@@ -39,7 +52,20 @@ module ActionLenSolver
       next if t == exclude
       walk[t] = len
     end
-    walk.merge(parsed_lengths(data, CODE_PARSED))
+    @walk_lens = lens
+    @walk_exclude = exclude
+    @walk_base = walk
+  end
+
+  # bounds / parsed_lengths both need the parse, and the walk asks for both on
+  # the same payload: parse each String object once.
+  def parse_cached(data)
+    if @parse_data.equal?(data)
+      @parse_res
+    else
+      @parse_data = data
+      @parse_res = (FactorioProtocol.parse_udp_payload(data) rescue nil)
+    end
   end
 
   # uint16v: 1 byte, or 0xFF + u16. (0xFF is also the literal 255 — see
@@ -63,8 +89,7 @@ module ActionLenSolver
     # and those have no [tick][pad] trailer — but relying on the trailer check
     # alone to reject them would be luck, not a filter.
     return nil unless (data.getbyte(0).to_i & 0x1F) == 6
-    res = (FactorioProtocol.parse_udp_payload(data) rescue nil)
-    hb = res&.dig(:heartbeat)
+    hb = parse_cached(data)&.dig(:heartbeat)
     return nil unless hb
     tcs = hb[:tick_closures].to_a
     return nil unless tcs.size == 1
@@ -157,27 +182,135 @@ module ActionLenSolver
   # whose closure is not walkable, or which admits more than one candidate, votes
   # for nothing. → {type => {length => closures}}
   def measure_all(paths, lens, code_parsed: [])
+    measure_corpus(paths, lens, nil, code_parsed: code_parsed).first
+  end
+
+  # One corpus pass for MANY types at once: the only per-payload work that
+  # depends on the type is the walk, and the wished-for type is simply "the
+  # first hole". Hiding one type at a time used to mean one full parse of the
+  # whole corpus per --type; this shares the parse (and the pcap decode and
+  # gunzip) across all of them. `types` nil = every type.
+  def measure_types(paths, lens, types, code_parsed: [])
+    measure_corpus(paths, lens, types, code_parsed: code_parsed).first
+  end
+
+  # measure_types plus the per-hole failure rate the default report wants as
+  # its work-list. Both used to cost their own full corpus pass (and their own
+  # parse of every packet); the facts are the same payload's, so they are
+  # collected together. → [tally, rate] where rate[t] = [failing, passing].
+  def measure_corpus(paths, lens, types = nil, code_parsed: [])
     tally = Hash.new { |h, k| h[k] = Hash.new(0) }
+    rate = Hash.new { |h, k| h[k] = [0, 0] }
     each_payload(paths) do |data|
       # The parser's own content-defined lengths belong in the walk: build_terrain
       # is not in the table, so without them it is the "hole" in every closure it
       # appears in and the leftover gets charged to it (a flood of 26 = its
       # two-record length). They are computed from the layout, not from the
       # table, so using them here is not circular.
-      walk = code_parsed.empty? ? lens : lens.merge(parsed_lengths(data, code_parsed))
+      parsed = code_parsed.empty? ? {} : parsed_lengths(data, code_parsed)
+      walk = parsed.empty? ? lens : lens.merge(parsed)
       t = hole_type(data, walk)
       next unless t
-      cands = candidates(data, walk)
-      tally[t][cands.first] += 1 if cands.size == 1
+      if types.nil? || types.include?(t)
+        cands = candidates(data, walk)
+        tally[t][cands.first] += 1 if cands.size == 1
+      end
+      next unless types.nil? # the rate is the unfiltered report's work-list
+      hb = parse_cached(data)&.dig(:heartbeat)
+      bad = hb&.dig(:tick_closures).to_a.any? { |c| (c[:actions] || []).any? { |x| x[:hit_unknown] } }
+      rate[t][bad ? 0 : 1] += 1
+    end
+    [tally, rate]
+  end
+
+  # Sample closures that contain each requested type (one corpus pass), for
+  # checking a table length WITHOUT doing a hidden pass per type over the
+  # whole corpus. The payload String is kept by reference; callers pass it
+  # back to measure_length, which is cheap on one payload.
+  def sample_types(paths, lens, types, per_type: 20, code_parsed: [])
+    wanted = types.to_h { |t| [t, true] }
+    samples = Hash.new { |h, k| h[k] = [] }
+    exotic = {} # table length is NOT what the parser uses (an override)
+    each_payload(paths) do |data|
+      b = bounds(data) or next
+      count, area_start, area_end, = b
+      parsed = code_parsed.empty? ? {} : parsed_lengths(data, code_parsed)
+      walk = parsed.empty? ? lens : lens.merge(parsed)
+      actions, = walk(data, area_start, count, walk)
+      off = area_start
+      seen = {}
+      actions.each_with_index do |(t, hdr, len), i|
+        ds = off + hdr
+        if len && wanted[t] && !seen[t]
+          seen[t] = true
+          samples[t] << data if samples[t].size < per_type
+          base = lens[t]
+          eff, = FactorioProtocol::ActionLengths.for(
+            data, ds, type: t, name: FactorioProtocol.actions[t][0],
+            base: base, is_server: false, is_last: i == count - 1
+          )
+          # A 0 entry is the deliberate "variable / trailer-only" base, and a
+          # parser override (echo body, structural read) is not a table claim.
+          # Hiding either measures bytes the parser never calls the payload.
+          exotic[t] = true if base.zero? || (eff && eff != base)
+        end
+        break unless len
+        off = ds + len
+      end
+    end
+    [samples, exotic]
+  end
+
+  # Verify the table: for each fixed length, hide the type on closures that
+  # contain it and see whether the wire's budget decides the SAME length.
+  # → { type => {claimed:, got:, votes:, second:} } for mismatches only;
+  #   second → [checked, undecided] counts.
+  def check_table(paths, lens, per_type: 20, min_obs: 5, margin: 3, code_parsed: [])
+    samples, exotic = sample_types(paths, lens, lens.keys, per_type: per_type, code_parsed: code_parsed)
+    bad = {}
+    checked = 0
+    undecided = 0
+    samples.each do |t, datas|
+      next if exotic[t]
+      tally = Hash.new(0)
+      datas.each do |data|
+        len = measure_length(data, lens, t)
+        tally[len] += 1 if len
+      end
+      ranked = tally.sort_by { |_, n| -n }
+      best, top = ranked.first
+      second = ranked[1]&.last.to_i
+      if best && top >= min_obs && second * margin < top
+        checked += 1
+        bad[t] = { claimed: lens[t], got: best, votes: top, second: second } if best != lens[t]
+      else
+        undecided += 1
+      end
+    end
+    [bad, checked, undecided, samples.size]
+  end
+
+  # One corpus pass, one walk per requested type: each type is HIDDEN so it
+  # becomes the hole (what --type means). The payload parse is shared, which
+  # is the expensive part; asking for a dozen types used to re-parse the whole
+  # corpus a dozen times. → {type => {length => closures}}
+  def measure_hidden_types(paths, lens, types, code_parsed: [])
+    tally = Hash.new { |h, k| h[k] = Hash.new(0) }
+    each_payload(paths) do |data|
+      parsed = code_parsed.empty? ? {} : parsed_lengths(data, code_parsed)
+      walk = parsed.empty? ? lens : lens.merge(parsed)
+      types.each do |type|
+        len = measure_length(data, walk, type)
+        tally[type][len] += 1 if len
+      end
     end
     tally
   end
 
   # Lengths the parser computed for `types` in this payload, keyed by type.
   def parsed_lengths(data, types)
-    res = (FactorioProtocol.parse_udp_payload(data) rescue nil)
     out = {}
-    res&.dig(:heartbeat)&.dig(:tick_closures).to_a.each do |tc|
+    parse_cached(data)&.dig(:heartbeat)&.dig(:tick_closures).to_a.each do |tc|
       (tc[:actions] || []).each do |a|
         next if a[:hit_unknown] || a[:data].nil?
         out[a[:type]] = a[:data].bytesize if types.include?(a[:type])
@@ -189,7 +322,7 @@ module ActionLenSolver
   def each_payload(paths)
     require_relative '../lib/pcap'
     paths.each do |path|
-      PcapReader.new(path).each_packet do |*_n, _ts, _sip, _dip, _sp, _dp, data, _frame|
+      PcapReader.new(path).each_packet(ips: false) do |*_n, _ts, _sip, _dip, _sp, _dp, data, _frame|
         yield data
       end
     end

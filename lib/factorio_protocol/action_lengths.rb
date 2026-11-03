@@ -143,7 +143,7 @@ module FactorioProtocol
       elsif name == :remote_view_entity
         alen = 19 # C→S body (pkt 27418705; next is the +8 closure trailer)
       elsif is_server && name == :quick_bar_pick_slot
-        alen = 4 # S→C echo carries page/slot (f6 58 00 07 01 00; pkt 19200)
+        alen = 4 # S→C echo carries page/slot (pkt 19200); C→S table is 4 too (measured 2026-11-03)
       elsif is_server && name == :select_mapper_slot_to
         alen = 9 # S→C echo body (pkt 97857)
       elsif name == :cancel_deconstruct

@@ -5,7 +5,19 @@
 # /toggle-action-logging). Lengths are nil when variable/complex (the parser
 # falls back to name-based structural reads or hits hit_unknown).
 # The 2.0 dump (external/input_actions_dump.txt) is reference only — 2.0 is
-# retired, the stable renumbering is NOT a mechanical +1 shift from it.
+# retired, the stable renumbering is NOT a purely mechanical +1 shift from it.
+# A LIVE 2.1.24 defines.input_action dump (external/input_actions_enum_21.txt,
+# 296 public actions) agrees with 284 of these ids. The mismatches and the
+# duplicate names are marked `live enum:` below — kept as comments, not applied,
+# until /toggle-action-logging correlation confirms them. 36 ids here have no
+# public enum entry (walking, GUI, sync/server events), so the enum can't decide
+# those.
+# The public names do follow one rule: stable 2.1 == the 2.0 dump's ids >= 25
+# + 1 (open_alerts_config_gui was inserted at 25); ids < 25 are unchanged, and
+# other internal insertions (32 stop_movement, the 2.1-only actions at 279/306)
+# are why it is not universal. Most mismatches below are slots where an INTERNAL
+# action name (one with no public enum entry) sits on a shifted id, so the public
+# name is missing or appears twice under its old/new id.
 # See docs/protocol-notes.md for the stable numbering rationale.
 
 module FactorioProtocol
@@ -18,11 +30,16 @@ ACTIONS_21 = {
      4 => [:toggle_driving, 0],
      5 => [:open_gui, 14],
      6 => [:open_current_vehicle_gui, 0],
-     7 => [:close_gui, 4],
+     7 => [:connect_rolling_stock, 4], # was close_gui; live enum: connect_rolling_stock (2.0 dump also 7)
      8 => [:disconnect_rolling_stock, 4],
-     9 => [:selected_entity_cleared, 8],
+     9 => [:selected_entity_cleared, 8], # not public; 34 is toggle_deconstruction_item_entity_filter_mode
     10 => [:clear_cursor, 0],
     11 => [:reset_assembling_machine, 0],
+    # No name in the dump: measured 2026-11-03, 590 of 596 single-action
+    # closures carry exactly 0 payload bytes. Kept as Unknown so it still
+    # counts (and forwards) as undecoded, but the rest of the closure no
+    # longer desyncs on it.
+    12 => ["Unknown(12)", 0],
     13 => [:cancel_new_blueprint, 0],
     15 => [:copy_entity_settings, 0],
     16 => [:paste_entity_settings, 0],
@@ -32,9 +49,9 @@ ACTIONS_21 = {
     23 => [:open_bonus_gui, 0],
     24 => [:open_achievements_gui, 0],
     25 => [:open_alerts_config_gui, 0],
-    26 => [:cycle_blueprint_book_backwards, 0],
-    27 => [:cycle_quality_up, 1],
-    28 => [:cycle_quality_up, 0],
+    26 => [:cycle_blueprint_book_forwards, 0], # was cycle_blueprint_book_backwards; live enum: cycle_blueprint_book_forwards (2.0 dump 25 +1)
+    27 => [:cycle_blueprint_book_backwards, 1], # was cycle_quality_up; live enum: cycle_blueprint_book_backwards (2.0 dump 26 +1; up is 28)
+    28 => [:cycle_quality_up, 0], # live enum: cycle_quality_up
     29 => [:cycle_quality_down, 0],
     # 2.0 had cycle_clipboard_forwards/backwards at 32/33; 2.1's inserted
     # stop_movement sits at 32, and the log pins backwards here at 31
@@ -43,16 +60,16 @@ ACTIONS_21 = {
   31 => [:cycle_clipboard_backwards, 0],
     32 => [:stop_movement_in_the_next_tick, 0],
     33 => [:toggle_enable_vehicle_logistics_while_moving, 0],
-    34 => [:selected_entity_cleared, 0],
+    34 => [:toggle_deconstruction_item_entity_filter_mode, 0], # was selected_entity_cleared (still at 9); live enum: toggle_deconstruction_item_entity_filter_mode (2.0 dump 33 +1)
     35 => [:toggle_deconstruction_item_tile_filter_mode, 0],
     36 => [:select_next_valid_gun, 0],
     37 => [:toggle_map_editor, 0],
-    38 => [:fast_entity_transfer, 1],
+    38 => [:delete_blueprint_library, 1], # was fast_entity_transfer (still at 279); live enum: delete_blueprint_library (2.0 dump 37 +1)
     40 => [:activate_paste, 0],
     41 => [:undo, 0],
     42 => [:redo, 0],
     43 => [:toggle_personal_roboport, 0],
-    44 => [:selected_entity_changed_very_close, 1],
+    44 => [:toggle_equipment_movement_bonus, 1], # was selected_entity_changed_very_close (still at 266); live enum: toggle_equipment_movement_bonus (2.0 dump 43 +1)
     45 => [:toggle_personal_logistic_requests, 0],
     46 => [:toggle_entity_logistic_requests, 0],
     47 => [:toggle_artillery_auto_targeting, 0],
@@ -61,17 +78,20 @@ ACTIONS_21 = {
     50 => [:flush_opened_entity_fluid, 0],
     52 => [:add_logistic_section, 0],
     53 => [:acknowledge_technology, 0],
-    54 => [:close_gui, 0],
+    54 => [:open_opened_entity_grid, 0], # was close_gui (still at 61); live enum: open_opened_entity_grid (2.0 dump 53 +1)
     57 => [:open_new_platform_button_from_rocket_silo, 0],
     58 => [:toggle_selected_entity, 0],
     59 => [:cheat, 0],
     60 => [:toggle_blueprint_snap_to_grid, 0],
-    61 => [:close_gui, 2],
+    61 => [:close_gui, 2], # no public enum entry; the only close_gui now (7 was connect_rolling_stock, 54 open_opened_entity_grid)
     62 => [:open_character_gui, 15],
     63 => [:open_production_gui, 0],
     64 => [:open_logistics_gui, 0],
     65 => [:open_blueprint_library_gui, 15],
     66 => [:toggle_show_entity_info, 1],
+    # No name in the dump: measured 2026-11-03, 88 of 90 single-action
+    # closures carry 2 payload bytes.
+    67 => ["Unknown(67)", 2],
     68 => [:drop_item, 8],
     69 => [:build, 16],
     70 => [:start_walking, 16],
@@ -99,8 +119,8 @@ ACTIONS_21 = {
     92 => [:stack_split, 17],
     93 => [:inventory_split, 8],
     94 => [:cancel_craft, 0],
-    95 => [:set_filter, nil],
-    96 => [:set_spoil_priority, nil],
+    95 => [:set_filter, 9], # measured 2026-11-03: 64 first-action closures, no other length
+    96 => [:set_spoil_priority, 1], # measured 2026-11-03: 6 first-action closures (a 1-byte enum)
     98 => [:set_circuit_condition, nil],
     99 => [:set_signal, nil],
    100 => [:start_research, 0],
@@ -122,7 +142,7 @@ ACTIONS_21 = {
    116 => [:gui_selected_tab_changed, nil],
    117 => [:gui_value_changed, nil],
    118 => [:gui_switch_state_changed, nil],
-   119 => [:gui_location_changed, nil],
+   119 => [:gui_location_changed, 25], # measured 2026-11-03: 59 first-action closures vs 1 each for 5/34
    120 => [:gui_inventory_bar_changed, nil],
    121 => [:gui_inventory_filter_changed, nil],
    122 => [:gui_inventory_action, nil],
@@ -146,13 +166,13 @@ ACTIONS_21 = {
    141 => [:copy_large_opened_blueprint, 0],
    142 => [:reassign_blueprint, 0],
    143 => [:open_blueprint_record, 0],
-   144 => [:grab_blueprint_record, nil],
+   144 => [:grab_blueprint_record, 6], # measured 2026-11-03: 120 first-action closures vs 1 each
    145 => [:drop_blueprint_record, 0],
    146 => [:delete_blueprint_record, 0],
    147 => [:upgrade_opened_blueprint_by_record, 0],
    148 => [:upgrade_opened_blueprint_by_item, 0],
    149 => [:spawn_item, 0],
-   150 => [:set_ghost_cursor, 0],
+   150 => [:set_ghost_cursor, 0], # live enum: set_ghost_cursor (2.0 dump 149 +1)
    151 => [:update_blueprint_shelf, nil],
    152 => [:transfer_blueprint, nil],
    154 => [:edit_blueprint_tool_preview, nil],
@@ -166,7 +186,7 @@ ACTIONS_21 = {
    163 => [:change_arithmetic_combinator_parameters, 0],
    164 => [:drag_decider_combinator_condition, 0],
    165 => [:add_decider_combinator_condition, 0],
-   166 => [:modify_decider_combinator_condition, nil],
+   166 => [:modify_decider_combinator_condition, 19], # measured 2026-11-03: 42 first-action closures vs 10 at 18
    167 => [:remove_decider_combinator_condition, 0],
    168 => [:drag_decider_combinator_output, 0],
    169 => [:add_decider_combinator_output, 0],
@@ -209,9 +229,9 @@ ACTIONS_21 = {
    206 => [:cancel_research, 12],
    207 => [:move_research, 0],
    208 => [:select_area, 0],
-   209 => [:alt_select_area, 0],
-   210 => [:reverse_select_area, 0],
-   211 => [:alt_reverse_select_area, nil],
+   209 => [:start_select_area, 0], # was alt_select_area; live enum: start_select_area (2.0 dump 208 +1, renamed)
+   210 => [:change_select_area, 0], # was reverse_select_area; live enum: change_select_area (2.0 dump 209 +1, renamed)
+   211 => [:cancel_select_area, nil], # was alt_reverse_select_area; live enum: cancel_select_area (2.0 dump 210 +1, renamed)
    213 => [:set_infinity_container_filter_item, 0],
    214 => [:set_infinity_container_logistic_mode, 0],
    215 => [:swap_infinity_container_filter_items, 8],
@@ -224,10 +244,10 @@ ACTIONS_21 = {
    222 => [:import_blueprint_string, 0],
    223 => [:import_permissions_string, nil],
    226 => [:gui_elem_changed, nil],
-   227 => [:blueprint_transfer_queue_update, nil],
+   227 => [:blueprint_transfer_queue_update, 12], # measured 2026-11-03: 18 first-action closures vs 1
    228 => [:drag_train_schedule, 1],
    229 => [:drag_train_schedule_interrupt, 2],
-   230 => [:selected_entity_changed_very_close, 0],
+   230 => [:drag_train_wait_condition, 0], # was selected_entity_changed_very_close (still at 266); live enum: drag_train_wait_condition (2.0 dump 229 +1)
    231 => [:select_item_filter, 0],
    232 => [:swap_item_filters, 4],
    233 => [:select_entity_slot, 0],
@@ -240,10 +260,10 @@ ACTIONS_21 = {
    240 => [:swap_tile_slots, 0],
    241 => [:select_mapper_slot_from, 0],
    242 => [:select_mapper_slot_to, 0],
-   243 => [:set_ghost_cursor, nil],
+   243 => [:swap_mappers, nil], # was set_ghost_cursor (still at 150); live enum: swap_mappers (2.0 dump 242 +1)
    244 => [:display_resolution_changed, 16],
    245 => [:quick_bar_set_slot, 5],
-   246 => [:quick_bar_pick_slot, 0],
+   246 => [:quick_bar_pick_slot, 4], # measured 2026-11-03: 2576 closures, runner-up 18
    247 => [:quick_bar_set_selected_page, 2],
    248 => [:player_leave_game, 0],
    249 => [:map_editor_action, 1],
@@ -260,7 +280,7 @@ ACTIONS_21 = {
    263 => [:instantly_create_space_platform, nil],
    264 => [:flush_opened_entity_specific_fluid, 1],
    265 => [:change_picking_state, 1],
-   266 => [:selected_entity_changed_very_close, 1],
+   266 => [:selected_entity_changed_very_close, 1], # duplicate name; no public enum entry (also 44/230)
    267 => [:selected_entity_changed_very_close_precise, 2],
    268 => [:selected_entity_changed_relative, 4],
    269 => [:selected_entity_changed_based_on_unit_number, 0],
@@ -273,7 +293,7 @@ ACTIONS_21 = {
    276 => [:switch_mining_drill_filter_mode_state, 1],
    277 => [:switch_connect_to_logistic_network, 1],
    278 => [:set_behavior_mode, 1],
-   279 => [:fast_entity_transfer, 1],
+   279 => [:fast_entity_transfer, 1], # live enum: fast_entity_transfer (2.0 dump 278 +1; correct; 38 was the duplicate)
    280 => [:rotate_entity, 1],
    281 => [:flip_entity, 1],
    282 => [:fast_entity_split, 1],
@@ -283,7 +303,7 @@ ACTIONS_21 = {
    287 => [:set_research_finished_stops_game, 1],
    288 => [:set_inserter_max_stack_size, 0],
    289 => [:set_loader_belt_stack_size_override, 4],
-   290 => [:open_train_gui, nil],
+   290 => [:open_train_gui, 10], # measured 2026-11-03: 5 first-action closures, runner-up 0
    291 => [:open_trains_gui, 4],
    292 => [:set_entity_color, 0],
    293 => [:set_copy_color_from_train_stop, 1],
@@ -295,7 +315,7 @@ ACTIONS_21 = {
    299 => [:set_infinity_container_remove_unfiltered_items, 1],
    300 => [:set_car_weapons_control, 1],
    301 => [:set_request_from_buffers, 1],
-   302 => [:change_active_quick_bar, nil],
+   302 => [:change_active_quick_bar, 1], # measured 2026-11-03: 137 closures
    304 => [:display_scale_changed, nil],
    305 => [:set_splitter_priority, 1],
    307 => [:set_heat_interface_temperature, 8],

@@ -129,10 +129,12 @@ obvious from the table.
 15. ✅ **open_character_gui / open_blueprint_library_gui (61/64) C→S = 1B** —
     the 15-byte form is the S→C echo only; 15B C→S swallowed the following
     hover stream (`Player_267 gui_inventory_bar_changed` phantom).
-16. ✅ **quick_bar_pick_slot (2.0: 231) = 4 bytes, not 0** — the 2.1 table
-    lends this name a 0, so its 4 payload bytes were re-parsed as a phantom
-    action. Measured 1126 single-action closures against 62 for the
-    runner-up (`measure_action_lens.rb --type 231`). See below.
+16. ✅ **quick_bar_pick_slot (2.1: 246; 2.0: 231) = 4 bytes, not 0** — the
+    2.1 table carried a 0, so its 4 payload bytes were re-parsed as a phantom
+    action and every pick decoded as :undecodable. Measured 2026-11-03 over
+    the 2026-10-31..11-03 server set: 2576 closures against 18 for the
+    runner-up (`measure_action_lens.rb --type 246`); the 2.0 set measured
+    1126 against 62. The table is now 4.
 
 ## Quickbar (2.0: set_slot 230, pick_slot 231, set_selected_page 232, change_active_quick_bar 286)
 
@@ -187,6 +189,18 @@ experimental 2.1 build whose dump numbered actions differently from both
   selected_entity_changed_very_close/266 (~15.7k closures): its payload is a
   VARIABLE-length record (C→S seen as `88 ff 0a 01 00 …` repeats / entity refs)
   — no scalar length, needs the structural entity decode.
+- **2026-11-03 batch (from the 2026-10-31..11-03 server set, anchored
+  first-action verdicts):** set_filter/95=9 (64 closures, no other length
+  fit), set_spoil_priority/96=1 (6), gui_location_changed/119=25 (59),
+  grab_blueprint_record/144=6 (120), blueprint_transfer_queue_update/227=12
+  (18), open_train_gui/290=10 (5), modify_decider_combinator_condition/166=19
+  (42 vs 10 at 18 — S→C was already 19). Two unnamed dump gaps now carry
+  their MEASURED lengths (still counted as undecoded, so they no longer
+  desync the rest of the closure): Unknown(12)=0 (590/596 single-action
+  closures) and Unknown(67)=2 (88/90). Across the 23-file set this cut
+  `hit_unknown` actions from 755 to 408; the remaining tail is variable-tail
+  GUI records (export_blueprint, gui_*), the unknown-name gaps, and
+  content-defined actions like 266.
 - **266 IS entity-prototype-dependent (confirmed 2026-10-27).** Running a
   throwaway local server (2.1.23 / build 87750, matches the captures) + RCON
   regenerated `external/entity_prototypes_runtime.txt` (1027 entities, the
@@ -267,18 +281,18 @@ query this replaces was silently broken (it looked players up in
 `game.connected_players`, which returns nil for a name, and parsed a payload
 shape the parser rejected).
 
-| id | bytes | layout |
+| id (2.0 → stable 2.1) | bytes | layout |
 |----|-------|--------|
-| 230 `quick_bar_set_slot` | 9 | `[item u8][slot u8][op u8][src u16 LE][client tick u32]` |
-| 231 `quick_bar_pick_slot` | 4 | `[item u8][slot u8][op u8][pad u8]` |
-| 232 `quick_bar_set_selected_page` | 2 | `[pad u8][page u8]` |
-| 286 `change_active_quick_bar` | 1 | `[page u8]` |
+| 230 → 245 `quick_bar_set_slot` | 9 → **5** | 2.0: `[item u8][slot u8][op u8][src u16 LE][client tick u32]`; 2.1 drops the client tick: `[item u8][slot u8][op u8][src u16 LE]` (measured 2026-11-03) |
+| 231 → 246 `quick_bar_pick_slot` | 4 | `[item u8][slot u8][op u8][pad u8]` |
+| 232 → 247 `quick_bar_set_selected_page` | 2 | `[pad u8][page u8]` |
+| 286 → 302 `change_active_quick_bar` | 1 | `[page u8]` |
 
 `op` on set_slot: 0 = set the slot's filter, 1 = clear it. `src` is the
-inventory slot the item came from, `0xFFFF` = none. The trailing u32 is the
-CLIENT's tick for the event — 15..21 ticks before the closure tick (it
-interpolates, so the offset wobbles), which is what makes the 9-byte length
-checkable.
+inventory slot the item came from, `0xFFFF` = none. On 2.0 a trailing u32 held
+the CLIENT's tick for the event (15..21 ticks before the closure tick, which is
+what made the 9-byte length checkable); stable 2.1 dropped it, so C→S is 5
+bytes.
 
 Byte 0 of 230/231 is the **item**, not the slot: across the captures it only
 ever takes base-game item prototype ids in `prototypes.item` order (0 =
@@ -852,11 +866,27 @@ binds that index→name and emits `:joined`; `player_leave_game` emits
 `:left`. These server-verified S→C actions are the only event sources in
 both modes; Discord relays them.
 
-Leave reason metadata may be added to the action body later; until then a
-decoded leave is reported as `:quit`. The top-left overlay traffic
-(`SkippedTickClosure`, `ChangeLatency`/`IncreasedLatencyConfirm`, and the
-`Map*ProgressUpdate` sync actions) rides the same S→C heartbeats and is
-captured deduped for later use.
+**Leave reason metadata (2026-11-03).** The 0-byte action is followed by a
+counted 9-byte block:
+
+```
+[dropped u8][0x55][0xff][(-game_index) u8][0xff][ref u32 LE]
+```
+
+`dropped` is **1 for "was dropped from the game"** and **0 for "left the
+game"**; the middle byte is the game index negated (`0xa2` for index 94), and
+`ref` is a per-session reference (the same ref repeats for a quick duplicate
+broadcast). Verified against `server-34197-20261103-232119`: MrHanniZap
+(index 94, dropped=1) vs Mista64/Light_Bearer_/BasedDept (dropped=0). The
+block occupies one of the closure's counted action slots; consuming it also
+removes the old phantom `nothing`/`Unknown(255)` parse of those bytes. The
+sniffer now emits `:left` with reason `:dropped` or `:quit`, and prints
+`<name> was dropped from the game` vs `<name> left the game`; Hivemind and
+Discord use the same reason in their lines.
+
+The top-left overlay traffic (`SkippedTickClosure`,
+`ChangeLatency`/`IncreasedLatencyConfirm`, and the `Map*ProgressUpdate` sync
+actions) rides the same S→C heartbeats and is captured deduped for later use.
 
 ## S→C echo body lengths that differ from the C→S table (2026-10-28)
 

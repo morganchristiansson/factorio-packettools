@@ -233,6 +233,15 @@ class TestDiscord < Minitest::Test
     assert_equal 2, bot.sent.size
   end
 
+  def test_dropped_leave_is_relayed_as_dropped
+    bridge = new_bridge
+    bridge.define_singleton_method(:enqueue) { |m, *a, **k| send(m, *a, **k) }
+    bot = bridge.instance_variable_get(:@bot)
+
+    bridge.on_player_event(:left, 'Bob', :dropped)
+    assert_equal ['Bob was dropped from the game'], bot.sent.map { |m| m[:content] }
+  end
+
   def test_only_s2c_player_events_post_join_and_leave
     bridge = new_bridge
     bridge.define_singleton_method(:enqueue) { |m, *a, **k| send(m, *a, **k) }

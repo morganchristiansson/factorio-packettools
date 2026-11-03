@@ -125,9 +125,15 @@ class Discord
   # Join/leave relay. :joined/:left are emitted ONLY from the server-verified
   # S→C player_join_game/player_leave_game actions, so failed C→S connection
   # attempts never reach Discord. Runs on the bridge's worker.
-  def on_player_event(kind, name, _reason = nil, _ticks = nil)
+  def on_player_event(kind, name, reason = nil, _ticks = nil)
     return unless kind == :joined || kind == :left
-    text = kind == :joined ? "#{name} joined the game" : "#{name} left the game"
+    text = if kind == :joined
+             "#{name} joined the game"
+           elsif reason == :dropped
+             "#{name} was dropped from the game"
+           else
+             "#{name} left the game"
+           end
     enqueue(:forward_message, text)
   end
 

@@ -31,6 +31,14 @@ module FactorioProtocol
     BT_TAIL = "\x00\x00\x00".b.freeze
     BT_TAIL_SC = "\x01\x01\x00".b.freeze
 
+    # S→C player_leave_game metadata: the server follows the 0-byte action
+    # with a counted `[dropped u8][55 ff][(-game_index) u8][ff][ref u32]`
+    # block. dropped=0 is a clean "left the game", 1 is "was dropped from the
+    # game" (live capture server-34197-20261103-232119: MrHanniZap=1, three
+    # other leavers=0). The block is counted as an action slot, so consuming
+    # it also stops the old phantom nothing/Unknown(255) parses.
+    LEAVE_META_SIZE = 9
+
     attr_reader :heartbeat
 
     private
@@ -134,6 +142,20 @@ module FactorioProtocol
       [offset, hb]
     end
 
+    # S→C player_leave_game metadata (see LEAVE_META_SIZE). The wire shape is
+    # `[dropped u8][55 ff][(-index) u8][ff][ref u32]`; the index check makes a
+    # chance match in an ordinary payload practically impossible.
+    def leave_metadata(data, offset, player)
+      return nil unless offset + LEAVE_META_SIZE <= data.bytesize
+      b = data.byteslice(offset, LEAVE_META_SIZE)
+      flag = b.getbyte(0)
+      return nil unless (flag == 0 || flag == 1) &&
+                        b.getbyte(1) == 0x55 && b.getbyte(2) == 0xFF &&
+                        b.getbyte(4) == 0xFF &&
+                        b.getbyte(3) == ((0x100 - (player & 0xFF)) & 0xFF)
+      { dropped: flag == 1, ref: b.unpack1('V', offset: 5) }
+    end
+
     # ── Tick Closure ───────────────────────────────────────────────
 
     def parse_tick_closure(data, offset, is_empty, is_server: false, is_last_closure: true)
@@ -202,6 +224,14 @@ module FactorioProtocol
         padding = is_server && act[:type].zero?
         last_index = act[:game_player] - 1 unless padding
         tc[:hit_unknown] = true if act[:hit_unknown]
+        if is_server && act[:type] == 248
+          if (meta = leave_metadata(data, offset, act[:game_player]))
+            act[:leave_dropped] = meta[:dropped]
+            act[:leave_ref] = meta[:ref]
+            offset += LEAVE_META_SIZE
+            i += 1 # the metadata occupies one of the counted action slots
+          end
+        end
         i += 1 unless padding
       end
 

@@ -544,7 +544,7 @@ class HivemindAgent
       append_history(nil, line)
       greet_join(name, line, attrs, now: now)
     when :left
-      append_history(nil, "#{name} left the game")
+      append_history(nil, reason == :dropped ? "#{name} was dropped from the game" : "#{name} left the game")
     end
   end
 
