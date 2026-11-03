@@ -10,10 +10,6 @@ Decoding stays on the capture thread. Hivemind and translation receive events
 through independent bounded worker queues (see `ai-agent.md`). Original chat
 prints before either agent runs.
 
-Heartbeat timeouts are checked after incoming packet processing, at most once
-per monotonic second, only in live server mode. No watchdog thread: complete
-traffic silence delays timeout announcements until another packet arrives.
-
 Pcap records go directly to buffered Ruby IO/GzipWriter; no custom buffer,
 flush thread, per-record flush, or fsync. Close/rotation finalizes the stream.
 Live readers may see buffered batches. Rotation counts uncompressed bytes
@@ -22,7 +18,7 @@ Slow storage can still block capture—this is not a lossless-capture
 guarantee.
 
 **Restart fully when installing this threading change.** Existing objects
-retain the old writer/watchdog state across a restart.
+retain the old writer state across a restart.
 
 ## Server Mode (`--server`)
 
@@ -57,11 +53,12 @@ Behavior:
 - **Save downloads excluded**: map-download TransferBlocks (msg 13, ~40 MB
   per joining player) are dropped entirely — no analysis, no capture. The
   server already has the save on disk.
-- **Capture is C→S only by default** (capture is always on in live
-  mode): the capture filter records only packets destined for the server,
-  so the pcap mirrors the analysis (no S→C broadcast duplicates).
-  `capture: full` records both directions (still excepting
-  TransferBlocks).
+- **Capture keeps one copy of each S→C broadcast** (capture is always on
+  in live mode): broadcasts are byte-identical across recipients apart
+  from the header random bit (0x20), so the first copy within
+  DEDUP_WINDOW is recorded and the rest skipped. Distinct per-client
+  heartbeat payloads survive. `capture: full` still excludes TransferBlocks
+  from the parse path (their per-client copies are never deduped).
 - **Roster learning**: every client's ConnectionRequestReplyConfirm (msg 4,
   incoming) registers `src_ip → username`; their first C→S heartbeat action
   binds the real game index (like the old client-side "self" learning, but
@@ -71,13 +68,15 @@ Behavior:
   existing players are named immediately. Later joiners are learned from
   the packet stream (msg 4 + heartbeat), so no periodic refresh is needed.
   `--no-rcon` disables.
-- **Join/leave events**: joins are seen via msg 4 ("X connected") + the
-  first-C→S-heartbeat index confirm ("confirmed as game player #N").
-  Clean leaves are seen via the C→S `PeerDisconnect` synchronizer action
-  in the client's final heartbeat (the S→C broadcast form with a peer_id
-  is never seen — no S→C analysis). Crashes/timeouts send nothing and
-  linger in the live roster until reload/restart; poll RCON `/players`
-  for authoritative roster changes.
+- **Join/leave events**: the S→C `player_join_game` (159) and
+  `player_leave_game` (248) tick-closure actions are the ONLY `:joined` /
+  `:left` sources, in both modes. They carry the GAME INDEX and name/index
+  binding, broadcast once per client and deduped to one event. The S→C join
+  binds index→name; the S→C leave covers clean quits and drops alike. C→S
+  msg 4 + first action heartbeat still bind the index and run join-time
+  RCON enrichment, but emit no event; `PeerDisconnect` is C→S-only, and
+  msg 14 is not an event source. Discord relays only these server-verified
+  join/leave events; there is no heartbeat watchdog.
 
 ### Auto-enable rule
 

@@ -213,9 +213,8 @@ class PlayerBackup
     end
   end
 
-  # Player LEFT the game (clean quit in either direction, or the heartbeat
-  # watchdog) — the live total is already folded into PlayerAttrs, last
-  # chance to record what this save is worth.
+  # Player LEFT the game (S→C player_leave_game) — the live total is already
+  # folded into PlayerAttrs, last chance to record what this save is worth.
   #
   # The sniffer hands us PlayerAttrs' FULL total: this-save ticks PLUS the
   # earlier-saves base that PlayerBackup itself keeps and PlayerAttrs adds
@@ -229,7 +228,7 @@ class PlayerBackup
   # new save.
   def on_player_event(kind, name, _reason = nil, ticks = nil)
     return unless kind == :left
-    # A leave (clean :quit or :timeout) — the sniffer hands PlayerAttrs'
+    # A leave (server-verified S→C player_leave_game) — the sniffer hands PlayerAttrs'
     # FULL live total (this-save + the earlier-saves base that PlayerAttrs
     # adds back on read, folded by disconnect first). reason is ignored: a
     # timeout is still a leave the save clock has stopped on. Stripping our

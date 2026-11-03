@@ -19,20 +19,6 @@ require_relative 'action_presenter'
 # Main Application
 # ─────────────────────────────────────────────────────────────────────
 class FactorioPacketTools
-  # Seconds without a C→S heartbeat before a player is considered gone
-  # (server mode only). Clients heartbeat continuously (every 2 ticks at
-  # 60 UPS ≈ 33ms), so this is a very conservative ceiling: a false
-  # positive is essentially impossible, and a false negative just delays
-  # the timeout. Deliberately NO knob — the cadence isn't fully documented
-  # and slightly-high beats slightly-low (a late timeout just registers
-  # late). Raised 30→60 after a verified false positive: a client whose
-  # game link stayed healthy (no server-side drop countdown, still online
-  # per RCON) showed 38–53s gaps in captured traffic (NAT/laggy path); the
-  # old threshold fired mid-gap. Note the watchdog has no resurrection
-  # path — touch() never revives a disconnected record — so a false
-  # positive sticks until rejoin/restart; keep headroom generous.
-  HEARTBEAT_TIMEOUT = 20.0
-
   # How far past the known roster a player index may sit before it counts as
   # a desync rather than a player we have no name for. Used only when strict
   # player-id checking is OFF (offline replay by default): on the 2026-10-03
@@ -86,7 +72,7 @@ class FactorioPacketTools
     @roster = []
     @stats = { packets: 0, factorio_packets: 0, actions: 0, outgoing_skipped: 0, capture_skipped: 0,
                bad_string: 0, unknown: 0, desync: 0, decode_error: 0, invalid_player: 0,
-               invalid_join: 0 }
+               duplicate_s2c: 0, invalid_join: 0 }
     @unknown_names = {} # undecoded action type -> how often we saw it
     @invalid_player_ids = {} # invalid player index -> how often we flagged it
     @invalid_join_keys = {} # misdecoded join (kind:id) -> already warned
@@ -151,16 +137,18 @@ class FactorioPacketTools
     # peer_id (network) -> name, for join/leave events (peer ids are NOT
     # game indexes; game indexes come from heartbeat actions instead).
     @peer_names = {}
-    # The live roster + liveness live entirely in @attrs (PlayerAttrs):
-    # "online" == record with :connected, whose :hb field drives the timeout
-    # watchdog. One structure, one lock — no parallel copies to drift.
-    @last_timeout_check = 0.0
+    # The live roster lives entirely in @attrs (PlayerAttrs): "online" ==
+    # record with :connected. One structure, one lock.
     # src_ip → [name, confirmed]: every player seen connecting (msg 4
     # username), flipped to confirmed once their first C→S heartbeat action
-    # binds a game index. Lets liveness touches and clean-quit signals
-    # (C→S PeerDisconnect sync action / msg 14) resolve WHO without S→C
-    # analysis. Lives on this instance for the lifetime of the run.
+    # binds a game index. Liveness touches use it; join/leave EVENTS come
+    # only from the server-verified S→C roster actions.
     @ip_names = {}
+    # S→C broadcast dedupe: canonical UDP payload -> last seen capture ts.
+    @s2c_seen = {}
+    # Names already announced by the S→C player_join_game broadcast (one
+    # :joined per join, even if per-client heartbeat variants repeat it).
+    @s2c_joined = {}
     # Cross-packet chat segment reassembly buffer: [player, total_segs] =>
     # {seg_no => payload}. Split chat messages arrive as separate
     # input-action segments across packets; merged when complete.
@@ -168,7 +156,7 @@ class FactorioPacketTools
     # Mirrored LuaPlayer attributes (connected/online_time/afk_time):
     # seeded once from RCON, maintained by packet decoding.
     # Admin status lives in PlayerDatabase (players-cache.json). See PlayerAttrs.
-    # Also owns the live roster (connected records) + liveness (:hb).
+    # Also owns the live roster (connected records).
     @attrs = PlayerAttrs.new
     # Latest game tick observed in heartbeat tick closures — the clock for
     # lazy online_time computation (60 ticks/s, tick is in every closure).
@@ -283,7 +271,7 @@ class FactorioPacketTools
       if @plugins.enabled?(:discord) && @rcon
         begin
           discord = @plugins[:discord]
-          # forward_chat runs off the capture thread via the bridge's worker
+          # forward_message runs off the capture thread via the bridge's worker
           # (AgentEvents#enqueue); the agent publishes :hivemind replies through
           # the shared publish_chat relay instead of a reply_callback.
           puts "[discord] online — relaying chat with Discord channel #{discord.channel_id}" if discord
@@ -478,16 +466,15 @@ class FactorioPacketTools
   end
 
   # Whether to persist this packet to the capture file. `capture: full`
-  # keeps everything, `capture: save` only the TransferBlocks; the
-  # default drops (a) keepalive-only heartbeats (no input
-  # actions / sync actions / heartbeat requests — ~40% of packets in a
-  # typical session) and (b) in server mode, outgoing (server→client)
-  # broadcasts: analysis only reads incoming packets, so the outgoing
-  # direction is N duplicates of the same data (~47% of a server capture).
+  # keeps everything, `capture: save` only the TransferBlocks; the default
+  # drops keepalive-only heartbeats (no input actions / sync actions /
+  # heartbeat requests — ~40% of packets in a typical session) and keeps the
+  # game host's traffic in either direction. Server-mode S→C broadcasts are
+  # already deduped before this check, so one copy reaches the file.
   def capture_recordable?(src_ip, dst_ip, udp_data)
     return @capture_mode != 'save' unless @capture_mode == 'normal'
     if @options[:server]
-      return false unless @host_ips.include?(dst_ip)
+      return false unless @host_ips.include?(dst_ip) || @host_ips.include?(src_ip)
     end
     recordable_heartbeat?(udp_data)
   end
@@ -507,25 +494,26 @@ class FactorioPacketTools
   def process_packet(pkt_num, ts, src_ip, dst_ip, sport, dport, udp_data, raw_frame = nil)
     @stats[:packets] += 1
 
-    # Liveness: any incoming C→S packet proves the client is connected —
-    # stamped BEFORE parse so even packets dropped from analysis/capture
-    # (TransferBlocks, keepalives) keep the player alive.
-    touch_heartbeat(src_ip) if @options[:server]
+    # Server broadcasts every S→C message once per recipient. The copies are
+    # byte-identical apart from the header's random bit (0x20), so keep the
+    # first and drop the rest within a short window: one capture record, one
+    # analysis pass. TransferBlocks (msg 13) are per-client map-download data,
+    # not broadcasts — never dedupe those.
+    if @options[:server] && @host_ips.include?(src_ip) &&
+       ((udp_data.getbyte(0) || 0) & 0x1F) != 13 && duplicate_s2c?(udp_data, ts)
+      @stats[:duplicate_s2c] += 1
+      return
+    end
 
     # Client mode auto-named capture: resolve the server IP from the first
     # identifiable packet and create the writer (server mode creates it at
     # init — server-<port>).
     ensure_pcap_writer(src_ip, dst_ip) if @pending_capture
 
-    # RequestForHeartbeatWhenDisconnecting (msg 14) — documented as a C→S
-    # clean-quit request (header only). Never observed in captures so far
-    # (all real quits use the C→S PeerDisconnect sync action in the final
-    # heartbeat, handled below); kept as a belt-and-braces fallback:
-    # resolve the src_ip to a player and mark them offline.
-    if (udp_data.getbyte(0) & 0x1F) == 14
-      handle_client_disconnect(src_ip, ts)
-      return
-    end
+    # RequestForHeartbeatWhenDisconnecting (msg 14) is a C→S header-only
+    # quit request. It is not an event source: the server-verified S→C
+    # player_leave_game action is the reliable leave signal.
+    return if (udp_data.getbyte(0) & 0x1F) == 14
 
     # Server mode: the server already has the save on disk, so the map
     # download (msg 13 TransferBlocks, ~40 MB per joining player) is dropped
@@ -573,6 +561,12 @@ class FactorioPacketTools
     if @options[:server]
       unless @host_ips.include?(dst_ip)
         @stats[:outgoing_skipped] += 1
+        # S→C sync actions are not the leave signal; the server broadcasts a
+        # player_leave_game (wire 248) input action inside a tick closure.
+        # Dedup above means this runs once per broadcast, not once per client.
+        if FactorioProtocol.heartbeat_payload?(udp_data)
+          handle_s2c_player_actions(FactorioProtocol.parse_udp_payload(udp_data), ts)
+        end
         return
       end
     elsif (client_ips = @options[:host_ips].to_a).any?
@@ -688,52 +682,18 @@ class FactorioPacketTools
         end
         @max_peer_id = sa[:peer_id] if sa[:peer_id] && (@max_peer_id.nil? || sa[:peer_id] > @max_peer_id)
         @peer_names[sa[:peer_id]] = sa[:username]
-        # Join = liveness proof (connect stamps hb); the game index is bound
-        # once a C→S heartbeat (server mode) or the map-download roster confirms it.
+        # Track the session start here; the :joined event itself is emitted
+        # only by the server-verified S→C player_join_game action.
         @attrs.connect(sa[:username], @game_tick)
-        ts_str = Time.at(ts).strftime('%H:%M:%S.%L')
-        # Don't print our own join as "joined the game" (we know we connected)
-        unless @self_name == sa[:username]
-          @plugins.emit(:on_player_event, :joined, sa[:username])
-          puts "#{ts_str}  #{sa[:username]} joined the game (peer #{sa[:peer_id]})" if player_visible?(sa[:username])
-        end
       end
-      if sa[:name] == 'PeerDisconnect'
-        if sa[:peer_id]
-          # S→C broadcast form (client mode): the departed peer by NETWORK peer
-          # id. Learned names win (@peer_names from our own connection_accept +
-          # NewPeerInfo); then the fresh-joiner fallback (peer_id == small game
-          # index → @player_db[peer_id+1]). The @player_db fallback must NOT be
-          # trusted for a returning player / misparsed id — it would fabricate
-          # "Player_<peer_id+1>", a name for no game index (e.g. a peer id that
-          # is no index becomes "Player_49311"). When no real name is known we
-          # STILL announce the genuine quit, but by peer id — a real event is
-          # never hidden, and no fake player name is invented.
-          pname = @peer_names[sa[:peer_id]] || @player_db.lookup(sa[:peer_id] + 1)
-          unnamed = pname.nil? || pname.start_with?('Player_')
-          pname = nil if unnamed
-          @attrs.disconnect(pname, @game_tick) if pname
-          @plugins.emit(:on_player_event, :left, pname, :quit, @attrs.online_time_ticks(pname, nil)) if pname
-          ts_str = Time.at(ts).strftime('%H:%M:%S.%L')
-          if pname
-            puts "#{ts_str}  #{pname} left the game" if player_visible?(pname)
-          else
-            puts "#{ts_str}  [peer #{sa[:peer_id]}] left the game"
-          end
-        else
-          # C→S form (server mode): the SENDER announces its own disconnect
-          # in its FINAL heartbeat — capture-verified (reason=0, no peer_id;
-          # the peer_id form is the S→C broadcast). This is the server
-          # mode's clean-quit signal (S→C broadcasts aren't analyzed).
-          handle_client_disconnect(src_ip, ts)
-        end
-      end
+      # PeerDisconnect is a C→S-only synchronizer action (the S→C leave is
+      # the player_leave_game input action). No event here: the server-verified
+      # S→C action owns joins/leaves in both modes.
     end
 
     # The SENDER's game index: in a C→S tick closure the first real action
     # carries the SENDER's game index (delta chain starts from 0xFFFF, so
-    # the first delta IS the index+1). A heartbeat carrying input actions
-    # IS the liveness proof — identify by index, not by src_ip.
+    # the first delta IS the index+1).
     idx = nil
     if hdr[:msg_type] == 6 && hb[:tick_closures]&.any?
       hb[:tick_closures].each do |tc|
@@ -744,15 +704,6 @@ class FactorioPacketTools
         end
       end
     end
-
-    # Liveness by NAME (server mode): stamp the roster record matching the
-    # sender's game index. This reaches everyone the src_ip touch can't:
-    # players seeded from the RCON roster (already in-game at startup —
-    # they never send msg 4, so their IP was never learned) and NAT'd
-    # clients sharing one source IP. Also learns the src_ip binding so
-    # later keepalive-only heartbeats (no actions → no index) still touch
-    # via touch_heartbeat(src_ip).
-    touch_heartbeat_index(idx, src_ip) if @options[:server] && idx
 
     # Bind usernames to game indexes from C→S heartbeat actions (joins:
     # msg 4 name + first real action's index → "confirmed as game player").
@@ -768,15 +719,11 @@ class FactorioPacketTools
           # needs `strict_player_ids: true`), else every index would look
           # like it is past an empty/stale max.
           if !(@strict_player_ids && @roster_ready) || join_index_valid?(name, idx)
-            entry[1] = true  # confirmed — never re-fire the join event
-            bind_player_index(name, idx)  # confirming heartbeat = liveness proof
-            # src_ip → name for connected players: lets the clean-quit
-            # signals (C→S PeerDisconnect sync action, msg 14 fallback)
-            # resolve the leaver on C→S alone. Server mode has no S→C
-            # analysis (NewPeerInfo/PeerDisconnect broadcasts are dropped),
-            # so joins are detected here and leaves via the final
-            # heartbeat's PeerDisconnect sync action.
-            @plugins.emit(:on_player_event, :joined, name)
+            entry[1] = true  # confirmed — never re-bind/re-enrich
+            bind_player_index(name, idx)
+            # No :joined here — the server-verified S→C player_join_game action
+            # emits it. Keep the targeted RCON query for everything only the
+            # server knows about a joiner, at this once-per-binding moment.
             # One targeted RCON query for everything only the server knows
             # about a joiner: their locale and their whole quickbar (the C→S
             # actions report it as deltas, so a join is the one moment the
@@ -879,7 +826,8 @@ class FactorioPacketTools
         # NOT `keep_frame ||= track_quickbar(act)`: that would short-circuit
         # and skip the tracking itself on every action after the first hit.
         keep_frame = true if track_quickbar(act)
-        bind_player_join(act) if act[:name] == :player_join_game
+        # Roster events come ONLY from the server-verified S→C broadcasts.
+        handle_s2c_roster_action(act, ts) if hdr[:msg_type] == 7
         log_action(ts, act, hdr[:msg_type] == 7, ghost: @ghost_mode, raw_frame: raw_frame)
       end
       # Runtime action-ID validation (action_validator plugin): the decoded
@@ -911,9 +859,6 @@ class FactorioPacketTools
     @stats[:decode_error] += 1
     @unknown_writer&.write_frame(raw_frame, Time.at(ts))
     warn_decode_error(e)
-  ensure
-    # Check AFTER this packet refreshes liveness, including sender-index binding.
-    check_timeouts_if_due
   end
 
   # Report a decode crash without flooding the console: the first few name
@@ -937,17 +882,6 @@ class FactorioPacketTools
   # set_slot names the item and the slot but NOT the page, so the page the
   # slot lands on is the one the player last switched to.
   #
-  # S→C player_join_game carries the joining player's GAME INDEX as the
-  # action's player and their name in the body (decoded by
-  # FactorioProtocol::PlayerJoin). This is the client-mode id→name binding
-  # NewPeerInfo cannot provide (it only has the network peer id), so persist
-  # it. Example: sheburator joins at game index 352.
-  def bind_player_join(act)
-    join = FactorioProtocol::PlayerJoin.decode(act)
-    return unless join
-    bind_player_index(join[:name], join[:index])
-  end
-
   # One identity write for every path that binds a game index to a name:
   # server-mode join confirm, client self-index confirm, S→C player_join_game.
   def bind_player_index(name, idx)
@@ -1239,8 +1173,8 @@ class FactorioPacketTools
     connected.each do |a|
       @player_db[a[:index]] = {name: a[:name], locale: a[:locale], admin: a[:admin], color: a[:color]}
       @player_db.remove_other_entries_for(a[:name], a[:index])
-      # Authoritative live-roster seed (connected + index + fresh hb);
-      # time accounting is player_attributes' job (load_player_attrs).
+      # Authoritative live-roster seed (connected + index); time accounting
+      # is player_attributes' job (load_player_attrs).
       @attrs.roster_online(a[:name], a[:index])
     end
     ts = Time.now.strftime('%H:%M:%S.%L')
@@ -1364,79 +1298,65 @@ class FactorioPacketTools
          "#{@unknown_names.sort_by { |_, v| -v }.first(12).map { |k, v| "#{k}=#{v}" }.join(', ')}"
   end
 
-  # Clean-quit signal in server mode: called from the C→S PeerDisconnect
-  # sync action (the client's final heartbeat — the observed quit path) and
-  # from C→S msg 14 (RequestForHeartbeatWhenDisconnecting, kept as a
-  # Resolve a leaver by src_ip and mark them offline. Called for clean
-  # quits only — crashes/timeouts send nothing and are caught by the
-  # heartbeat watchdog instead.
-  def handle_client_disconnect(src_ip, ts)
-    entry = @ip_names.delete(src_ip)
-    name = entry && entry[0]
-    return unless name
+  # S→C heartbeat tick-closure actions that carry roster state:
+  # player_join_game (159) and player_leave_game (248). The server broadcasts
+  # both, with the GAME INDEX as the action's player. They are the ONLY
+  # :joined/:left producers: server-verified, deduped, and reliable for
+  # accepted joins and every leave (clean quit or crash).
+  def handle_s2c_player_actions(parsed, ts)
+    hb = parsed && parsed[:heartbeat]
+    return unless hb
+    hb[:tick_closures]&.each do |tc|
+      tc[:actions]&.each { |action| handle_s2c_roster_action(action, ts) }
+    end
+  end
+
+  def handle_s2c_roster_action(action, ts)
+    case action[:type]
+    when 159 # player_join_game
+      join = FactorioProtocol::PlayerJoin.decode(action)
+      return unless join
+      bind_player_index(join[:name], join[:index])
+      @attrs.connect(join[:name], @game_tick)
+      unless @s2c_joined[join[:name]]
+        @s2c_joined[join[:name]] = true
+        @plugins.emit(:on_player_event, :joined, join[:name])
+        ts_str = Time.at(ts).strftime('%H:%M:%S.%L')
+        puts "#{ts_str}  #{join[:name]} joined the game" if player_visible?(join[:name])
+      end
+    when 248 # player_leave_game
+      name = @player_db.lookup(action[:game_player])
+      return unless name
+      @s2c_joined.delete(name)
+      leave_player(name, ts)
+    end
+  end
+
+  def leave_player(name, ts, require_online: true)
+    return false if require_online && !@attrs.online_names.include?(name)
     @attrs.disconnect(name, @game_tick)
     @plugins.emit(:on_player_event, :left, name, :quit, @attrs.online_time_ticks(name, nil))
     ts_str = Time.at(ts).strftime('%H:%M:%S.%L')
     puts "#{ts_str}  #{name} left the game" if player_visible?(name)
+    true
   end
 
-  # Record liveness for a player: ANY incoming C→S packet — real-action or
-  # keepalive heartbeat — proves the client is connected. Called for every
-  # incoming packet BEFORE parsing, so even packets later dropped from
-  # analysis/capture (e.g. TransferBlocks) keep a joiner alive mid-download.
-  # Server mode only — client mode sees the server's own detection via the
-  # S→C PeerDisconnect broadcast and needs no watchdog.
-  def touch_heartbeat(src_ip)
-    entry = @ip_names[src_ip]
-    @attrs.touch(entry[0]) if entry
-  end
-
-  # Liveness by game index (server mode): a C→S heartbeat carrying input
-  # actions names its sender by game index — no IP needed. Stamps EVERY
-  # connected roster record with that index (exactly one in practice),
-  # covering roster-seeded players (never sent msg 4 → no src_ip binding)
-  # and NAT'd clients sharing one source IP. Also learns the src_ip binding
-  # (first claim wins; NAT means it can't be exact) so later keepalive-only
-  # heartbeats keep touching via touch_heartbeat(src_ip).
-  def touch_heartbeat_index(game_index, src_ip)
-    names = @attrs.touch_by_index(game_index)
-    return if names.empty? || @ip_names.key?(src_ip)
-    @ip_names[src_ip] = [names.first, true]  # index-bound ⇒ confirmed
-  end
-
-  # Watchdog tick: drop players whose heartbeats stopped (crashes/power
-  # loss send nothing — clean quits announce via PeerDisconnect instead).
-  # Scans every second, then re-verifies each candidate under attrs' lock so
-  # a packet that arrived since the scan can't get a live player dropped.
-  # Fires on_player_event(:timeout) — the console line makes the LLM aware
-  # — and folds the session via attrs.disconnect. Client mode needs NO
-  # watchdog: the server detects the drop itself and broadcasts
-  # PeerDisconnect (S→C), which the normal leave path handles.
-  def check_heartbeat_timeouts
-    @attrs.stale_online(HEARTBEAT_TIMEOUT).each { |name, idle| timeout_player(name, idle) }
-  end
-
-  def timeout_player(name, idle)
-    # Refreshed since the scan → still alive.
-    return unless @attrs.still_stale?(name, HEARTBEAT_TIMEOUT)
-    # Liveness comes from packet-derived heartbeats, not periodic
-    # RCON roster refreshes (load_roster stays as-is on startup/reload).
-    @attrs.disconnect(name, @game_tick)
-    @plugins.emit(:on_player_event, :left, name, :timeout, @attrs.online_time_ticks(name, nil))
-    ts_str = Time.now.strftime('%H:%M:%S.%L')
-    puts "#{ts_str}  #{name} timed out (no heartbeat for #{idle.round}s) — likely crashed or disconnected; may re-join" if player_visible?(name)
-  end
-
-  # ponytail: total silence delays timeout announcements until the next packet;
-  # restore a timer only if detecting silence independently becomes important.
-  def check_timeouts_if_due
-    return unless @options[:server] && @options[:interface] && !@options[:pcap]
-    now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-    return if now - @last_timeout_check < 1.0
-    @last_timeout_check = now
-    check_heartbeat_timeouts
-  rescue StandardError => e
-    warn "heartbeat timeout check failed: #{e.class}: #{e.message}"
+  # One S→C broadcast copy per content within DEDUP_WINDOW seconds. Canonical
+  # key clears the header's random flag (0x20): the server sends the same
+  # payload to every client with a per-recipient random bit, so the raw bytes
+  # differ even though the message does not.
+  DEDUP_WINDOW = 1.0
+  def duplicate_s2c?(udp_data, ts)
+    key = udp_data.dup
+    key.setbyte(0, key.getbyte(0) & ~0x20) if key.bytesize > 0
+    seen = @s2c_seen[key]
+    return true if seen && ts - seen <= DEDUP_WINDOW
+    @s2c_seen[key] = ts
+    if @s2c_seen.size > 4096
+      cutoff = ts - DEDUP_WINDOW
+      @s2c_seen.delete_if { |_k, at| at < cutoff }
+    end
+    false
   end
 
   # Reassemble a chat message split across input-action segments. The

@@ -544,14 +544,7 @@ class HivemindAgent
       append_history(nil, line)
       greet_join(name, line, attrs, now: now)
     when :left
-      if reason == :timeout
-        # No clean PeerDisconnect was seen — heartbeat just stopped (crash,
-        # power/network loss). The player may re-join; the LLM should know the
-        # roster changed either way.
-        append_history(nil, "#{name} timed out (no heartbeat) — likely crashed or disconnected; may re-join")
-      else
-        append_history(nil, "#{name} left the game")
-      end
+      append_history(nil, "#{name} left the game")
     end
   end
 

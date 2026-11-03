@@ -5,7 +5,8 @@
 #
 # Verifies:
 #  1. Incoming (C→S, msg 6) packets ARE analyzed
-#  2. Outgoing (S→C, msg 7) packets are SKIPPED (no broadcast duplicates)
+#  2. Outgoing (S→C, msg 7) packets are NOT analyzed (no broadcast duplicates),
+#     but ONE copy of each is captured after dedup
 #  3. TransferBlock (msg 13) packets are dropped: no analysis, no capture
 #  4. Client mode still processes both directions (regression)
 #  5. Server IP auto-detection from local interfaces
@@ -209,16 +210,15 @@ class TestServerMode < Minitest::Test
                     "outgoing counter == 1 (got: #{output[/outgoing broadcasts skipped[^\n]*/].inspect})"
     refute_includes output, '[summary] packets=4', 'no packet 4 expected (all 3 accounted for)'
 
-    # capture: only the incoming client packet is captured — outgoing
-    # server broadcasts and msg13 TransferBlocks are excluded from capture in
-    # server mode (analysis never reads them; --full-capture keeps everything).
+    # capture: the incoming client packet plus ONE copy of the outgoing S→C
+    # broadcast; msg13 TransferBlocks are excluded (map data, not analysis).
     # The FakePcapWriter records the original Ethernet frames.
     writer = sniffer.instance_variable_get(:@pcap_writer)
     writer.close
     records = writer.records
     # synthetic frames: [eth(14)][udp payload] — strip eth to inspect the payload
     payloads = records.map { |record| record[14, record.bytesize - 14] }
-    assert_equal 1, records.size, "capture has 1 record (client only), echo + msg13 excluded (got #{records.size})"
+    assert_equal 2, records.size, "capture has the client packet + one deduped S→C copy (got #{records.size})"
     assert payloads.none? { |payload| payload.bytesize >= 500 }, 'no 503-byte TransferBlock payloads in capture'
   end
 
@@ -526,9 +526,10 @@ class TestServerMode < Minitest::Test
       sniffer.send(:process_packet, 3, ts, SERVER_IP, CLIENT_IP, 34197, 34197, s2c, "\x00" * 14 + s2c)
     end
     records = capture_records(sniffer)
-    assert_equal 1, records.size, "server mode keeps only the incoming action heartbeat (got #{records.size})"
+    assert_equal 2, records.size, "server mode keeps the incoming action heartbeat + one S→C copy (got #{records.size})"
     assert records.first && records.first.bytesize == acting.bytesize && records.first.start_with?("\x06\x02"),
-           'kept record is the C→S action heartbeat'
+           'first record is the C→S action heartbeat'
+    assert records.last.start_with?("\x07\x02"), 'second record is the S→C heartbeat'
 
     # full-capture keeps everything (keepalives + outgoing echo + msg13)
     _, sniffer = run_sniffer(server: true, host_ips: [SERVER_IP], player_db: nil, capture: "full") do |sniffer|
@@ -550,6 +551,27 @@ class TestServerMode < Minitest::Test
     end
     records = capture_records(sniffer)
     assert_equal [msg13_packet], records, "`capture: save` records only the msg 13 TransferBlock"
+  end
+
+  # S→C broadcasts are one message delivered to every client. The copies
+  # differ only in the header random bit (0x20), so dedupe must canonicalize
+  # that bit. Distinct payloads (e.g. a client-specific sync action) survive.
+  def test_s2c_broadcasts_deduplicated_across_recipients
+    base = s2c_echo_packet(70, "\x00" * 16)
+    random_copy = base.dup
+    random_copy.setbyte(0, random_copy.getbyte(0) | 0x20)
+    distinct = s2c_echo_packet(71, "\x00" * 16)
+
+    _, sniffer = run_sniffer(server: true, host_ips: [SERVER_IP], player_db: nil) do |s|
+      ts = 1_700_000_000.0
+      s.send(:process_packet, 1, ts, SERVER_IP, '192.168.1.11', 34_197, 34_197, base, "\x00" * 14 + base)
+      s.send(:process_packet, 2, ts + 0.001, SERVER_IP, '192.168.1.12', 34_197, 34_197, random_copy, "\x00" * 14 + random_copy)
+      s.send(:process_packet, 3, ts + 0.002, SERVER_IP, '192.168.1.13', 34_197, 34_197, distinct, "\x00" * 14 + distinct)
+    end
+    records = capture_records(sniffer)
+    assert_equal 2, records.size, 'one copy per S→C payload, not per recipient'
+    assert_equal 1, sniffer.instance_variable_get(:@stats)[:duplicate_s2c]
+    assert_equal [base, distinct], records
   end
 
   # Live capture validates player IDs by MEMBERSHIP: the roster is seeded
@@ -664,65 +686,79 @@ class TestServerMode < Minitest::Test
     end
   end
 
-  # ── Test 9: C→S join/leave detection feeds the agent ──────────────────
+  # ── Test 9: roster events come only from the server-verified S→C actions ──
 
-  def test_server_mode_join_and_leave_events
-    # Server mode: joins are detected at the msg4 + first-C→S-heartbeat confirm
-    # (the S→C NewPeerInfo broadcast is not analyzed), leaves via the C→S
-    # PeerDisconnect sync action in the client's final heartbeat (the observed
-    # quit signal; msg 14 is kept as a fallback).
-    joined = left = nil
-    online_after_quit = nil
-    result = run_sniffer(server: true, host_ips: [SERVER_IP], player_db: nil) do |sniffer|
-      agent = recording_agent
-      sniffer.instance_variable_set(:@plugins, PluginsDouble.new(hivemind: agent))
-      ts = 1_700_000_000.0
-      seed_player_indexes(sniffer, 11)
-      # msg 4 ConnectionRequestReplyConfirm — connection attempt with username
-      msg4 = "\x04".b + [1].pack('v') + [100].pack('V') + [200].pack('V') + [300].pack('V') +
-        [5].pack('C') + 'alice' + msg4_session
-      sniffer.send(:process_packet, 1, ts, CLIENT_IP, SERVER_IP, 34197, 34197, msg4)
-      # first C→S heartbeat with a real action → confirm → :joined
-      sniffer.send(:process_packet, 2, ts, CLIENT_IP, SERVER_IP, 34197, 34197, fixture_packet('client_chat_message_0x0b'))
-      # C→S heartbeat whose ONLY sync action is PeerDisconnect (reason=0, no
-      # peer_id) — the clean-quit signal in server mode → :left
-      quit_hb = fixture_packet('player_quit')
-      sniffer.send(:process_packet, 3, ts, CLIENT_IP, SERVER_IP, 34197, 34197, quit_hb)
-      joined, left = agent.events[0], agent.events[1]
-      online_after_quit = sniffer.online_players
-    end
-    sniffer = result[1]
-    assert_equal [:joined, 'alice'], joined, "join detected on confirm (got #{joined.inspect})"
-    assert_equal [:left, 'alice'], left, "leave detected on C→S PeerDisconnect (got #{left.inspect})"
-    refute online_after_quit.include?('alice'), 'leaver removed from online list (bot context is accurate)'
-
-    # msg 14 RequestForHeartbeatWhenDisconnecting — kept fallback, still works.
-    left14 = nil
-    result = run_sniffer(server: true, host_ips: [SERVER_IP], player_db: nil) do |sniffer|
-      agent = recording_agent
-      sniffer.instance_variable_set(:@plugins, PluginsDouble.new(hivemind: agent))
-      ts = 1_700_000_000.0
-      seed_player_indexes(sniffer, 11)
-      msg4 = "\x04".b + [1].pack('v') + [100].pack('V') + [200].pack('V') + [300].pack('V') +
-        [5].pack('C') + 'alice' + msg4_session
-      sniffer.send(:process_packet, 1, ts, CLIENT_IP, SERVER_IP, 34197, 34197, msg4)
-      sniffer.send(:process_packet, 2, ts, CLIENT_IP, SERVER_IP, 34197, 34197, fixture_packet('client_chat_message_0x0b'))
-      sniffer.send(:process_packet, 3, ts, CLIENT_IP, SERVER_IP, 34197, 34197, "\x0e".b + [7].pack('V'))
-      left14 = agent.events[1]
-    end
-    sniffer = result[1]
-    assert_equal [:left, 'alice'], left14, "leave detected on msg 14 fallback (got #{left14.inspect})"
-
-    # A disconnected-but-never-confirmed src_ip should not produce a leave.
+  def test_cs_join_and_quit_do_not_emit_roster_events
     events = nil
     result = run_sniffer(server: true, host_ips: [SERVER_IP], player_db: nil) do |sniffer|
       agent = recording_agent
       sniffer.instance_variable_set(:@plugins, PluginsDouble.new(hivemind: agent))
-      sniffer.send(:process_packet, 1, 1_700_000_000.0, CLIENT_IP, SERVER_IP, 34197, 34197, "\x0e".b + [7].pack('V'))
+      ts = 1_700_000_000.0
+      seed_player_indexes(sniffer, 11)
+      msg4 = "\x04".b + [1].pack('v') + [100].pack('V') + [200].pack('V') + [300].pack('V') +
+        [5].pack('C') + 'alice' + msg4_session
+      sniffer.send(:process_packet, 1, ts, CLIENT_IP, SERVER_IP, 34197, 34197, msg4)
+      sniffer.send(:process_packet, 2, ts, CLIENT_IP, SERVER_IP, 34197, 34197, fixture_packet('client_chat_message_0x0b'))
+      sniffer.send(:process_packet, 3, ts, CLIENT_IP, SERVER_IP, 34197, 34197, fixture_packet('player_quit'))
+      sniffer.send(:process_packet, 4, ts, CLIENT_IP, SERVER_IP, 34197, 34197, "\x0e".b + [7].pack('V'))
       events = agent.events
     end
     sniffer = result[1]
-    assert_empty events, 'msg 14 from unknown src_ip → no leave event'
+    assert_empty events, 'C→S join/quit/msg14 are not event sources; S→C broadcasts own :joined/:left'
+  end
+
+  # player_join_game (wire 159) is the S→C join broadcast: it binds the game
+  # index to the name and is the only :joined producer.
+  def test_s2c_player_join_game_binds_name_and_emits_join
+    packet = fixture_packet('s2c_player_join_game_stable_1')
+    events = name = nil
+    result = run_sniffer(server: true, host_ips: [SERVER_IP], player_db: nil) do |s|
+      agent = recording_agent
+      s.instance_variable_set(:@plugins, PluginsDouble.new(hivemind: agent))
+      s.send(:process_packet, 1, 1_700_000_000.0, SERVER_IP, CLIENT_IP,
+               34_197, 34_197, packet, "\x00" * 14 + packet)
+      events = agent.events
+      name = s.instance_variable_get(:@player_db).lookup(1)
+    end
+    sniffer = result[1]
+    assert_equal [[:joined, 'morganc']], events,
+                 'the S→C broadcast is the only join event source'
+    assert_equal 'morganc', name, 'the S→C join bound game index 1 to the name'
+    assert_equal 0, sniffer.instance_variable_get(:@stats)[:duplicate_s2c]
+  end
+
+  # The server broadcasts player_leave_game (wire 248) as an S→C tick-closure
+  # action. It is the reliable leave signal for crashes/timeouts too, and it
+  # carries the GAME INDEX (not the network peer id). Dedup means the N client
+  # copies produce exactly one event.
+  def test_s2c_player_leave_game_detects_leave_without_cs_quit
+    leave = FactorioProtocol.build_server_heartbeat(
+      seq: 1, closures: [[22976167, 1, FactorioProtocol.build_input_action(248, 1, '')]]
+    )
+    duplicate = leave.dup
+    duplicate.setbyte(0, duplicate.getbyte(0) | 0x20)
+
+    events = online = nil
+    result = run_sniffer(server: true, host_ips: [SERVER_IP], player_db: nil) do |s|
+      agent = recording_agent
+      s.instance_variable_set(:@plugins, PluginsDouble.new(hivemind: agent))
+      s.instance_variable_set(:@game_tick, 22976167)
+      s.instance_variable_get(:@player_db)[1] = { name: 'morganc' }
+      s.instance_variable_get(:@attrs).roster_online('morganc', 1)
+
+      ts = 1_700_000_000.0
+      s.send(:process_packet, 1, ts, SERVER_IP, CLIENT_IP,
+               34_197, 34_197, leave, "\x00" * 14 + leave)
+      # Second recipient's copy: same broadcast, different random header bit.
+      s.send(:process_packet, 2, ts + 0.001, SERVER_IP, '192.168.1.51',
+               34_197, 34_197, duplicate, "\x00" * 14 + duplicate)
+      events = agent.events
+      online = s.online_players
+    end
+    sniffer = result[1]
+    assert_equal [[:left, 'morganc']], events, 'one leave event, not one per recipient'
+    refute_includes online, 'morganc', 'S→C leave removed the player from the live roster'
+    assert_equal 1, sniffer.instance_variable_get(:@stats)[:duplicate_s2c]
   end
 
   # A fresh join's C→S ClientChangedState is the state machine's clean
@@ -1556,93 +1592,6 @@ class TestServerMode < Minitest::Test
     assert_equal 'pt-BR', db.get_locale(id), 'and the locale, which the translation agent used to ask for itself'
     assert_includes output, 'quickbar=3 slot(s)', 'the enrichment is reported'
     assert_equal 0, db.quickbar_page(id), 'the active page still comes from the packets'
-  end
-
-  # ── Heartbeat timeout: crashed/offline players are dropped ────────────
-
-  def test_heartbeat_watchdog
-    # The timeout is server-mode only: client mode gets the server's S→C
-    # PeerDisconnect broadcast for crashes. In server mode a player whose
-    # heartbeats stop (crash / power / network loss — nothing is sent) must be
-    # removed from the live roster (attrs connected records) after
-    # HEARTBEAT_TIMEOUT and reported to the agent console queue, instead of
-    # lingering undefinedly (prevents the stale-roster forever problem).
-    wd_events = []
-    # NOTE: no :interface in opts → ensure_timeout_watchdog must NOT start a
-    # thread in tests (guarded). We drive check_heartbeat_timeouts directly.
-    sniffer = make_test_sniffer(server: true, host_ips: [SERVER_IP])
-    refute sniffer.instance_variable_get(:@timeout_watchdog),
-           'no watchdog thread in tests (no :interface)'
-    agent = Object.new
-    agent.define_singleton_method(:on_player_event) { |kind, name, *rest| wd_events << [kind, name] }
-    agent.define_singleton_method(:close_events) {}
-    sniffer.instance_variable_set(:@plugins, PluginsDouble.new(hivemind: agent))
-    sniffer.instance_variable_set(:@show_players, [])
-    sniffer.instance_variable_set(:@debug, false)
-    sniffer.instance_variable_set(:@attrs, PlayerAttrs.new)
-    now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-    attrs = sniffer.instance_variable_get(:@attrs)
-    attrs.roster_online('alive', 1)
-    attrs.roster_online('stale', 2)
-    players = attrs.instance_variable_get(:@players)   # internals: age hb directly
-    players['alive'][:hb] = now - 1         # heartbeat a second ago → fine
-    players['stale'][:hb] = now - (FactorioPacketTools::HEARTBEAT_TIMEOUT + 5)  # silent for timeout+5s → timeout
-
-    output, = capture_io { sniffer.send(:check_heartbeat_timeouts) }
-    refute attrs.online_names.include?('stale'), 'stale player removed from the live roster'
-    assert attrs.online_names.include?('alive'), 'recently-heartbeat player kept'
-    assert wd_events.include?([:left, 'stale']), 'agent got on_player_event(:left, :timeout)'
-    refute wd_events.include?([:left, 'alive']), 'alive player did not fire a leave'
-    assert_includes output, 'stale timed out', 'console prints the timeout line'
-    assert_includes output, 'no heartbeat', 'console prints the timeout reason'
-
-    # a heartbeat arriving before the scan must cancel the drop (touch refreshed
-    # the timestamp → below the threshold at scan time)
-    attrs.roster_online('half', 3)
-    players['half'][:hb] = now - (FactorioPacketTools::HEARTBEAT_TIMEOUT + 2)
-    sniffer.send(:touch_heartbeat_index, 3, '10.0.0.55')   # fresh proof of life by index
-    capture_io { sniffer.send(:check_heartbeat_timeouts) }
-    assert attrs.online_names.include?('half'), 'refreshed heartbeat cancels the timeout'
-
-    # regression: a record created by connect() (NewPeerInfo join — never
-    # RCON-seeded) has no :base_ticks; the watchdog's disconnect fold used to
-    # raise `undefined method '+' for nil` BEFORE marking the player offline,
-    # so the watchdog re-raised every second. Also covers @game_tick being
-    # still nil (no heartbeat carrying a tick observed yet).
-    attrs.connect('joiner', 1234)
-    assert_equal 0, players['joiner'][:base_ticks],
-                 'connect() gives unseeded records a zero base_ticks'
-    sniffer.instance_variable_set(:@game_tick, nil)   # tick never observed
-    players['joiner'][:hb] = now - (FactorioPacketTools::HEARTBEAT_TIMEOUT + 5)
-    output, = capture_io { sniffer.send(:check_heartbeat_timeouts) }
-    refute attrs.online_names.include?('joiner'), 'unseeded joiner timed out without raising'
-    assert wd_events.include?([:left, 'joiner']), 'agent got on_player_event(:left, :timeout) for joiner'
-    assert_includes output, 'joiner timed out', 'console prints the unseeded joiner timeout'
-    assert_includes output, 'no heartbeat', 'console prints the timeout reason'
-
-    # touch_heartbeat stamps by src_ip resolution too (the packet-top path)
-    sniffer.instance_variable_get(:@ip_names)['10.0.0.77'] = ['ripe', true]
-    attrs.roster_online('ripe', 4)
-    players['ripe'][:hb] = now - (FactorioPacketTools::HEARTBEAT_TIMEOUT + 4)
-    sniffer.send(:touch_heartbeat, '10.0.0.77')
-    capture_io { sniffer.send(:check_heartbeat_timeouts) }
-    assert attrs.online_names.include?('ripe'), 'src_ip touch keeps the player alive'
-
-    # Liveness is packet-derived, not periodic RCON (load_roster stays
-    # as-is on startup/reload): roster-seeded players that never get
-    # attributable packets can time out (a false positive forces a
-    # rejoin; a false negative only registers late).
-    sniffer.instance_variable_set(:@rcon, nil)
-    attrs.roster_online('gone', 10)
-    players['gone'][:hb] = now - (FactorioPacketTools::HEARTBEAT_TIMEOUT + 5)
-    wd_events.clear
-    output, = capture_io { sniffer.send(:check_heartbeat_timeouts) }
-    assert wd_events.include?([:left, 'gone']), 'disconnected roster player still fires the timeout'
-    refute attrs.online_names.include?('gone'), 'roster player removed from roster'
-    assert_includes output, 'gone timed out', 'console prints the timeout'
-    assert_includes output, 'no heartbeat', 'console prints the timeout reason'
-  ensure
-    sniffer&.instance_variable_get(:@pcap_writer)&.close
   end
 
   def recording_agent_with_messages

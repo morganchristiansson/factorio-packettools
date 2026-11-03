@@ -97,33 +97,33 @@ either on a client or on the game server host (server mode, with RCON).
   PeerDisconnect quit signal, indexes bound by C→S heartbeats. The Hivemind agent reads the packet-derived
   `@attrs` cache instead of querying RCON for roster/stats
   (targeted RCON lookup only for newly joined players).
-- **Server mode captures and analyzes ONLY C→S packets** (the server's
-  S→C broadcasts are N duplicates per event and the capture filter drops
-  them; there is no S→C analysis at all). Every join/leave signal must
-  come from the client side: joins = msg-4 username + first-C→S-heartbeat
-  index confirm; clean quits = a `PeerDisconnect` synchronizer action in
-  the client's FINAL C→S heartbeat (capture-verified: reason=0, no
-  peer_id — the peer_id form is the S→C broadcast, which we never see).
-  msg 14 (RequestForHeartbeatWhenDisconnecting) is kept as a fallback
-  path but has never been observed in captures. Crashes/timeouts send
-  neither — they are caught by the heartbeat watchdog instead: a
-  server-mode thread tracks each player's last C→S heartbeat in their
-  PlayerAttrs record (:hb on the name-keyed attrs record — one hash, one
-  lock; hb stamped on EVERY incoming packet from the player's IP and at
-  every roster/join/bind, plus by index for any heartbeat carrying real
-  input actions — the sender's game index names it directly, which
-  reaches roster-seeded and NAT'd players whose IP was never learned)
-  and drops players silent for HEARTBEAT_TIMEOUT
-  (30s, deliberately high — a false positive forces a rejoin, a false
-  negative just registers late). Fires
-  on_player_event(:timeout) → console line so the LLM sees the roster
-  change. Client mode needs no watchdog: the server detects the drop and
-  broadcasts S→C PeerDisconnect, which the normal leave path handles.
-- **Join/leave in server mode (C→S only)**: joins are detected at the
-  msg-4 + first-C→S-heartbeat confirm ("confirmed as game player #N") →
-  `HivemindAgent#on_player_event(:joined, …)` (fires the greeting); clean
-  leaves via the C→S `PeerDisconnect` sync action in the client's final
-  heartbeat → `on_player_event(:left, …)` (console queue only, no reply).
+- **Server mode analyzes C→S actions plus one S→C leave action, and
+  captures one deduped copy of each S→C broadcast** (canonical payload,
+  header random bit 0x20 cleared; first copy wins for DEDUP_WINDOW,
+  TransferBlocks are never deduped because they are per-client downloads).
+  S→C leaves are a tick-closure input action `player_leave_game` (wire 248,
+  no body) carrying the GAME INDEX — NOT a `PeerDisconnect` sync action.
+  The server broadcasts it for clean quits and drops alike; in s2c-check-1
+  it appeared at the server's log tick (22976167) for game player #1, while
+  no S→C PeerDisconnect existed at all (that sync action is C→S-only).
+  The join counterpart is `player_join_game` (wire 159): a 4-byte peer/mode
+  header on stable 2.1.24 (7+name_len; older captures had 6, 9+name_len),
+  carrying the GAME INDEX and name. It binds index→name and emits `:joined`;
+  `player_leave_game` emits `:left`. These S→C actions are the ONLY
+  `:joined`/`:left` producers in BOTH modes, so failed C→S join attempts and
+  unverified/malformed C→S packets never become roster events. C→S msg 4 +
+  first action heartbeat still BINDS the index and runs the join-time RCON
+  enrichment, but emits no event; C→S `PeerDisconnect` / msg 14 are not
+  event sources either. Discord relays `:joined`/`:left`, so only the
+  server-verified events reach the channel. Crashes/timeouts send nothing
+  from the client — the S→C leave action is their reliable signal; there is
+  no heartbeat watchdog (the server owns drop detection, and its leave
+  broadcast covers both modes).
+- **Join/leave events (both modes)**: the S→C `player_join_game` (159) and
+  `player_leave_game` (248) tick-closure actions are the only sources of
+  `:joined` / `:left` → `HivemindAgent#on_player_event(...)` (a join fires
+  the greeting; a leave only queues a console line, no reply). C→S joins
+  still bind index + enrich.
   A join appends to the per-save player list: the confirmed game index must
   be one the RCON roster of THIS save already owns (a returning player) or
   above the roster's highest index (a new player, within the
@@ -178,10 +178,11 @@ either on a client or on the game server host (server mode, with RCON).
   than 72h (`keep:`), keep the rotated total under 512 MB (`max_size:`,
   oldest first); restarts open a new file (previous runs
   are already timestamped; empty files deleted on close). Captured
-  pcaps are filtered by default: TransferBlocks (msg 13),
-  keepalive-only heartbeats, and (server mode) outgoing S→C broadcasts are
-  excluded — a 5h server capture went from ~460MB to ~20MB. `capture: full`
-  records everything; `capture: save` keeps just the TransferBlocks
+  pcaps are filtered by default: TransferBlocks (msg 13) and
+  keepalive-only heartbeats are excluded; in server mode each S→C
+  broadcast is kept once (deduped) — a 5h server capture went from
+  ~460MB to ~20MB. `capture: full` records everything (still deduped S→C);
+  `capture: save` keeps just the TransferBlocks
   (needed for `tools/extract_save_from_pcap.rb`). A `.gz` path compresses
   the pcap stream (~3-4x). See `docs/server-mode.md`.
 - **Shutdown**: Ctrl-C raises `Interrupt`, caught by the entry point to call
@@ -276,9 +277,10 @@ either on a client or on the game server host (server mode, with RCON).
   (scratch/gen_fixtures21.rb + scratch/splice_fixtures.rb) — never
   hand-edited bytes. A hand-patched hex (e.g. a type byte bumped 106→107 in
   2c9e2a0) is untrusted by definition: replace it from a capture or flag it
-  in the description. S→C echo fixtures are GONE: server mode never captures
-  S→C, no stable S→C corpus exists, and C→S carries all the info; the S→C
-  direction tests use synthetic heartbeats (build_server_heartbeat).
+  in the description. S→C echo fixtures are GONE: server mode now captures
+  deduped S→C, but no stable S→C corpus exists yet, and C→S carries all the
+  info; the S→C direction tests use synthetic heartbeats
+  (build_server_heartbeat).
 - **Decode speed** (measured, not guessed; profile with vernier, recipe in
   Usage): a full `-r` replay of a 38 MB capture went **16s → 6.1s**, the
   25-capture rolling set ~4.8min → 1.8min. Three things were half the time,

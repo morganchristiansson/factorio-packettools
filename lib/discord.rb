@@ -21,7 +21,7 @@ require_relative 'agent_events'
 # chat event via on_chat (reached through @plugins.emit(:on_chat)) and emits
 # its own messages via owner.publish_chat(:discord, author, text); it skips
 # source :discord on_chat to avoid echoing a Discord message back into the
-# channel (loop guard). forward_chat runs off-thread on the bridge's worker,
+# channel (loop guard). forward_message runs off-thread on the bridge's worker,
 # like the agent's on_chat does.
 #
 # Config: config-discord.yaml (gitignored). The token is a secret — env-first
@@ -98,18 +98,16 @@ class Discord
     raise "discord gateway failed to start: #{e.class}: #{e.message}"
   end
 
-  # Factorio chat → Discord. Called off the capture thread via the AgentEvents
-  # worker (forward_chat), since @bot.send_message does a blocking REST call —
-  # the same reason translation keeps RCON/REST off the capture thread.
-  def forward_chat(name, msg)
+  # Discord post, called off the capture thread via the AgentEvents worker,
+  # since @bot.send_message does a blocking REST call — the same reason
+  # translation keeps RCON/REST off the capture thread. allowed_mentions with
+  # an empty parse array suppresses @-pings on relayed chat (Factorio names
+  # aren't Discord users). send_message caps at 2000 chars.
+  def forward_message(text)
     return unless @bot
-
-    text = "#{name}: #{msg}"
-    # allowed_mentions with an empty parse array suppresses @-pings on relayed
-    # chat (Factorio names aren't Discord users). send_message caps at 2000 chars.
     @bot.send_message(@channel_id, text, false, nil, nil, { parse: [] })
   rescue StandardError => e
-    warn "[discord] failed to forward chat: #{e.class}: #{e.message}"
+    warn "[discord] failed to forward message: #{e.class}: #{e.message}"
   end
 
   # Chat relay subscriber (reached via @plugins.emit(:on_chat)). Forwards
@@ -121,7 +119,16 @@ class Discord
   def on_chat(source, author, message, player_id = nil)
     return if source == :discord
     return if message.to_s.start_with?('/')
-    enqueue(:forward_chat, author, message)
+    enqueue(:forward_message, "#{author}: #{message}")
+  end
+
+  # Join/leave relay. :joined/:left are emitted ONLY from the server-verified
+  # S→C player_join_game/player_leave_game actions, so failed C→S connection
+  # attempts never reach Discord. Runs on the bridge's worker.
+  def on_player_event(kind, name, _reason = nil, _ticks = nil)
+    return unless kind == :joined || kind == :left
+    text = kind == :joined ? "#{name} joined the game" : "#{name} left the game"
+    enqueue(:forward_message, text)
   end
 
   # Gateway entry point (Discord → game). Runs on discordrb's event thread, so

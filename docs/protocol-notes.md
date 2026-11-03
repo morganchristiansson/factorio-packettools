@@ -832,6 +832,32 @@ metadata (15 total). Reading 15B for C→S swallowed following hover actions
 (`Player_267 gui_inventory_bar_changed` phantom). Locked in by fixture
 `client_open_character_gui_then_hover_stream`.
 
+## Server-broadcast leave: `player_leave_game` (2026-11-03)
+
+`PeerDisconnect` is a C→S synchronizer action only. The S→C leave is an
+**input action** in a tick closure: `player_leave_game` (wire 248, C→S table
+length 0), broadcast to every client like any other tick closure.
+
+`s2c-check-1.pcap` pinned it: server log tick `22976167` (the
+`DisconnectScheduled` state change) carries `248 player_leave_game` with
+GAME INDEX `#1` to all 11 clients; there is no S→C `PeerDisconnect`.
+The action belongs to the S→C heartbeat at that tick (flags `0x16`:
+synchronizer flag plus tick closures), so dedupe it by heartbeat payload and
+take the first copy.
+
+The join counterpart is `player_join_game` (159), same broadcast shape and
+GAME INDEX, with the name in its body. Stable 2.1.24 uses a 4-byte peer/mode
+header (`7 + name_len`); older captures use 6 (`9 + name_len`). The sniffer
+binds that index→name and emits `:joined`; `player_leave_game` emits
+`:left`. These server-verified S→C actions are the only event sources in
+both modes; Discord relays them.
+
+Leave reason metadata may be added to the action body later; until then a
+decoded leave is reported as `:quit`. The top-left overlay traffic
+(`SkippedTickClosure`, `ChangeLatency`/`IncreasedLatencyConfirm`, and the
+`Map*ProgressUpdate` sync actions) rides the same S→C heartbeats and is
+captured deduped for later use.
+
 ## S→C echo body lengths that differ from the C→S table (2026-10-28)
 
 S→C tick closures echo the same action IDs but some bodies are NOT the C→S
@@ -847,7 +873,7 @@ direction-specific lengths by action NAME (IDs move between versions):
 | `send_stacks_to_trash` | 17 | pkt 30089 |
 | `deconstruct` | 23 (16 area + 7 tail) | pkt 28272 |
 | `selected_entity_changed_based_on_unit_number` | 8 | pkt 33567 |
-| `player_join_game` | variable `9 + name_len` (16 pkt 17772, 19 pkt 30236) | 2-byte tail after the name |
+| `player_join_game` | variable: `9 + name_len` (6-byte header; 16 pkt 17772, 19 pkt 30236) or `7 + name_len` (4-byte header; s2c-check-1 pkt 324, 14 for morganc) | 2-byte tail after the name; decode the name for the index→name binding |
 | `set_logistic_filter_item` | 22 | pkt 37042 |
 | `upgrade` | 23 | pkt 16083 |
 | `go_to_train_station` | 13 | pkt 58659 |

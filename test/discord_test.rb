@@ -142,9 +142,9 @@ class TestDiscord < Minitest::Test
     end
   end
 
-  def test_forward_chat_posts_to_channel
+  def test_forward_message_posts_to_channel
     bridge = new_bridge
-    bridge.forward_chat('Bob', 'hello')
+    bridge.forward_message('Bob: hello')
     sent = bridge.instance_variable_get(:@bot).sent
     assert_equal 1, sent.size
     assert_equal CHANNEL_ID, sent.first[:channel]
@@ -218,19 +218,35 @@ class TestDiscord < Minitest::Test
 
   def test_on_chat_forwards_factorio_and_hivemind_skips_own
     bridge = new_bridge
-    # Make enqueue synchronous so forward_chat runs inline.
+    # Make enqueue synchronous so forward_message runs inline.
     bridge.define_singleton_method(:enqueue) { |m, *a, **k| send(m, *a, **k) }
     bot = bridge.instance_variable_get(:@bot)
 
-    bridge.on_chat(:factorio, 'Bob', 'welcome')        # → forward_chat('Bob', 'welcome')
+    bridge.on_chat(:factorio, 'Bob', 'welcome')        # → forward_message('Bob: welcome')
     assert_equal 'Bob: welcome', bot.sent.first[:content]
-    bridge.on_chat(:hivemind, 'Hivemind', 'done!')     # → forward_chat('Hivemind', 'done!')
+    bridge.on_chat(:hivemind, 'Hivemind', 'done!')     # → forward_message('Hivemind: done!')
     assert_equal 'Hivemind: done!', bot.sent.last[:content]
     bridge.on_chat(:discord, 'Alice', 'echo?')          # → skipped (own source; no echo loop)
     assert_equal 2, bot.sent.size
     bridge.on_chat(:factorio, 'Eve', '/shout hello?')     # → skipped (commands stay in game)
     bridge.on_chat(:factorio, 'Mallory', '/w bob secret') # → skipped (whispers stay private)
     assert_equal 2, bot.sent.size
+  end
+
+  def test_only_s2c_player_events_post_join_and_leave
+    bridge = new_bridge
+    bridge.define_singleton_method(:enqueue) { |m, *a, **k| send(m, *a, **k) }
+    bot = bridge.instance_variable_get(:@bot)
+
+    bridge.on_player_event(:joined, 'Bob')
+    bridge.on_player_event(:left, 'Bob')
+    bridge.on_player_event(:timeout, 'Crashy', :timeout)
+    bridge.on_player_event(:chat, 'ignored')
+
+    assert_equal ['Bob joined the game', 'Bob left the game'],
+                 bot.sent.map { |m| m[:content] }
+    assert bot.sent.all? { |m| m[:allowed_mentions] == { parse: [] } },
+           'player events suppress mentions like chat relay'
   end
 
   def test_handler_registered_at_construction
@@ -262,7 +278,7 @@ class TestDiscord < Minitest::Test
   private
 
   # A throwaway owner double (rcon/player_db/publish_chat no-ops), used by the
-  # config/token/channel_id + forward_chat tests where the owner isn't
+  # config/token/channel_id + forward_message tests where the owner isn't
   # exercised. Built once and reused across those read-only tests.
   def fake_owner
     @fake_owner ||= FakeOwner.new(rcon: DiscordFakeRcon.new, player_db: PlayerDatabase.new(nil))

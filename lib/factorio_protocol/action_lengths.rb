@@ -70,17 +70,21 @@ module FactorioProtocol
       elsif is_server && name == :selected_entity_changed_based_on_unit_number
         alen = 8 # S→C echo carries the unit-number reference
       elsif is_server && name == :player_join_game
-        # Join echo: 6-byte peer/mode header, [u8 name len], the name, then
-        # 2 trailing bytes => 9 + name length (16 for a 7-char name, pkt
-        # 17772; 19 for a 10-char name, pkt 30236). Decode the name here:
-        # the length already requires reading it, so the host never parses
-        # the same body again.
-        name_len = offset + 6 < data.bytesize ? data.getbyte(offset + 6) : 0
-        alen = 9 + name_len
-        if name_len.positive? && name_len <= FactorioProtocol::PlayerJoin::NAME_MAX &&
-           offset + 7 + name_len <= data.bytesize
-          raw = data.byteslice(offset + 7, name_len).to_s.force_encoding(Encoding::UTF_8)
-          join_name = raw if raw.valid_encoding? && !raw.strip.empty?
+        # Join echo: a [peer/mode header], [u8 name len], the name, then 2
+        # trailing bytes. Older 2.1 captures use a 6-byte header (9+len;
+        # pkt 17772, pkt 30236); stable 2.1.24 uses 4 (7+len; s2c-check-1
+        # pkt 324 at tick 22976419: peer id 243, name morganc). Try the old
+        # layout first, then the new one; a candidate name must be printable.
+        [6, 4].each do |header|
+          name_len = data.getbyte(offset + header).to_i
+          next unless name_len.positive? && name_len <= FactorioProtocol::PlayerJoin::NAME_MAX
+          next unless offset + header + 1 + name_len <= data.bytesize
+          raw = data.byteslice(offset + header + 1, name_len).to_s.force_encoding(Encoding::UTF_8)
+          next unless raw.valid_encoding? && !raw.strip.empty?
+          next if raw.bytes.any? { |b| b < 0x20 || b == 0x7F }
+          alen = 3 + header + name_len
+          join_name = raw
+          break
         end
       elsif is_server && name == :set_logistic_filter_item
         # S→C echo body is 22B, plus a 1B zero tail when present (the next

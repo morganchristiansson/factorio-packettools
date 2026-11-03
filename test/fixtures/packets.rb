@@ -1211,4 +1211,15 @@ REAL_PACKET_FIXTURES = [
       { type: 159, name: :player_join_game, game_player: 352, data: 'ff4a035f01010a73686562757261746f720000' },
     ],
   },
+  {
+    name: 's2c_player_join_game_stable_1',
+    description: 'S→C PlayerJoinGame stable 2.1.24 body (4-byte peer/mode header, 7+name_len) then StartWalking (s2c-check-1.pcap, tick 22976419; peer id 243, game player #1 morganc). Regression: the older 6-byte-header decoder read the second name byte as the length and left Unknown(255).',
+    hex: '071679a8ef00a3975e0100000000069f01f3000001076d6f7267616e6300014611cc3b7f669ea0e63fcc3b7f669ea0e63f55ffeeff927fa59ea2975e01000000000204c3975e0100000000f3000afff300',
+    actions: [
+      { type: 159, name: :player_join_game, game_player: 1,
+        data: 'f3000001076d6f7267616e630001' },
+      { type: 70, name: :start_walking, game_player: 18,
+        data: 'cc3b7f669ea0e63fcc3b7f669ea0e63f' },
+    ],
+  },
 ].freeze

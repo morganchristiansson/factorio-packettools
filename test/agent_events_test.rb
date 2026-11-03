@@ -121,28 +121,5 @@ class TestAgentEvents < Minitest::Test
     agent2&.close_events
   end
 
-  def test_lazy_timeouts_run_after_packet_liveness_refresh_and_not_for_replay
-    Dir.mktmpdir do |dir|
-      sniffer = FactorioPacketTools.new({server: true, host_ips: ['10.0.0.1'], interface: 'fake'},
-                                    pcap_writer: PcapWriter.new("#{dir}/capture.pcap"))
-      attrs = sniffer.instance_variable_get(:@attrs)
-      attrs.roster_online('active', 1)
-      attrs.roster_online('silent', 2)
-      attrs.instance_variable_get(:@players).each_value { |p| p[:hb] -= 100 }
-      sniffer.instance_variable_get(:@ip_names)['10.0.0.2'] = ['active', true]
-      capture_io do
-        sniffer.send(:process_packet, 1, 0.0, '10.0.0.2', '10.0.0.1', 34197, 34197, "\x06\x0e\x00\x00\x00\x00".b)
-        assert_equal ['active'], sniffer.online_players
-        calls = 0
-        sniffer.define_singleton_method(:check_heartbeat_timeouts) { calls += 1 }
-        sniffer.send(:check_timeouts_if_due)
-        assert_equal 0, calls
-        sniffer.instance_variable_set(:@last_timeout_check, 0)
-        sniffer.instance_variable_get(:@options)[:pcap] = 'replay.pcap'
-        sniffer.send(:check_timeouts_if_due)
-        assert_equal 0, calls
-        sniffer.finish
-      end
-    end
-  end
+
 end
