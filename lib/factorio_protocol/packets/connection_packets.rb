@@ -1,12 +1,12 @@
 # frozen_string_literal: true
 
-require_relative 'factorio_packet'
+require_relative 'packet'
 require_relative '../../factorio_property_tree'
 require_relative '../../factorio_save'
 
 module FactorioProtocol
   # ConnectionRequest (2) — client announces its version.
-  class ConnectionRequestPacket < FactorioPacket
+  class ConnectionRequestPacket < FactorioProtocol::Packet
     private
 
     def parse_body
@@ -40,7 +40,7 @@ module FactorioProtocol
   # pre-auth), the second carries the token and the timestamp.
   #   mod := [len]name + u16 version + u32 crc + u8 ?  (the trailing byte is
   #   not identified; it is 0 for some mods and >0 for others)
-  class ConnectionConfirmPacket < FactorioPacket
+  class ConnectionConfirmPacket < FactorioProtocol::Packet
     private
 
     def parse_body
@@ -51,13 +51,14 @@ module FactorioProtocol
       return nil if data.bytesize < offset + 12
       client_id = data.unpack1('V', offset: offset)
       offset += 12  # clientID(4) + serverID(4) + instanceID(4)
-      off, len = decode_uint32v(data, offset)
-      return nil if len.nil? || off + len > data.bytesize
-      username = data[off, len].force_encoding('UTF-8').scrub('?')
-      return nil if username.nil? || username.empty?
+      # decode_string returns nil for invalid UTF-8. That must fail the
+      # parse (the frame is kept in unknown.packets) — scrubbing would
+      # silently turn a misdecode into a different player name.
+      at, username = FactorioProtocol.decode_string(data, offset)
+      return nil if at.nil?
       # Sanity: usernames are printable ASCII
       return nil unless username.bytes.all? { |b| b >= 0x20 && b <= 0x7E }
-      session, at = parse_session(data, off + len)
+      session, at = parse_session(data, at)
       return nil unless session
       { client_id: client_id, username: username, session: session }.merge(parse_client_mods(data, at))
     end
@@ -75,9 +76,9 @@ module FactorioProtocol
       flag = data.getbyte(at)
       return nil unless flag == 0
       at += 1
-      at, token = decode_string(data, at, allow_empty: true)
+      at, token = FactorioProtocol.decode_string(data, at, allow_empty: true)
       return nil unless token
-      at, stamp = decode_string(data, at, allow_empty: true)
+      at, stamp = FactorioProtocol.decode_string(data, at, allow_empty: true)
       return nil unless stamp
       id = data.byteslice(at, 8)
       return nil unless id
@@ -95,7 +96,7 @@ module FactorioProtocol
       at += 1
       mods = []
       count.times do
-        name = string_at(data, at)
+        name = FactorioProtocol.string_at(data, at)
         break unless name
         at = name[1]
         # Version is THREE bytes: [major, minor, sub] (each a uint8, not u16v).
@@ -125,7 +126,7 @@ module FactorioProtocol
   # indexes (verified: morganc's peer id=101 but game index=11).
   # result[:connection_accept] = { client_id:, status:, game_name:,
   #   server_hash:, server_username:, peers: [{peer_id:, name:}] }
-  class ConnectionAcceptPacket < FactorioPacket
+  class ConnectionAcceptPacket < FactorioProtocol::Packet
     private
 
     def parse_body
@@ -137,37 +138,37 @@ module FactorioProtocol
       res = {}
       res[:client_id] = data.unpack1('V', offset: offset); offset += 4
       res[:status] = data.getbyte(offset); offset += 1
-      offset, res[:game_name] = decode_string(data, offset)
+      offset, res[:game_name] = FactorioProtocol.decode_string(data, offset)
       return nil if offset.nil?
-      offset, res[:server_hash] = decode_string(data, offset, allow_empty: true)
+      offset, res[:server_hash] = FactorioProtocol.decode_string(data, offset, allow_empty: true)
       return nil if offset.nil?
-      offset, res[:description] = decode_string(data, offset, allow_empty: true)
+      offset, res[:description] = FactorioProtocol.decode_string(data, offset, allow_empty: true)
       return nil if offset.nil?
       res[:latency] = data.getbyte(offset)  # input delay in ticks (32):
       # the client's first closure must land on updateTick_at_join + this
       # (the server kills anything else: "wrong tick closure (50) instead
       # of (44)"). Parsed here, used by FactorioClient's seed.
       offset += 1  # latency
-      offset, res[:max_updates] = decode_uint32v(data, offset)
+      offset, res[:max_updates] = FactorioProtocol.decode_uint32v(data, offset)
       offset += 4  # game_id
       offset += 8  # steam_id
 
       # clientsPeerInfo
-      offset, server_username = decode_string(data, offset)
+      offset, server_username = FactorioProtocol.decode_string(data, offset)
       return nil if offset.nil?
       res[:server_username] = server_username
       offset += 1  # map_saving_progress
       saving_count = data.getbyte(offset); offset += 1
       saving_count.to_i.times do
-        offset, = decode_uint16v(data, offset)
+        offset, = FactorioProtocol.decode_uint16v(data, offset)
       end
-      offset, client_count = decode_uint32v(data, offset)
+      offset, client_count = FactorioProtocol.decode_uint32v(data, offset)
       return nil if client_count.nil? || client_count > 1024
       res[:peers] = []
       client_count.to_i.times do
         break if offset.nil?
-        offset, peer_id = decode_uint16v(data, offset)
-        offset, name = decode_string(data, offset)
+        offset, peer_id = FactorioProtocol.decode_uint16v(data, offset)
+        offset, name = FactorioProtocol.decode_string(data, offset)
         break if offset.nil?
         flags = data.getbyte(offset); offset += 1
         [0x01, 0x02, 0x04, 0x08, 0x10].each { |b| offset += 1 if (flags & b) != 0 }
@@ -182,7 +183,7 @@ module FactorioProtocol
       res[:expect_seq] = data.unpack1('V', offset: offset)
       res[:send_seq]   = data.unpack1('V', offset: offset + 4)
       offset += 8
-      offset, res[:new_peer_id] = decode_uint16v(data, offset)
+      offset, res[:new_peer_id] = FactorioProtocol.decode_uint16v(data, offset)
       res
     end
   end

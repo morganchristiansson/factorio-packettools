@@ -2,6 +2,7 @@
 
 require 'yaml'
 require_relative 'agent_events'
+require_relative 'factorio_protocol/disconnect_reason'
 
 # The `discord` plugin (config.yaml `plugins:`) — relays chat between a
 # Discord channel and in-game Factorio chat, and feeds Discord messages
@@ -129,10 +130,8 @@ class Discord
     return unless kind == :joined || kind == :left
     text = if kind == :joined
              "#{name} joined the game"
-           elsif reason == :dropped
-             "#{name} was dropped from the game"
            else
-             "#{name} left the game"
+             "#{name} #{FactorioProtocol::DisconnectReason.text(reason)}"
            end
     enqueue(:forward_message, text)
   end

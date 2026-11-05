@@ -3,11 +3,28 @@
 require_relative '../factorio_wire'
 
 module FactorioProtocol
-  extend FactorioWire  # provides encode_string, encode_uint32v, encode_uint16v
+  # Packet encoders: the mirror of FactorioProtocol's decode readers.
+  # Packet-specific, so they live here rather than in the shared
+  # FactorioWire codec.
+
+  # uint32v: one byte below 0xFF, else ESCAPE + a u32 LE.
+  def self.encode_uint32v(value)
+    value < FactorioWire::ESCAPE ? [value].pack('C') : FactorioWire::ESCAPE.chr + [value].pack('V')
+  end
+
+  # uint16v: one byte below 0xFF, else ESCAPE + a u16 LE. The packet
+  # protocol's 2-byte varint — an input action's type and player delta.
+  def self.encode_uint16v(value)
+    value < FactorioWire::ESCAPE ? [value].pack('C') : FactorioWire::ESCAPE.chr + [value].pack('v')
+  end
+
+  # [uint32v length][bytes], no terminator.
+  def self.encode_string(text)
+    encode_uint32v(text.bytesize) + text.b
+  end
 
   # The three messages a CLIENT sends, built from the same primitives the
-  # decoders in packets/ read them with (FactorioWire's varint/string codec —
-  # `extend`ed above, so these are module-level calls).
+  # decoders in packets/ read them with (FactorioWire's varint/string codec).
   #
   # These exist for FactorioClient (lib/factorio_client.rb), the fake client
   # that joins a server and records it. Nothing in the sniffer uses them; the

@@ -6,7 +6,7 @@
 
 require 'minitest/autorun'
 require 'factorio_protocol'
-require 'factorio_types'
+require 'factorio_protocol/actions/types'
 
 FIXTURE_DIR = File.join(__dir__, 'fixtures')
 

@@ -7,7 +7,7 @@
 require 'minitest/autorun'
 require 'mocha/minitest'
 require 'factorio_protocol'
-require 'factorio_types'
+require 'factorio_protocol/actions/types'
 
 class TestFactorioProtocol < Minitest::Test
   def setup
@@ -20,7 +20,7 @@ class TestFactorioProtocol < Minitest::Test
 
   def test_tile_pos_parses_8_bytes
     data = [0x9d, 0x9f, 0xfe, 0xff, 0x1c, 0xae, 0x01, 0x00].pack('C*')
-    pos = FactorioTypes::TilePos.from_data(data)
+    pos = FactorioProtocol::Actions::Types::TilePos.from_data(data)
     refute_nil pos
     assert_equal(-90211, pos.x)  # int32 LE
     assert_equal(110108, pos.y)
@@ -32,7 +32,7 @@ class TestFactorioProtocol < Minitest::Test
   def test_tile_rect_parses_16_bytes
     data = [0x9d, 0x9f, 0xfe, 0xff, 0x1c, 0xae, 0x01, 0x00,
             0xf5, 0xa2, 0xfe, 0xff, 0xcc, 0xcf, 0x01, 0x00].pack('C*')
-    rect = FactorioTypes::TileRect.from_data(data)
+    rect = FactorioProtocol::Actions::Types::TileRect.from_data(data)
     refute_nil rect
     assert_equal(-90211, rect.top_left.x)
     assert_equal(118732, rect.bottom_right.y)
@@ -41,7 +41,7 @@ class TestFactorioProtocol < Minitest::Test
   # ── Deconstruct (type 132 on stable 2.1) ───────────────────────
 
   def test_deconstruct_data_length
-    entry = FactorioProtocol::ACTIONS_21[132]
+    entry = FactorioProtocol::Actions::ACTIONS_21[132]
     refute_nil entry
     assert_equal :deconstruct, entry[0]
     assert_equal 16, entry[1], 'deconstruct should be 16 bytes (area selection)'
@@ -63,7 +63,7 @@ class TestFactorioProtocol < Minitest::Test
 
     d = actions[0][:data]
     assert_equal 23, d.bytesize
-    rect = FactorioTypes::TileRect.from_data(d)
+    rect = FactorioProtocol::Actions::Types::TileRect.from_data(d)
     refute_nil rect
     tx1, ty1 = rect.top_left.to_tiles
     tx2, ty2 = rect.bottom_right.to_tiles
@@ -199,7 +199,7 @@ class TestFactorioProtocol < Minitest::Test
   # ── Build action (type 68) ─────────────────────────────────────
 
   def test_build_data_length
-    entry = FactorioProtocol::ACTIONS_21[69]
+    entry = FactorioProtocol::Actions::ACTIONS_21[69]
     assert_equal [:build, 16], entry
   end
 
@@ -542,6 +542,23 @@ class TestFactorioProtocol < Minitest::Test
     assert sa[:username].valid_encoding?
   end
 
+  def test_new_peer_info_invalid_utf8_is_a_misdecode
+    name = "bad\xFFname".b
+    raw = [0x06].pack('C') +            # msg_type 6 (C2S)
+          [0x10].pack('C') +            # flags: has_synchronizer_action
+          [1, 0, 0, 0].pack('V') +      # seq
+          [0, 0, 0, 0, 0, 0, 0, 0].pack('Q<') +
+          [1].pack('C') +
+          [0x02].pack('C') +            # NewPeerInfo
+          [name.bytesize].pack('C') + name
+
+    hb = FactorioProtocol::HeartbeatPacket.parse(raw).heartbeat
+    sa = hb[:sync_actions].first
+    assert sa[:hit_unknown], 'invalid UTF-8 must keep the frame'
+    assert_nil sa[:username], 'no scrubbed name may become a player'
+    assert hb[:hit_unknown]
+  end
+
   # ── Synchronizer tick-confirm sizes (server-34197.pcap pkt 1311) ──
   # 0x0f/0x10 carry an 8-byte tick and 0x12 carries tick(8)+latency(1) —
   # the old 4-byte/5-byte sizes desynced the stream and fabricated a
@@ -665,14 +682,16 @@ class TestFactorioProtocol < Minitest::Test
 
   # S→C player_leave_game metadata, pinned from server-34197-20261103-232119:
   # the server follows the 0-byte leave action with a counted
-  # `[dropped u8][55 ff][(-index) u8][ff][ref u32]` block. MrHanniZap was
-  # dropped (flag 1); Mista64/BasedDept left cleanly (flag 0).
+  # `[reason u8][55 ff][(-index) u8][ff][ref u32]` block. MrHanniZap was
+  # dropped (reason 1); Mista64/BasedDept left cleanly (reason 0).
   def test_player_leave_metadata_distinguishes_drop_from_clean_leave
     dropped = extract_actions(FactorioProtocol.parse_udp_payload(
       ['0706e2eefd00fddc6c010000000004f85e0155ffa2ff8a769975fcdc6c0100000000'].pack('H*')
     ))
     assert_equal 1, dropped.size, 'the metadata slot is consumed, not a phantom action'
     assert_equal [248, 94], [dropped[0][:type], dropped[0][:game_player]]
+    assert_equal 1, dropped[0][:leave_reason]
+    assert_equal :dropped, dropped[0][:leave_reason_name]
     assert dropped[0][:leave_dropped]
     assert_equal 0x7599768a, dropped[0][:leave_ref]
 
@@ -681,15 +700,71 @@ class TestFactorioProtocol < Minitest::Test
     ))
     assert_equal 1, clean.size, 'no phantom nothing/Unknown(255) from the metadata bytes'
     assert_equal [248, 128], [clean[0][:type], clean[0][:game_player]]
+    assert_equal 0, clean[0][:leave_reason]
+    assert_equal :quit, clean[0][:leave_reason_name]
     refute clean[0][:leave_dropped]
     assert_equal 0xb29f17fb, clean[0][:leave_ref]
+  end
+
+  # A kick carries reason 7 (defines.disconnect_reason.kicked), NOT a 0/1
+  # dropped flag. Pinned from server-34197-20261105-102037 pkt 623659
+  # (10:16:45.512924 UTC): Petricko93 /kick's BURMALDAMELLSTROY, and the
+  # server broadcasts the leave in the next tick. Before the fix the block
+  # `07 55 ff 62 ff 76 ad 5c 3e` was refused (flag != 0/1), left unconsumed,
+  # and the closure decoded a phantom close_gui from it — so the kick had no
+  # leave event at all. Asserting the slot count (3 = cleared + leave +
+  # metadata) is what pins the block being consumed.
+  def test_player_leave_metadata_reason_kicked_is_consumed
+    res = FactorioProtocol.parse_udp_payload(
+      ['070606ea7301afc5e2010000000006092cf8720755ff62ff76ad5c3eaec5e20100000000'].pack('H*')
+    )
+    tc = res[:heartbeat][:tick_closures].first
+    assert_equal 31_638_959, tc[:tick]
+    assert_equal 3, tc[:action_count]
+    refute tc[:hit_unknown]
+    assert_equal %i[selected_entity_cleared player_leave_game], tc[:actions].map { |a| a[:name] }
+
+    leave = tc[:actions].last
+    assert_equal 248, leave[:type]
+    assert_equal 158, leave[:game_player]
+    assert_equal 7, leave[:leave_reason]
+    assert_equal :kicked, leave[:leave_reason_name]
+    refute leave[:leave_dropped], 'reason 7 is a kick, not a drop'
+    assert_equal 0x3e5cad76, leave[:leave_ref]
+  end
+
+  # The peer-disconnect synchronizer action carries the SAME enum; expose it
+  # under the same name so a kick reads as :kicked on both wires.
+  def test_peer_disconnect_reason_uses_disconnect_reason_names
+    assert_equal :kicked, FactorioProtocol::DisconnectReason.name(7)
+    assert_equal :banned, FactorioProtocol::DisconnectReason.name(9)
+    assert_equal :quit, FactorioProtocol::DisconnectReason.name(0)
+    assert_equal :reason_42, FactorioProtocol::DisconnectReason.name(42)
+    assert_nil FactorioProtocol::DisconnectReason.name(nil)
+
+    # Every entry in 2.1.24's defines.disconnect_reason (live RCON dump):
+    # 10 is absent there, and switching_servers is 11, not 10.
+    assert_equal({
+                   0 => :quit, 1 => :dropped, 2 => :reconnect,
+                   3 => :wrong_input, 4 => :desync_limit_reached,
+                   5 => :cannot_keep_up, 6 => :afk, 7 => :kicked,
+                   8 => :kicked_and_deleted, 9 => :banned,
+                   11 => :switching_servers
+                 }, FactorioProtocol::DisconnectReason::NAMES)
+    assert_equal :reason_10, FactorioProtocol::DisconnectReason.name(10)
+
+    assert_equal 'was kicked from the game', FactorioProtocol::DisconnectReason.text(:kicked)
+    assert_equal 'was kicked from the game', FactorioProtocol::DisconnectReason.text(:kicked_and_deleted)
+    assert_equal 'was banned from the game', FactorioProtocol::DisconnectReason.text(:banned)
+    assert_equal 'was dropped from the game', FactorioProtocol::DisconnectReason.text(:dropped)
+    assert_equal 'left the game', FactorioProtocol::DisconnectReason.text(:quit)
   end
 
   # Quickbar payloads, pinned from the real captures in captures/. The
   # lengths matter as much as the layout: a wrong quick_bar length desyncs
   # every action after it (the table's pick_slot 0 did exactly that).
   def test_quickbar_layouts
-    qb = FactorioProtocol::QuickBar
+    qb = FactorioProtocol::Actions::QuickBar
 
     # set_slot: stable 2.1 is 5 bytes [item][slot][op][src u16] — item 1
     # (wooden-chest) into slot 8, no source (wire sample 2026-11-03).
@@ -785,11 +860,8 @@ class TestFactorioProtocol < Minitest::Test
   # heartbeat (2.0.77, 380 B, flags 0x26) — the kind that arrives when a
   # client's action list runs past the packet.
   def test_a_truncated_varint_read_keeps_a_usable_offset
-    klass = Class.new do
-      include FactorioProtocol::WireDecode
-    end.new
     data = "\x26\x06\xfc\x51\xee\x1d".b
-    after, value = klass.decode_uint32v(data, data.bytesize - 1)
+    after, value = FactorioProtocol.decode_uint32v(data, data.bytesize - 1)
     assert_equal data.bytesize, after, 'the offset stays usable'
     assert_nil value
     # and the packet that triggered it parses without raising

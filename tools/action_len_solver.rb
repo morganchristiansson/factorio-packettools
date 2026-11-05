@@ -245,7 +245,7 @@ module ActionLenSolver
           seen[t] = true
           samples[t] << data if samples[t].size < per_type
           base = lens[t]
-          eff, = FactorioProtocol::ActionLengths.for(
+          eff, = FactorioProtocol::Actions::ActionLengths.for(
             data, ds, type: t, name: FactorioProtocol.actions[t][0],
             base: base, is_server: false, is_last: i == count - 1
           )

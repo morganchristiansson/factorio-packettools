@@ -46,9 +46,6 @@ module FactorioSave
     [out, at]
   end
 
-  def self.force_utf8(bytes)
-    bytes.dup.force_encoding(Encoding::UTF_8).scrub('?')
-  end
   def self.u32(data, at)
     data.byteslice(at, 4)&.unpack1('V')
   end

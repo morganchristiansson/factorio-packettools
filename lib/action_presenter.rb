@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 require_relative 'factorio_protocol'
-require_relative 'factorio_types'
+require_relative 'factorio_protocol/actions/types'
 
 # Console formatting for a decoded input action: positions, entity refs,
 # quickbar slots, item names. Pure presentation — no state changes, no
@@ -20,7 +20,7 @@ class ActionPresenter
 
     case act[:name]
     when :start_walking
-      dir = FactorioProtocol::Position.direction(act)
+      dir = FactorioProtocol::Actions::Position.direction(act)
       if dir && dir.size >= 2
         x, y = dir
         dirs = [
@@ -37,16 +37,16 @@ class ActionPresenter
         end
       end
     when :begin_mining_terrain
-      pos = FactorioProtocol::Position.decode(act)
+      pos = FactorioProtocol::Actions::Position.decode(act)
       return " pos=(#{'%.3f' % pos[0]}, #{'%.3f' % pos[1]})" if pos
     when :drop_item
       # 8-byte payload is a DIRECTION double, not a position (verified
       # 2026-08-16). Print it as a direction to avoid emitting a bogus
       # position from the raw i32s.
-      dir = FactorioProtocol::Position.direction(act)
+      dir = FactorioProtocol::Actions::Position.direction(act)
       return " dir=(#{'%.2f' % dir[0]})" if dir
     when :deconstruct
-      area = FactorioProtocol::Position.decode(act)
+      area = FactorioProtocol::Actions::Position.decode(act)
       if area
         x1, y1, x2, y2 = area
         return " area=(#{'%.3f' % x1}, #{'%.3f' % y1})-(#{'%.3f' % x2}, #{'%.3f' % y2})"
@@ -57,19 +57,19 @@ class ActionPresenter
         return " entity=##{eid}"
       end
     when :change_shooting_state
-      pos = FactorioProtocol::Position.decode(act)
+      pos = FactorioProtocol::Actions::Position.decode(act)
       if pos && d.bytesize >= 9
         return " shooting=#{d.getbyte(0)} pos=(#{'%.3f' % pos[0]}, #{'%.3f' % pos[1]})"
       end
     when :build
-      pos = FactorioProtocol::Position.decode(act)
+      pos = FactorioProtocol::Actions::Position.decode(act)
       if pos && d.bytesize >= 9
         dir = d.getbyte(8)
-        dname = FactorioTypes::DIR_NAMES[dir] || dir
+        dname = FactorioProtocol::Actions::Types::DIR_NAMES[dir] || dir
         return " pos=(#{'%.3f' % pos[0]}, #{'%.3f' % pos[1]}) dir=#{dname}"
       end
     when :move_on_pan
-      pos = FactorioProtocol::Position.decode(act)
+      pos = FactorioProtocol::Actions::Position.decode(act)
       return " pan=(#{'%.3f' % pos[0]}, #{'%.3f' % pos[1]})" if pos
     when :rotate_entity
       return " dir=#{d.getbyte(0)}"
@@ -189,7 +189,7 @@ class ActionPresenter
       end
     when :quick_bar_set_slot, :quick_bar_pick_slot,
          :quick_bar_set_selected_page, :change_active_quick_bar
-      qb = FactorioProtocol::QuickBar.decode(act)
+      qb = FactorioProtocol::Actions::QuickBar.decode(act)
       return " #{quickbar_str(qb)}" if qb.is_a?(Hash)
     when :copy
       return " flags=#{d.unpack1('v')}" if d.bytesize >= 2

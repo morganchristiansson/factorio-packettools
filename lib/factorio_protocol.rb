@@ -3,14 +3,17 @@
 # Factorio UDP protocol parser.
 # Based on Hornwitser's Wireshark dissector (reverse-engineered from factorio.pdb).
 module FactorioProtocol
+  require_relative 'factorio_wire'
+  require_relative 'factorio_protocol/disconnect_reason'
   require_relative 'factorio_protocol/packets/heartbeat_packet'
-  require_relative 'factorio_protocol/action_lengths'
+  require_relative 'factorio_protocol/packets/game_info_packet'
+  require_relative 'factorio_protocol/actions/action_lengths'
   require_relative 'factorio_protocol/packets/connection_packets'
-  require_relative 'factorio_protocol/position'
-  require_relative 'factorio_protocol/quickbar'
-  require_relative 'factorio_protocol/player_join'
-  require_relative 'input_actions_21'
-  require_relative 'factorio_types'
+  require_relative 'factorio_protocol/actions/types'
+  require_relative 'factorio_protocol/actions/position'
+  require_relative 'factorio_protocol/actions/quickbar'
+  require_relative 'factorio_protocol/actions/player_join'
+  require_relative 'factorio_protocol/actions/input_actions_21'
 
   # ── Message Types ──────────────────────────────────────────────────
   MESSAGE_TYPES = {
@@ -62,7 +65,41 @@ module FactorioProtocol
   #   tools/measure_action_lens.rb over the captures — are folded INTO the
   #   table and marked in its source file).
 
-  extend WireDecode
+  extend FactorioWire # the shared varint/string reader
+
+  # The packet protocol's decode API: [offset_after, value] results, plus
+  # the uint16v an action header needs. This is the ONLY owner of packet
+  # decoding; FactorioProtocol::Packet is just the message parse lifecycle, and its
+  # subclasses call these explicitly. A failed read is nil — a misdecode,
+  # never a scrubbed guess.
+
+  # [uint16v] — 1 byte, or 3 when the first byte is 0xFF (u16 follows).
+  def self.decode_uint16v(data, offset)
+    return [offset + 1, nil] if offset >= data.bytesize
+    val = data.getbyte(offset)
+    if val == 0xFF
+      return [offset + 1, nil] if offset + 3 > data.bytesize
+      return [offset + 3, data.unpack1('v', offset: offset + 1)]
+    end
+    [offset + 1, val]
+  end
+
+  # [uint32v] — 1 byte, or 5 when the first byte is 0xFF (u32 follows).
+  def self.decode_uint32v(data, offset)
+    # A truncated read must still hand back a USABLE offset: the callers do
+    # `offset = v_off` and then compare/parse from there, so [nil, nil]
+    # (which is what FactorioWire.varint returns out of bounds) would blow
+    # up with NoMethodError on a malformed packet instead of failing.
+    after, value = varint_at(data, offset)
+    [after || offset + 1, value]
+  end
+
+  # [uint32v len][bytes] — returns [next_offset, string] or [nil, nil].
+  # Invalid UTF-8 is a misdecode (nil), not a scrubbed string.
+  def self.decode_string(data, offset, allow_empty: false)
+    found = string_at(data, offset, allow_empty: allow_empty)
+    found ? [found[1], found[0]] : [nil, nil]
+  end
 
   # ── Action Name / Length Lookup ────────────────────────────────────
 
@@ -80,8 +117,8 @@ module FactorioProtocol
   # 2.1 is the released stable numbering and the only table. 2.0 is retired
   # (git tag protocol-2.0-final has the old reference table if a capture ever
   # needs it). Names AND data lengths come from this one map.
-  ACTIONS = ACTIONS_21
-  SEGMENT_TYPES = ACTIONS_21
+  ACTIONS = Actions::ACTIONS_21
+  SEGMENT_TYPES = Actions::ACTIONS_21
 
   def self.actions = ACTIONS
 
@@ -160,7 +197,7 @@ module FactorioProtocol
     t == 6 || t == 7
   end
 
-  # Length-prefixed strings are decoded by WireDecode#decode_string, which is
+  # Length-prefixed strings are decoded by FactorioProtocol#decode_string, which is
   # the shared FactorioWire reader (same `[length][bytes]` shape, no
   # terminator on the wire) — see lib/factorio_wire.rb.
 
@@ -235,18 +272,18 @@ module FactorioProtocol
       # (verified against factorio_dissector and live captures; treating it
       # as a 4-byte offset silently dropped ~half of all heartbeat actions).
       return nil if hdr[:fragmented]  # fragment payload is not a full message
-      HeartbeatPacket.parse(data).result
+      HeartbeatPacket.parse(data, header: hdr).result
     when 2
-      ConnectionRequestPacket.parse(data).result
+      ConnectionRequestPacket.parse(data, header: hdr).result
     when 4
-      ConnectionConfirmPacket.parse(data).result
+      ConnectionConfirmPacket.parse(data, header: hdr).result
     when 5
-      ConnectionAcceptPacket.parse(data).result
+      ConnectionAcceptPacket.parse(data, header: hdr).result
     when 17
       # GameInformationRequestReply: only whole payloads parse — fragmented
       # replies reassemble in FactorioProtocol.reassemble_fragments.
       return { header: hdr } if hdr[:fragmented]
-      { header: hdr, game_info: parse_game_info(data[1..]) }
+      GameInformationReplyPacket.parse(data, header: hdr).result
     else
       { header: hdr }
     end
@@ -254,68 +291,11 @@ module FactorioProtocol
 
   # ── Game Information Reply (msg 17) ──────────────────────────────
 
-  # Parse a REASSEMBLED msg-17 payload (header byte already stripped;
-  # unfragmented replies have a 1-byte header, fragmented ones 4 — see
-  # lib/server_probe.rb). Reverse-engineered live against 2.0.77/2.1.14 servers:
-  #   [u32 token][u64 zero][uint32v len][name][3B version][u32le build]
-  #   [uint32v len][description][u32le time_min*65536][u32 ?]
-  #   [uint32v len][host:port][01 00 01][uint32v nmods][mods: len+name+3B ver+u32 crc]
-  #   [uint32v ntags][tags][uint32v nplayers][player names][01]
-  # Every length/count is a uint32v: a 0xFF lead byte means [0xFF][u32 LE]
-  # follows (a 505-mod 2.0.76 server encodes its mod count as FF F9 01 00 00;
-  # reading it as a plain u8 yields 255 mods and desyncs tags/players into
-  # garbage — "114 players" that are really mod-list bytes). Returns nil
-  # on overrun (truncated/corrupt datagram). String lengths
-  # are BYTES (multi-byte UTF-8 names/tags walk fine).
+  # Parse a REASSEMBLED msg-17 payload (header already stripped; see
+  # lib/server_probe.rb). The message class owns the layout; this keeps the
+  # long-standing module-level API for callers that already hold the payload.
   def self.parse_game_info(p)
-    return nil if p.nil? || p.bytesize < 13
-    pos, nl = decode_uint32v(p, 12) # opaque server id block
-    return nil if nl.nil? || p.bytesize < pos + nl + 7
-    info = { name: p[pos, nl],
-             version: p[pos + nl, 3].bytes.join('.'),
-             build: p[pos + nl + 3, 4].unpack1('V') }
-    pos += nl + 7
-    pos, dl = decode_uint32v(p, pos)
-    return nil if dl.nil? || p.bytesize < pos + dl + 8
-    info[:description] = p[pos, dl]; pos += dl
-    info[:time_min] = p[pos, 4].unpack1('V') / 65536.0; pos += 8
-    pos, hl = decode_uint32v(p, pos)
-    return nil if hl.nil? || p.bytesize < pos + hl + 4
-    info[:host] = p[pos, hl]; pos += hl
-    pos += 3 # 01 00 01 prefix
-    pos, nm = decode_uint32v(p, pos)
-    return nil if nm.nil?
-    info[:mods] = []
-    nm.times do
-      pos2, l = decode_uint32v(p, pos)
-      return nil if l.nil? || p.bytesize < pos2 + l + 7
-      # name + 3-byte version + u32 CRC32, then the next length-prefixed
-      # name. The CRC is the same per-mod checksum the server prints as
-      # "Checksum of <mod>" and the client repeats in msg 4, so a probe is
-      # enough to learn a server's whole mod list (tools/query_server.rb
-      # prints only name+version).
-      info[:mods] << [p[pos2, l], p[pos2 + l, 3].bytes.join('.'), p[pos2 + l + 3, 4].unpack1('V')]
-      pos = pos2 + l + 7
-    end
-    info[:tags], pos = read_info_strings(p, pos)
-    return nil if info[:tags].nil?
-    info[:players], = read_info_strings(p, pos)
-    return nil if info[:players].nil?
-    info
-  end
-
-  # Read a [uint32v count][len+str]* block at pos.
-  # Returns [values, next_offset], or [nil, nil] on overrun.
-  def self.read_info_strings(p, pos)
-    pos, n = decode_uint32v(p, pos)
-    return [nil, nil] if n.nil?
-    values = n.times.map do
-      pos2, l = decode_uint32v(p, pos)
-      return [nil, nil] if l.nil? || pos2 + l > p.bytesize
-      pos = pos2 + l
-      p[pos2, l]
-    end
-    [values, pos]
+    GameInformationReplyPacket.parse_payload(p)
   end
 
   # ── Chat Message Decoding (write_to_console) ─────────────────────

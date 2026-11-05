@@ -28,7 +28,7 @@ PcapReader.new(path).each_packet do |_, ts, src, dst, sport, dport, udp, _|
     (tc[:actions] || []).each do |a|
       gp = a[:game_player]
       next unless ok(gp)
-      pos = FactorioProtocol::Position.decode(a)
+      pos = FactorioProtocol::Actions::Position.decode(a)
       next unless pos
       x, y = pos[0], pos[1]
       next unless x.finite? && y.finite? && x.abs < 1_000_000 && y.abs < 1_000_000

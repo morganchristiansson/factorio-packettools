@@ -252,7 +252,7 @@ class TestServerMode < Minitest::Test
   end
 
   # Regression: the build-action formatter looked up
-  # FactorioTypes::DIR_NAMES, which did not exist — every positioned build
+  # FactorioProtocol::Actions::Types::DIR_NAMES, which did not exist — every positioned build
   # raised NameError and killed the capture thread.
   def test_format_build_action_names_the_direction
     sniffer = make_test_sniffer(server: true, host_ips: [SERVER_IP])

@@ -30,9 +30,9 @@ PcapReader.new(path).each_packet do |_, ts, src, dst, sport, dport, udp, _|
       gp = a[:game_player]
       next unless gp == PLAYER
       line = "#{t.strftime('%H:%M:%S')} tick #{tc[:tick]} #{a[:name]}"
-      if %i[build begin_mining_terrain change_shooting_state move_on_pan].include?(a[:name]) && (pos = FactorioProtocol::Position.decode(a))
+      if %i[build begin_mining_terrain change_shooting_state move_on_pan].include?(a[:name]) && (pos = FactorioProtocol::Actions::Position.decode(a))
         line += "  pos=(#{pos[0].round(2)},#{pos[1].round(2)})"
-      elsif a[:name] == :deconstruct && (area = FactorioProtocol::Position.decode(a))
+      elsif a[:name] == :deconstruct && (area = FactorioProtocol::Actions::Position.decode(a))
         line += "  area=(#{area[0].round(2)},#{area[1].round(2)})- (#{area[2].round(2)},#{area[3].round(2)})"
       elsif a[:name] == :write_to_console
         msg = FactorioProtocol.decode_chat(a[:data]) rescue nil

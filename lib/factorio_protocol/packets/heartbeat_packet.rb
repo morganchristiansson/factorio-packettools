@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
-require_relative 'factorio_packet'
+require_relative 'packet'
+require_relative '../disconnect_reason'
 
 module FactorioProtocol
   # ClientToServerHeartbeat (6) / ServerToClientHeartbeat (7).
@@ -10,7 +11,7 @@ module FactorioProtocol
   # synchronizer actions, and heartbeat requests. The tick-closure/action
   # parsers are private to this class because no other message type uses
   # them — "all heartbeat knowledge in one place".
-  class HeartbeatPacket < FactorioPacket
+  class HeartbeatPacket < FactorioProtocol::Packet
     # Largest defines.input_action in either version's dump (2.1: 355). An
     # input-action type above this cannot be real, so a 0xFF that "escapes" to
     # more than this is the literal type 255 instead.
@@ -32,11 +33,13 @@ module FactorioProtocol
     BT_TAIL_SC = "\x01\x01\x00".b.freeze
 
     # S→C player_leave_game metadata: the server follows the 0-byte action
-    # with a counted `[dropped u8][55 ff][(-game_index) u8][ff][ref u32]`
-    # block. dropped=0 is a clean "left the game", 1 is "was dropped from the
-    # game" (live capture server-34197-20261103-232119: MrHanniZap=1, three
-    # other leavers=0). The block is counted as an action slot, so consuming
-    # it also stops the old phantom nothing/Unknown(255) parses.
+    # with a counted `[reason u8][55 ff][(-game_index) u8][ff][ref u32]`
+    # block. The reason byte is `defines.disconnect_reason` (DisconnectReason),
+    # NOT a 0/1 "dropped" flag: 0 = quit, 1 = dropped, 7 = kicked, 9 = banned…
+    # Accepting only 0/1 left every kick's block unconsumed and desynced the
+    # rest of that tick closure (the 2026-11-05 BURM leave decoded as a phantom
+    # close_gui instead of a metadata block). The block is counted as an action
+    # slot, so consuming it also stops the phantom nothing/Unknown(255) parses.
     LEAVE_META_SIZE = 9
 
     attr_reader :heartbeat
@@ -110,7 +113,7 @@ module FactorioProtocol
       # Synchronizer actions
       if hb[:has_synchronizer_action] && !hb[:hit_unknown]
         sync_start = offset
-        offset, count = decode_uint32v(data, offset)
+        offset, count = FactorioProtocol.decode_uint32v(data, offset)
         # Sanity check: each sync action needs at least 3 bytes for server (1 type + 2 peer_id)
         # or 1 byte for client (1 type). If count is impossibly large, skip.
         min_per_sync = is_server ? 3 : 1
@@ -123,7 +126,10 @@ module FactorioProtocol
             offset, sa = parse_synchronizer_action(data, offset, is_server)
             break unless sa
             hb[:sync_actions] << sa
-            break if sa[:hit_unknown]
+            if sa[:hit_unknown]
+              hb[:hit_unknown] = true
+              break
+            end
           end
         end
       end
@@ -143,17 +149,17 @@ module FactorioProtocol
     end
 
     # S→C player_leave_game metadata (see LEAVE_META_SIZE). The wire shape is
-    # `[dropped u8][55 ff][(-index) u8][ff][ref u32]`; the index check makes a
-    # chance match in an ordinary payload practically impossible.
+    # `[reason u8][55 ff][(-index) u8][ff][ref u32]`, where reason is any
+    # defines.disconnect_reason value. The 55 ff / ff / negated-index shape is
+    # what makes a chance match in an ordinary payload practically impossible;
+    # the reason byte itself carries no structural constraint.
     def leave_metadata(data, offset, player)
       return nil unless offset + LEAVE_META_SIZE <= data.bytesize
       b = data.byteslice(offset, LEAVE_META_SIZE)
-      flag = b.getbyte(0)
-      return nil unless (flag == 0 || flag == 1) &&
-                        b.getbyte(1) == 0x55 && b.getbyte(2) == 0xFF &&
+      return nil unless b.getbyte(1) == 0x55 && b.getbyte(2) == 0xFF &&
                         b.getbyte(4) == 0xFF &&
                         b.getbyte(3) == ((0x100 - (player & 0xFF)) & 0xFF)
-      { dropped: flag == 1, ref: b.unpack1('V', offset: 5) }
+      { reason: b.getbyte(0), ref: b.unpack1('V', offset: 5) }
     end
 
     # ── Tick Closure ───────────────────────────────────────────────
@@ -165,7 +171,7 @@ module FactorioProtocol
       return [offset, tc] if is_empty
 
       # Action count with segment flag
-      offset, count_flagged = decode_uint32v(data, offset)
+      offset, count_flagged = FactorioProtocol.decode_uint32v(data, offset)
       return [offset, tc] if count_flagged.nil?
 
       count = count_flagged >> 1
@@ -226,7 +232,9 @@ module FactorioProtocol
         tc[:hit_unknown] = true if act[:hit_unknown]
         if is_server && act[:type] == 248
           if (meta = leave_metadata(data, offset, act[:game_player]))
-            act[:leave_dropped] = meta[:dropped]
+            act[:leave_reason] = meta[:reason]
+            act[:leave_reason_name] = DisconnectReason.name(meta[:reason])
+            act[:leave_dropped] = meta[:reason] == 1
             act[:leave_ref] = meta[:ref]
             offset += LEAVE_META_SIZE
             i += 1 # the metadata occupies one of the counted action slots
@@ -269,11 +277,11 @@ module FactorioProtocol
           break if offset >= data.bytesize
           seg_type = data.getbyte(offset); offset += 1
           seg_blue = data.unpack1('V', offset: offset) rescue 0; offset += 4
-          v_off, seg_green = decode_uint16v(data, offset); offset = v_off
-          v_off, total_len = decode_uint32v(data, offset); offset = v_off
-          v_off, seg_number = decode_uint32v(data, offset); offset = v_off
+          v_off, seg_green = FactorioProtocol.decode_uint16v(data, offset); offset = v_off
+          v_off, total_len = FactorioProtocol.decode_uint32v(data, offset); offset = v_off
+          v_off, seg_number = FactorioProtocol.decode_uint32v(data, offset); offset = v_off
           # Payload: uint32v length + data
-          v_off, pay_len = decode_uint32v(data, offset); offset = v_off
+          v_off, pay_len = FactorioProtocol.decode_uint32v(data, offset); offset = v_off
           next unless pay_len && pay_len > 0 && offset + pay_len <= data.bytesize
           segs << { type: seg_type, raw_player: seg_green, total: total_len,
                     no: seg_number, payload: data[offset, pay_len] }
@@ -327,14 +335,14 @@ module FactorioProtocol
       # therefore decodes with a 3-byte escape delta; the action count and the
       # trailer still land correctly, only the player index of that one action
       # is wrong. Not worth breaking three fixtures for.
-      offset, type = decode_uint16v(data, offset)
+      offset, type = FactorioProtocol.decode_uint16v(data, offset)
       return [offset, nil] if type.nil?
       if type > MAX_INPUT_ACTION
         type = 0xFF
         offset = type_offset + 1
       end
       delta_offset = offset
-      offset, delta = decode_uint16v(data, offset)
+      offset, delta = FactorioProtocol.decode_uint16v(data, offset)
       return [offset, nil] if delta.nil?
 
       raw_player = (last_index + delta) & 0xFFFF
@@ -346,7 +354,7 @@ module FactorioProtocol
       alen = entry ? entry[1] : nil
       # Length policy lives in ActionLengths (fixed table + echo/variable
       # overrides). Keep the content-defined build_terrain walk below.
-      alen, join_name = FactorioProtocol::ActionLengths.for(
+      alen, join_name = FactorioProtocol::Actions::ActionLengths.for(
         data, offset, type: type, name: name, base: alen,
         is_server: is_server, is_last: is_last
       )
@@ -422,7 +430,7 @@ module FactorioProtocol
           end
           hit_unknown = true  # stop parsing further actions in this tick
         when :write_to_console
-          s_off, s_len = decode_uint32v(data, offset)
+          s_off, s_len = FactorioProtocol.decode_uint32v(data, offset)
           if s_len && s_off + s_len <= data.bytesize
             adata = data[offset, s_off - offset + s_len]
             offset = s_off + s_len
@@ -463,10 +471,11 @@ module FactorioProtocol
       when 0x01 # PeerDisconnect — 1 byte reason
         if offset < data.bytesize
           sa[:reason] = data.getbyte(offset)
+          sa[:reason_name] = DisconnectReason.name(sa[:reason])
           offset += 1
         end
       when 0x02 # NewPeerInfo — username string (uint32v-prefixed)
-        s_off, s_len = decode_uint32v(data, offset)
+        s_off, s_len = FactorioProtocol.decode_uint32v(data, offset)
         if s_len && s_off + s_len <= data.bytesize
           raw = data[s_off, s_len]
           # Guard against stream desyncs: a misaligned parse reads binary
@@ -474,12 +483,14 @@ module FactorioProtocol
           # a garbage "joined the game" line. Real names never contain C0
           # controls/DEL (Unicode multibyte bytes are all >= 0x80); binary
           # data always does — reject it instead of emitting a phantom join.
-          if raw.bytes.any? { |b| b < 0x20 || b == 0x7F }
+          name = raw.dup.force_encoding(Encoding::UTF_8)
+          if raw.bytes.any? { |b| b < 0x20 || b == 0x7F } || !name.valid_encoding?
+            # Binary garbage or invalid UTF-8 is a misdecode, not a name:
+            # hit_unknown makes the frame land in unknown.packets. Scrubbing
+            # here would silently invent a different player.
             sa[:hit_unknown] = true
           else
-            # Force UTF-8: a Unicode name must not stay binary-flagged (that
-            # taints the hivemind prompt / players-cache.json / console output).
-            sa[:username] = raw.force_encoding('UTF-8').scrub('?')
+            sa[:username] = name
             offset = s_off + s_len
           end
         else
@@ -525,8 +536,8 @@ module FactorioProtocol
             sc_count = data.getbyte(offset)
             offset += 1
             sc_count.times do
-              _, _ = decode_uint32v(data, offset)
-              s_off, s_len = decode_uint32v(data, offset)
+              _, _ = FactorioProtocol.decode_uint32v(data, offset)
+              s_off, s_len = FactorioProtocol.decode_uint32v(data, offset)
               if s_len && s_off + s_len <= data.bytesize
                 offset = s_off + s_len + 4
               else
@@ -543,7 +554,7 @@ module FactorioProtocol
             se_count = data.getbyte(offset)
             offset += 1
             se_count.times do
-              s_off, s_len = decode_uint32v(data, offset)
+              s_off, s_len = FactorioProtocol.decode_uint32v(data, offset)
               if !s_len || s_off + s_len > data.bytesize
                 sa[:hit_unknown] = true
                 break
@@ -570,7 +581,7 @@ module FactorioProtocol
             cmd_count = data.getbyte(offset)
             offset += 1
             cmd_count.times do
-              s_off, s_len = decode_uint32v(data, offset)
+              s_off, s_len = FactorioProtocol.decode_uint32v(data, offset)
               if !s_len || s_off + s_len > data.bytesize
                 sa[:hit_unknown] = true
                 break
@@ -580,7 +591,7 @@ module FactorioProtocol
               cmd_sub_count = data.getbyte(offset)
               offset += 1
               cmd_sub_count.times do
-                s_off2, s_len2 = decode_uint32v(data, offset)
+                s_off2, s_len2 = FactorioProtocol.decode_uint32v(data, offset)
                 break if !s_len2 || s_off2 + s_len2 > data.bytesize
                 offset = s_off2 + s_len2
               end

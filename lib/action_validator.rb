@@ -16,7 +16,7 @@
 # The correlation pairs also VOTE: every (wire id → log name) pair lands
 # in #votes, so the periodic summary can list wire IDs whose winning log
 # name disagrees with the action table — candidate corrections for
-# lib/input_actions_21.rb, exactly what the offline validator's
+# lib/factorio_protocol/actions/input_actions_21.rb, exactly what the offline validator's
 # --suggest prints. Unlike the offline tool, this sees the desync damage
 # too: a (tick, player) whose log and wire sequences DIFFER in length is
 # a lost/invented action — usually a wrong measured length before it.

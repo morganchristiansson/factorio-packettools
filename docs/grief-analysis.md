@@ -110,8 +110,8 @@ is an estimate, and it has hard limits:
 
 ## 2. Tooling (built 2026-08-16, keep improving)
 
-**Position decoding lives in ONE place**: `FactorioProtocol::Position`
-(lib/factorio_protocol/position.rb) — the sniffer's console formatter and
+**Position decoding lives in ONE place**: `FactorioProtocol::Actions::Position`
+(lib/factorio_protocol/actions/position.rb) — the sniffer's console formatter and
 every tool below call it, so they can never disagree (the earlier
 inconsistencies — shoot as i32, drop_item as position, zoom as position —
 came from ad-hoc per-tool decodes; all now fixed + tested in

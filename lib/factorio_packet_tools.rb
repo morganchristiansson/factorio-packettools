@@ -2,6 +2,7 @@
 
 require 'time'
 require 'tmpdir'
+require_relative 'factorio_protocol/disconnect_reason'
 require_relative 'factorio_protocol'
 require_relative 'item_db'
 require_relative 'player_db'
@@ -901,7 +902,7 @@ class FactorioPacketTools
   # Measured over captures/server-*.pcap: 355 frames, 104 of which the
   # generic flag never sees (35080 packets of 496953).
   def track_quickbar(act)
-    qb = FactorioProtocol::QuickBar.decode(act)
+    qb = FactorioProtocol::Actions::QuickBar.decode(act)
     return true if qb == :undecodable # a quickbar payload we cannot read
     return false unless qb            # not a quickbar action
     if qb.key?(:page)
@@ -1314,7 +1315,7 @@ class FactorioPacketTools
   def handle_s2c_roster_action(action, ts)
     case action[:type]
     when 159 # player_join_game
-      join = FactorioProtocol::PlayerJoin.decode(action)
+      join = FactorioProtocol::Actions::PlayerJoin.decode(action)
       return unless join
       bind_player_index(join[:name], join[:index])
       @attrs.connect(join[:name], @game_tick)
@@ -1328,7 +1329,8 @@ class FactorioPacketTools
       name = @player_db.lookup(action[:game_player])
       return unless name
       @s2c_joined.delete(name)
-      leave_player(name, ts, reason: action[:leave_dropped] ? :dropped : :quit)
+      reason = action[:leave_reason_name] || (action[:leave_dropped] ? :dropped : :quit)
+      leave_player(name, ts, reason: reason)
     end
   end
 
@@ -1337,7 +1339,7 @@ class FactorioPacketTools
     @attrs.disconnect(name, @game_tick)
     @plugins.emit(:on_player_event, :left, name, reason, @attrs.online_time_ticks(name, nil))
     ts_str = Time.at(ts).strftime('%H:%M:%S.%L')
-    text = reason == :dropped ? 'was dropped from the game' : 'left the game'
+    text = FactorioProtocol::DisconnectReason.text(reason)
     puts "#{ts_str}  #{name} #{text}" if player_visible?(name)
     true
   end

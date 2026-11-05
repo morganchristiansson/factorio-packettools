@@ -242,6 +242,17 @@ class TestDiscord < Minitest::Test
     assert_equal ['Bob was dropped from the game'], bot.sent.map { |m| m[:content] }
   end
 
+  def test_kicked_and_banned_leaves_are_relayed_with_the_reason
+    bridge = new_bridge
+    bridge.define_singleton_method(:enqueue) { |m, *a, **k| send(m, *a, **k) }
+    bot = bridge.instance_variable_get(:@bot)
+
+    bridge.on_player_event(:left, 'Bob', :kicked)
+    bridge.on_player_event(:left, 'Eve', :banned)
+    assert_equal ['Bob was kicked from the game', 'Eve was banned from the game'],
+                 bot.sent.map { |m| m[:content] }
+  end
+
   def test_only_s2c_player_events_post_join_and_leave
     bridge = new_bridge
     bridge.define_singleton_method(:enqueue) { |m, *a, **k| send(m, *a, **k) }

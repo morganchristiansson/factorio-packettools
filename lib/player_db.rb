@@ -275,7 +275,7 @@ class PlayerDatabase
   #       pages, each a QUICKBAR_SLOTS array indexed by slot, value = item
   #       prototype id, null = empty slot / no data for that page. Fed by the
   #       sniffer from the quickbar input actions
-  #       (FactorioProtocol::QuickBar); page 0 is the default. Rebuilt from
+  #       (FactorioProtocol::Actions::QuickBar); page 0 is the default. Rebuilt from
   #       the capture stream, so it is only as good as the packets seen: a
   #       player who had slots set before the first capture shows nulls there.
   #   "quickbar_page": <page>

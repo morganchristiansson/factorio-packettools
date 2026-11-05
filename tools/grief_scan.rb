@@ -50,13 +50,13 @@ PcapReader.new(path).each_packet do |_, ts, src, dst, sport, dport, udp, _|
       players[gp] = true
       case a[:name]
       when :build
-        pos = FactorioProtocol::Position.decode(a)
+        pos = FactorioProtocol::Actions::Position.decode(a)
         if pos
           builds << [ts, gp, tc[:tick], pos[0], pos[1]]
           (other_pos[gp] ||= []) << [ts, 'build', pos[0], pos[1]]
         end
       when :deconstruct
-        area = FactorioProtocol::Position.decode(a)
+        area = FactorioProtocol::Actions::Position.decode(a)
         if area
           x1, y1, x2, y2 = area
           decon << [ts, gp, tc[:tick], x1, y1, x2, y2]
@@ -65,7 +65,7 @@ PcapReader.new(path).each_packet do |_, ts, src, dst, sport, dport, udp, _|
       when :begin_mining, :stop_mining
         mining << [ts, gp, tc[:tick], a[:name].to_s]
       when :begin_mining_terrain, :change_shooting_state, :move_on_pan
-        pos = FactorioProtocol::Position.decode(a)
+        pos = FactorioProtocol::Actions::Position.decode(a)
         if pos
           name = { begin_mining_terrain: 'mine_terrain',
                    change_shooting_state: 'shoot',

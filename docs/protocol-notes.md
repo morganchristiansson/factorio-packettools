@@ -5,7 +5,7 @@ network-layer reference and compact payload table live in `docs/README.md`;
 input actions are listed in `docs/actions.md`. This file holds the
 *verified-by-capture* notes, fixes, and open questions.
 
-## ACTIONS Table (`lib/input_actions_21.rb`, one table per version)
+## ACTIONS Table (`lib/factorio_protocol/actions/input_actions_21.rb`, one table per version)
 
 2.1 stable: `ACTIONS_21` — the `defines.input_action` dump
 (`external/input_actions_dump.txt`, from a pre-stable build) with the
@@ -138,7 +138,7 @@ obvious from the table.
 
 ## Quickbar (2.0: set_slot 230, pick_slot 231, set_selected_page 232, change_active_quick_bar 286)
 
-Decoded in `lib/factorio_protocol/quickbar.rb`; the sniffer keeps the result
+Decoded in `lib/factorio_protocol/actions/quickbar.rb`; the sniffer keeps the result
 per player in `players-cache.json` as `quickbar` — a fixed 10×10 array
 (`QUICKBAR_PAGES` rows × `QUICKBAR_SLOTS` slots) of item prototype ids, `null`
 for empty/unknown — plus `quickbar_page`.
@@ -233,7 +233,7 @@ of the action space is still unidentified.
 **A truncated varint read must not return a nil offset** (found on a real
 380-byte heartbeat, flags 0x26): the heartbeat parser does `offset = v_off`
 and walks from there, so `[nil, nil]` out of bounds raised `NoMethodError`
-mid-packet instead of failing the read. `WireDecode#decode_uint32v` now pins
+mid-packet instead of failing the read. `FactorioProtocol.decode_uint32v` now pins
 the old contract (`[offset + 1, nil]`) — all 497,203 heartbeats in the
 capture set parse without raising.
 
@@ -866,23 +866,45 @@ binds that index→name and emits `:joined`; `player_leave_game` emits
 `:left`. These server-verified S→C actions are the only event sources in
 both modes; Discord relays them.
 
-**Leave reason metadata (2026-11-03).** The 0-byte action is followed by a
-counted 9-byte block:
+**Leave reason metadata (2026-11-03, extended 2026-11-05).** The 0-byte
+action is followed by a counted 9-byte block:
 
 ```
-[dropped u8][0x55][0xff][(-game_index) u8][0xff][ref u32 LE]
+[reason u8][0x55][0xff][(-game_index) u8][0xff][ref u32 LE]
 ```
 
-`dropped` is **1 for "was dropped from the game"** and **0 for "left the
-game"**; the middle byte is the game index negated (`0xa2` for index 94), and
+The first byte is **`defines.disconnect_reason`**, not a 0/1 dropped flag:
+`0 quit, 1 dropped, 2 reconnect, 3 wrong_input, 4 desync_limit_reached,
+5 cannot_keep_up, 6 afk, 7 kicked, 8 kicked_and_deleted, 9 banned,
+11 switching_servers`. These are the values the 2.1.24 server's own
+`defines.disconnect_reason` table reports over RCON; **10 has no defines
+entry** (the table has a gap there) and decodes as `:reason_10`. The middle
+byte is the game index negated (`0xa2` for index 94, `0x62` for 158), and
 `ref` is a per-session reference (the same ref repeats for a quick duplicate
-broadcast). Verified against `server-34197-20261103-232119`: MrHanniZap
-(index 94, dropped=1) vs Mista64/Light_Bearer_/BasedDept (dropped=0). The
-block occupies one of the closure's counted action slots; consuming it also
-removes the old phantom `nothing`/`Unknown(255)` parse of those bytes. The
-sniffer now emits `:left` with reason `:dropped` or `:quit`, and prints
-`<name> was dropped from the game` vs `<name> left the game`; Hivemind and
-Discord use the same reason in their lines.
+broadcast).
+
+Verified leaves:
+
+| capture | player | index | reason |
+|---|---|---|---|
+| server-…-20261103-232119 | MrHanniZap | 94 | 1 dropped |
+| server-…-20261103-232119 | Mista64/Light_Bearer_/BasedDept | — | 0 quit |
+| server-…-20261105-102037 | BURMALDAMELLSTROY | 158 | **7 kicked** (admin `/kick`, 10:16:45.512924, pkt 623659, ref `0x3e5cad76`) |
+
+The same enum is the reason byte of the synchronizer `PeerDisconnect`
+(C→S and the S→C broadcast), so a kick is `reason=7` in both places. Only
+accepting 0/1 was a decoder bug: a reason-7 block was refused, left
+unconsumed, and the rest of that closure decoded as a phantom `close_gui`
+(with the leave event lost). `leave_metadata` now accepts any reason byte —
+the `55 ff / ff / negated-index` shape is the structural check.
+
+The block occupies one of the closure's counted action slots; consuming it
+also removes the old phantom `nothing`/`Unknown(255)` parse of those bytes.
+Actions expose `leave_reason` (integer) and `leave_reason_name` (symbol),
+with `leave_dropped` kept as `reason == 1` for callers that only care about
+the drop case. The sniffer, Hivemind and Discord all render
+`FactorioProtocol::DisconnectReason.text` (`left the game` / `was dropped from the game` /
+`was kicked from the game` / `was banned from the game`).
 
 The top-left overlay traffic (`SkippedTickClosure`,
 `ChangeLatency`/`IncreasedLatencyConfirm`, and the `Map*ProgressUpdate` sync

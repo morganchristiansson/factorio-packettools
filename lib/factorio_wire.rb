@@ -1,8 +1,8 @@
 # frozen_string_literal: true
 
-# The binary primitives BOTH Factorio wire formats are read with: the
-# length-prefixed string and the variable-length integer. The UDP protocol and
-# the save file use the same container, tuned differently:
+# The Factorio wire codec shared by BOTH wire formats: the length-prefixed
+# string and the variable-length integer. The UDP protocol and the save file
+# use the same container, tuned differently:
 #
 #   packets  uint32v length (0xFF then a u32 LE), NO terminator — the
 #            protocol is built to save bytes
@@ -18,20 +18,22 @@
 # field.
 #
 # USED AS A BASE, not a namespace: `extend FactorioWire` gives a module
-# (FactorioSave, FactorioProtocol) the module-level reader, and
-# `include FactorioWire` gives the packet classes an instance-level one
-# (FactorioProtocol::WireDecode), so no caller has to spell out a namespace.
+# (FactorioSave, FactorioProtocol) the module-level reader, and `include
+# FactorioWire` gives the packet classes an instance-level one. FactorioSave
+# overrides #string_at for the save's NUL terminator — the per-format
+# difference lives in the override, not a second wire module.
+#
+# This file is ONLY what the two formats share. The packet protocol's
+# offset-first API and its encoders live under FactorioProtocol.
 module FactorioWire
   ESCAPE = 0xFF # varint escape: the real length follows as a u32 LE
   # Nothing in either format is longer than this: a username, a mod name, a
   # tag, a locale, a mod setting key. A length past it is a misdecode.
   MAX_LENGTH = 4096
 
-  # Instance-level entry points, for `include`ers (the packet classes) — the
-  # module-level pair below is `def self.`, not `module_function`, which
-  # would quietly turn these into private methods.
-  # Same for the writers: an `extend`er (FactorioProtocol) writes packets
-  # with the very codec it decodes them with.
+  # Instance-level entry points, for `include`ers — the module-level pair
+  # below is `def self.`, not `module_function`, which would quietly turn
+  # these into private methods.
   def varint_at(data, at)
     FactorioWire.varint(data, at)
   end
@@ -50,29 +52,6 @@ module FactorioWire
     return [at + 1, head] unless head == ESCAPE
     return [nil, nil] if at + 5 > data.bytesize
     [at + 5, data.unpack1('V', offset: at + 1)]
-  end
-
-  # ── Writers ────────────────────────────────────────────────────────
-  # The mirror of the readers above: same escape value, same string shape
-  # (packet flavor — uint32v length, no terminator). Used by
-  # FactorioProtocol.build_* (lib/factorio_protocol/build.rb), which builds
-  # the client half of the protocol from the same primitives the decoders
-  # read it with — a packet we can construct is a packet we can parse.
-
-  # uint32v: one byte below 0xFF, else ESCAPE + a u32 LE.
-  def encode_uint32v(value)
-    value < ESCAPE ? [value].pack('C') : ESCAPE.chr + [value].pack('V')
-  end
-
-  # uint16v: one byte below 0xFF, else ESCAPE + a u16 LE. The packet
-  # protocol's 2-byte varint — an input action's type and player delta.
-  def encode_uint16v(value)
-    value < ESCAPE ? [value].pack('C') : ESCAPE.chr + [value].pack('v')
-  end
-
-  # [uint32v length][bytes], no terminator.
-  def encode_string(text)
-    encode_uint32v(text.bytesize) + text.b
   end
 
   # [length][bytes] at `at`.

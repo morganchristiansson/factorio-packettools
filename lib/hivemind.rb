@@ -10,6 +10,7 @@ begin
 rescue LoadError
 end
 require_relative 'memory_store'
+require_relative 'factorio_protocol/disconnect_reason'
 # RubyLLM tool classes (HivemindReply, RconQuery, SetPlayerTag,
 # ScheduleFollowUp, CancelFollowUp, SetPlayerLanguages) live in
 # hivemind_tools.rb.
@@ -544,7 +545,7 @@ class HivemindAgent
       append_history(nil, line)
       greet_join(name, line, attrs, now: now)
     when :left
-      append_history(nil, reason == :dropped ? "#{name} was dropped from the game" : "#{name} left the game")
+      append_history(nil, "#{name} #{FactorioProtocol::DisconnectReason.text(reason)}")
     end
   end
 

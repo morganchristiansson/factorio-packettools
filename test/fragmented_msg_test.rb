@@ -43,6 +43,16 @@ class TestFragmentedMessages < Minitest::Test
     assert_equal 'morganc', FactorioProtocol.parse_udp_payload(pkt)[:connection_confirm][:username]
   end
 
+  def test_invalid_utf8_username_fails_the_confirm
+    # Same shape as the LAN join above, but the username byte is not UTF-8.
+    # The parse must fail (nil), which is the sniffer's cue to keep the
+    # frame in unknown.packets; scrubbing would invent a different player.
+    pkt = "\x04".b + [0x0002].pack('v') + ("\x00" * 12) + [1].pack('C') + "\xFF".b
+    parsed = FactorioProtocol.parse_udp_payload(pkt)
+    assert parsed.key?(:connection_confirm), 'the message key is present'
+    assert_nil parsed[:connection_confirm], 'invalid UTF-8 username is a misdecode'
+  end
+
   def test_truncated_fragment_header_no_crash
     parsed = FactorioProtocol.parse_udp_payload("\x44\x02".b)
     assert_nil parsed && parsed[:connection_confirm]

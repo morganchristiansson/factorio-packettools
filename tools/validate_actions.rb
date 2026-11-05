@@ -136,7 +136,7 @@ def report_wire_ids(votes, table, options)
 end
 
 # ── Replay: single-threaded paced merge of capture + log ───────────
-table = FactorioProtocol::ACTIONS_21 # 2.1 stable is the only released version
+table = FactorioProtocol::Actions::ACTIONS_21 # 2.1 stable is the only released version
 min_tick = capture_min_tick(options[:pcap])
 abort 'capture has no tick closures to correlate against' unless min_tick
 

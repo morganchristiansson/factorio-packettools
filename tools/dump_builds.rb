@@ -27,7 +27,7 @@ PcapReader.new(path).each_packet do |_, ts, src, dst, sport, dport, udp, _|
       next unless gp && gp < 10000   # skip bogus player deltas
       case a[:name]
       when :build
-        pos = FactorioProtocol::Position.decode(a)
+        pos = FactorioProtocol::Actions::Position.decode(a)
         if pos
           builds << [ts, gp, tc[:tick], pos[0], pos[1]]
           (pos_by[gp] ||= []) << [ts, 'build', pos[0], pos[1]]
@@ -35,13 +35,13 @@ PcapReader.new(path).each_packet do |_, ts, src, dst, sport, dport, udp, _|
       when :begin_mining, :stop_mining
         (mining[gp] ||= []) << [ts, tc[:tick], a[:name]]
       when :deconstruct
-        area = FactorioProtocol::Position.decode(a)
+        area = FactorioProtocol::Actions::Position.decode(a)
         if area
           x1, y1, x2, y2 = area
           (pos_by[gp] ||= []) << [ts, 'deconstruct', (x1+x2)/2, (y1+y2)/2]
         end
       when :begin_mining_terrain, :change_shooting_state
-        pos = FactorioProtocol::Position.decode(a)
+        pos = FactorioProtocol::Actions::Position.decode(a)
         if pos
           name = { begin_mining_terrain: 'mine_terrain', change_shooting_state: 'shoot' }[a[:name]]
           (pos_by[gp] ||= []) << [ts, name, pos[0], pos[1]]
