@@ -5,9 +5,9 @@ require 'yaml'
 require_relative 'rcon_client'
 require_relative 'agent_events'
 
-# The `translation` plugin (config.yaml `plugins:`) — the file is named after
-# the plugin, the class after what it does.
-class TranslationAgent
+# The `translation` plugin (config.yaml `plugins:`): lib/translation.rb
+# defining Translation — the plugin name, the file and the class all agree.
+class Translation
   include AgentEvents
   # Non-secret translation settings live in this file. There is no key list
   # and no code default: the file must exist (checked once, so "no config at
@@ -39,8 +39,8 @@ class TranslationAgent
   def initialize(owner = nil, rcon: nil, player_db: nil, backend: nil, google_api_key: nil, roster: nil,
                  config_file: CONFIG_FILE, argos_path: nil)
     # owner (the sniffer) provides rcon/player_db/roster; the kwargs stay for
-    # tests that build TranslationAgent directly. PluginSet builds
-    # TranslationAgent.new(owner); config-translation.yaml is the source.
+    # tests that build Translation directly. PluginSet builds
+    # Translation.new(owner); config-translation.yaml is the source.
     trans_config = self.class.load_config(config_file)
     backend = (backend || trans_config.fetch('backend')).to_sym
     # Google key for the hybrid/google backend. Env wins (ops/CI

@@ -23,7 +23,7 @@ That is the whole list. An unknown name is a startup error, and a feature
 that is not listed is never even `require`d.
 
 **Hivemind has its own plugins**, in its own config file, through the same
-same convention (`HivemindAgent.plugin_set`, a second
+same convention (`Hivemind.plugin_set`, a second
 `Plugins::Manager`) — so a sniffer without the `hivemind` plugin never even
 looks at them:
 
@@ -48,7 +48,7 @@ than a guard: `/compact` refuses, `run_log_event_turn` skips the post-event
 distillation, `register_tools` leaves the timer tools out, the sniffer's
 `start_log_watcher` is a no-op without a log path), and without `persistence` the session file is simply
 never written. `compaction` is the last feature still MIXED IN rather than
-built (`HivemindAgent.still_modules`), which is why it still asks
+built (`Hivemind.still_modules`), which is why it still asks
 `agent.plugin?('compaction')` first.
 
 Each plugin also **owns its config keys**, read from the agent's stored
@@ -180,7 +180,7 @@ cleared.
 player chat ──► write_to_console action (C→S packet)
                    │  FactorioProtocol.decode_chat
                    ▼
-        lib/hivemind.rb  HivemindAgent#on_chat(player, message)
+        lib/hivemind.rb  Hivemind#on_chat(player, message)
                    │  message contains "hivemind" (case-insensitive)?
                    ▼
         RubyLLM chat (endpoint/provider/model from config-hivemind.yaml)
@@ -321,7 +321,7 @@ required from `config-hivemind.yaml`; the file must exist and contain all
 keys shown in `config-hivemind.yaml.example`. There are no code defaults for
 model, provider, endpoint, prompts, limits, or compaction thresholds. The
 agent auto-enables in server mode iff the startup model has a key
-(`HivemindAgent.key_configured?`).
+(`Hivemind.key_configured?`).
 
 `providers:` defines the endpoints and the models available to `/model` and
 `/try`, plus the ordered automatic fallback list. One entry per
@@ -453,7 +453,7 @@ In server mode the SNIFFER (host) tails the running server's
 `/proc/<pid>/cwd` of the factorio process, fallback `~/factorio`, or
 `log_path:` in config.yaml) and emits each new line on the plugin bus as
 `:on_log_line` — reaching `action_validator` directly and the agent's
-`logwatcher` sub-feature via `HivemindAgent#on_log_line`. There is one
+`logwatcher` sub-feature via `Hivemind#on_log_line`. There is one
 reader thread on the inode regardless of how many consumers subscribe.
 Lines carrying a key in the scenario common format `event=<name>, k=v, ...` (player-died,
 map-reset, research-finished, evo-stage, apex-spitter, artillery-target,

@@ -4,7 +4,7 @@ require 'ruby_llm'
 
 # RubyLLM tool classes for the Hivemind agent (see hivemind.rb). Kept in
 # their own file so the agent class stays readable; registered onto each
-# chat via HivemindAgent#register_tools.
+# chat via Hivemind#register_tools.
 #
 # SetPlayerTag lives in lib/hivemind_tags.rb, with the `tags` feature that
 # offers it: it is the only tool that writes to the game, so switching it off
@@ -144,7 +144,7 @@ end
 # readers — so the model can set it instead of waiting for an operator.
 #
 # Only registered while the TRANSLATION plugin is loaded (see
-# HivemindAgent#register_tools): without translation there is nothing to
+# Hivemind#register_tools): without translation there is nothing to
 # steer, so the tool would be a no-op with a confusing name.
 class SetPlayerLanguages < RubyLLM::Tool
   def name

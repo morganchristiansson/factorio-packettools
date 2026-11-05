@@ -150,7 +150,7 @@ class HivemindPersistence
   def persist_queue!
     return false unless enabled?
     # session_data already dups the console queue under its lock (see
-    # HivemindAgent#session_snapshot), so there is nothing to unwrap here:
+    # Hivemind#session_snapshot), so there is nothing to unwrap here:
     # the disk write happens OUTSIDE that lock, keeping the packet thread's
     # hold down to a microsecond.
     write_session(session_data)

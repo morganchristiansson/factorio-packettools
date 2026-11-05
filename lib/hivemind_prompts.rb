@@ -2,7 +2,7 @@
 
 # Prompt / personality constants for the Hivemind agent (see hivemind.rb).
 # Pure data — no methods. The agent includes this module, so the constants
-# remain reachable as HivemindAgent::DEFAULT_SOUL etc. (spec compatibility).
+# remain reachable as Hivemind::DEFAULT_SOUL etc. (spec compatibility).
 module HivemindPrompts
   # Default SOUL memory — seeded into memories/SOUL.md on first run (never
   # overwrites an existing/edited file). The live system prompt points here

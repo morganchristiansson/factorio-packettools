@@ -44,7 +44,7 @@ class Discord
   # privileged bit and OR it into the unprivileged set the constructor accepts.
   MESSAGE_CONTENT_INTENT = 1 << 15
 
-  # Mirrors TranslationAgent.load_config: a missing file is a clear startup
+  # Mirrors Translation.load_config: a missing file is a clear startup
   # error naming the example to copy (checked once).
   def self.load_config(path = CONFIG_FILE)
     raise Errno::ENOENT, "missing #{path}; copy config-discord.yaml.example" unless File.file?(path)
@@ -180,7 +180,7 @@ class Discord
   private
 
   # Author names carry non-UTF-8 bytes from the API; scrub before they reach an
-  # in-game print or a log line (mirrors HivemindAgent#clean_text).
+  # in-game print or a log line (mirrors Hivemind#clean_text).
   def clean_text(text)
     text.to_s.dup.force_encoding('UTF-8').scrub('?').strip
   end

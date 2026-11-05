@@ -18,8 +18,8 @@ HIVE_TEST_CONFIG = File.expand_path('../config-hivemind.yaml.example', __dir__)
 # Hivemind reads its OWN `plugins:` list in its class body, so the require
 # happens in a temp cwd holding the test config: the features under test must
 # not depend on whatever config-hivemind.yaml this checkout happens to have.
-# (The SNIFFER's list needs nothing here: hivemind is a class the sniffer
-# instantiates itself, not a feature it builds from that list.)
+# (The SNIFFER's list needs nothing here: the sniffer's own PluginSet builds
+# Hivemind lazily, and this test builds it directly.)
 Dir.mktmpdir('hivemind-test') do |dir|
   FileUtils.cp(HIVE_TEST_CONFIG, File.join(dir, 'config-hivemind.yaml'))
   Dir.chdir(dir) { require 'hivemind' }
@@ -75,7 +75,7 @@ def new_hive_agent(rcon: FakeRcon.new, attrs: nil, current_tick: -> { 0 },
     player_db[row[:index] || i + 1] = { name: row[:name], admin: row[:admin] }
   end
   HivemindPersistence.stubs(:default_path).returns(session)
-  HivemindAgent.new(rcon: rcon, attrs: attrs, current_tick: current_tick,
+  Hivemind.new(rcon: rcon, attrs: attrs, current_tick: current_tick,
                     player_db: player_db, config_file: HIVE_TEST_CONFIG, **kwargs)
 end
 

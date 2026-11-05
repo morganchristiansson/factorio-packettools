@@ -1,7 +1,7 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
-# Tests for the TranslationAgent backends and the /simulate console command.
+# Tests for the Translation backends and the /simulate console command.
 #
 # Regression: /simulate used to call the typo'd @translation_agent
 # translate_service method. This suite drives the real handler and asserts the
@@ -33,7 +33,7 @@ class PluginsDouble
   def emit(*) = nil
 end
 
-class TestTranslationAgent < Minitest::Test
+class TestTranslation < Minitest::Test
   def setup
     @agents = []
   end
@@ -43,7 +43,7 @@ class TestTranslationAgent < Minitest::Test
   end
 
   def make_agent(backend: :mock, rcon: nil, player_db: PlayerDatabase.new(nil), roster: nil, **kwargs)
-    agent = TranslationAgent.new(
+    agent = Translation.new(
       rcon: rcon,
       player_db: player_db,
       backend: backend,

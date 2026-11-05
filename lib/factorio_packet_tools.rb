@@ -164,8 +164,7 @@ class FactorioPacketTools
     @game_tick = 0
     # Features (config.yaml `plugins:`): one Plugins object for this owner,
     # which builds them from the list and dispatches what we emit below.
-    # This file names none of them. hivemind and translation are objects
-    # this host drives, not features it emits to. MODE-INDEPENDENT and
+    # This file names none of them. MODE-INDEPENDENT and
     # outside any mode block: the packet path emits on_player_color in
     # every mode (pcap replay included), so @plugins must always exist.
     # Every listed name is a feature: PluginSet builds it lazily on the

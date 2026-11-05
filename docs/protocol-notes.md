@@ -292,7 +292,7 @@ packets (`get_active_quick_bar_page` is not callable on this build). The one
 change: a mismatch costs the quickbar, visibly, not the query. Runs on
 its own thread: a join must not stall the capture. One command per join
 total: the locale the translation plugin used to fetch in a query of its own
-rides along in the same payload (`TranslationAgent#note_joined` is gone for
+rides along in the same payload (`Translation#note_joined` is gone for
 that reason). `docs/rcon-knowledge.md` has the live-verified API details — the
 query this replaces was silently broken (it looked players up in
 `game.connected_players`, which returns nil for a name, and parsed a payload

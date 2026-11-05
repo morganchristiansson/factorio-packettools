@@ -4,7 +4,7 @@ require 'json'
 
 # Hivemind plugin `compaction` — the file is lib/hivemind_compaction.rb (the
 # manager's `hivemind_` prefix), the module takes its CamelCase name. Listed
-# in config-hivemind.yaml `plugins:`; mixed into HivemindAgent by
+# in config-hivemind.yaml `plugins:`; mixed into Hivemind by
 # Plugins.apply_mixins. Long-term memory compaction: the SINGLE pass behind
 # /compact that reviews the session and overwrites the keyed memory blobs
 # (soul / knowledge / <player>) in one request.
@@ -68,7 +68,7 @@ module HivemindCompaction
     # soul/knowledge first, then players, stable order. The agent itself is
     # never a target (stray blobs from older builds are ignored, not
     # rewritten).
-    keys = (%w[soul knowledge] + seen.sort).reject { |k| k == HivemindAgent::AGENT_NAME }
+    keys = (%w[soul knowledge] + seen.sort).reject { |k| k == Hivemind::AGENT_NAME }
     pass = nil
     @mutex.synchronize { pass = build_compaction_chat if @chat }
     unless pass
@@ -353,7 +353,7 @@ module HivemindCompaction
   # Returns a snapshot copy (minus the agent name — replies are not a player).
   def session_players
     players = @session_players_mutex.synchronize { Set.new(@session_players) }
-    players.delete(HivemindAgent::AGENT_NAME)
+    players.delete(Hivemind::AGENT_NAME)
     players
   end
 

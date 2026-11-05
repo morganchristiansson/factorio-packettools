@@ -124,10 +124,8 @@ class TestPlugins < Minitest::Test
     refute Plugins.enabled?(%w[hivemind], 'translation')
   end
 
-  # A name can be in the list for its FILE alone: the sniffer lists hivemind
-  # and translation as objects it constructs itself (not features it dispatches
-  # to) — so they must not be built as features ("no feature class"), while
-  # still showing up in `files`.
+  # A name can be in the list for its FILE alone — it still shows up in
+  # `files`, but a dispatch subset keeps it from being built as a feature.
   def test_dispatch_subset_excludes_from_building_not_from_files
     set = Plugins::PluginSet.new(%w[alpha beta], Owner.new, dir: FIXTURES, dispatch: %w[alpha])
     out, err = capture_io { assert_equal %w[Alpha], set.features.map { |f| f.class.name } }
@@ -137,7 +135,7 @@ class TestPlugins < Minitest::Test
   end
 
   # The feature classes come from the plugin LISTS now: PluginSet derives
-  # HivemindAgent/TranslationAgent/Discord from the listed NAMES and requires
+  # Hivemind/Translation/Discord from the listed NAMES and requires
   # the file when it BUILDS (a wrong constant is a "no feature class" warn,
   # covered above — lazily, at build, not invisibly). What the entry point
   # must still make good on is loading those files at startup, so this keeps
@@ -145,8 +143,21 @@ class TestPlugins < Minitest::Test
   # once their files are loaded.
   def test_entry_point_class_references_resolve
     Plugins.load_files(%w[hivemind translation discord])
-    %w[HivemindAgent TranslationAgent Discord].each do |c|
+    %w[Hivemind Translation Discord].each do |c|
       assert Object.const_defined?(c), "#{c} is named by the plugin lists but never defined"
+    end
+  end
+
+  # ...and the derived name must be the constant the file actually defines.
+  # The two agents once lived in *Agent classes, so the first build warned
+  # "no feature class" and neither ever started. Loaded is not enough; the
+  # convention has to resolve each listed NAME to that class.
+  def test_documented_feature_names_resolve_to_their_classes
+    Plugins.load_files(%w[hivemind translation discord])
+    set = Plugins::PluginSet.new(%w[hivemind translation discord], Owner.new)
+    %i[hivemind translation discord].each do |name|
+      assert_equal set.constant_name(name), set.class_for(name)&.name,
+                   ":#{name} must resolve to #{set.constant_name(name)} for both build and []"
     end
   end
 end

@@ -339,7 +339,7 @@ class RconClient
     run_command(cmd)
   end
 
-  # Lua double-quoted string escaping shared by #say, #set_player_tag, and TranslationAgent:
+  # Lua double-quoted string escaping shared by #say, #set_player_tag, and Translation:
   # every backslash and quote gets a literal backslash prefix so content
   # can't break out of the string or inject Lua; newlines collapse to
   # spaces (single-line contexts). Char loop on purpose: gsub with a

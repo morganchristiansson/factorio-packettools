@@ -36,7 +36,7 @@ require_relative 'plugins'
 # https://opencode.ai/zen/go/v1). More tools (RCON queries, packet-decoder
 # lookups) can be added the same way as HivemindReply — they get access to
 # the rcon client / the sniffer's item/player DBs via the tool constructor.
-class HivemindAgent
+class Hivemind
   include AgentEvents
   include HivemindPrompts     # DEFAULT_SOUL / SYSTEM_PROMPT / COMPACTION_PROMPT
   # Non-secret Hivemind settings live only in config-hivemind.yaml.
@@ -179,7 +179,7 @@ class HivemindAgent
       .find { |v| !v.to_s.empty? }
   end
 
-  def api_key_for(model) = HivemindAgent.resolve_api_key(model_settings(model))
+  def api_key_for(model) = Hivemind.resolve_api_key(model_settings(model))
 
   # WHERE the key came from — env var name, or the config's own `api_key:`.
   # The key itself is never logged; this is the one line that answers "is my
@@ -231,14 +231,14 @@ class HivemindAgent
   # set_player_languages tool). Its OWN list is config-hivemind.yaml.
   def initialize(owner = nil, rcon: nil, attrs: nil, current_tick: nil, player_db: nil,
                  sniffer_plugins: nil, memory_dir: nil, config_file: CONFIG_FILE)
-    # A plugin FEATURE (built by PluginSet as HivemindAgent.new(owner)): the
+    # A plugin FEATURE (built by PluginSet as Hivemind.new(owner)): the
     # owner is the sniffer, which provides rcon/attrs/player_db and publishes
     # replies through publish_chat. The kwargs stay for the tests that build
     # the agent directly (no owner). Server-less runs raise here — the agent
     # needs RCON for game.print replies and join queries.
     @owner = owner
     @rcon = rcon || owner&.rcon
-    raise 'HivemindAgent needs RCON (server mode) — game.print replies and join queries require it' unless @rcon
+    raise 'Hivemind needs RCON (server mode) — game.print replies and join queries require it' unless @rcon
 
     @sniffer_plugins = Array(sniffer_plugins).map { |n| n.to_s.to_sym }
     @attrs = attrs || owner&.attrs
@@ -820,7 +820,7 @@ class HivemindAgent
   # and memory injections via memory_prompt.
   def mark_player_seen(name)
     name = clean_text(name).strip
-    return if name.empty? || name == HivemindAgent::AGENT_NAME
+    return if name.empty? || name == Hivemind::AGENT_NAME
     @session_players_mutex.synchronize { @session_players << name }
   end
 
@@ -908,7 +908,7 @@ class HivemindAgent
     return unless data['session_players'].is_a?(Array)
     @session_players_mutex.synchronize do
       @session_players = Set.new(data['session_players'].map(&:to_s))
-      @session_players.delete(HivemindAgent::AGENT_NAME)
+      @session_players.delete(Hivemind::AGENT_NAME)
     end
   end
   # Both seams, plus the three accessors above, are the persistence feature's
@@ -927,7 +927,7 @@ class HivemindAgent
     # Track who appeared in this LLM session (persisted; drives compaction
     # targets so they can't drift from what the session actually saw).
     if player
-      mark_player_seen(player) unless player == HivemindAgent::AGENT_NAME
+      mark_player_seen(player) unless player == Hivemind::AGENT_NAME
     elsif msg =~ /\A(\S+) (?:joined|left) the game/
       mark_player_seen(Regexp.last_match(1))
     end
