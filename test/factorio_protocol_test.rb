@@ -44,12 +44,12 @@ class TestFactorioProtocol < Minitest::Test
     entry = FactorioProtocol::Actions::ACTIONS_21[132]
     refute_nil entry
     assert_equal :deconstruct, entry[0]
-    assert_equal 16, entry[1], 'deconstruct should be 16 bytes (area selection)'
+    assert_equal 23, entry[1], 'deconstruct C→S body is 23 bytes (16-byte area + echo metadata)'
   end
 
   def test_deconstruct_decodes_area
     # Simulate a server heartbeat action: count_flagged=0x04 (2 elems),
-    # type=132 (deconstruct), delta=2, data=16 bytes
+    # type=132 (deconstruct), delta=2, data=23 bytes
     pkt = build_server_tc_packet([
       { type: 132, delta: 2, data: [0x9d, 0x9f, 0xfe, 0xff, 0x1c, 0xae, 0x01, 0x00,
                                       0xf5, 0xa2, 0xfe, 0xff, 0xcc, 0xcf, 0x01, 0x00,
@@ -421,7 +421,7 @@ class TestFactorioProtocol < Minitest::Test
 
     # Second action with delta=11: raw = 1+11 = 12, game = 13
     pkt2 = build_client_tc_packet([
-      { type: 132, delta: 2, data: [0] * 16 },
+      { type: 132, delta: 2, data: [0] * 23 },
       { type: 83, delta: 11, data: [0] * 5 }
     ])
     result2 = FactorioProtocol.parse_udp_payload(pkt2)
@@ -476,7 +476,7 @@ class TestFactorioProtocol < Minitest::Test
   end
 
   def test_action_len_known
-    assert_equal 16, FactorioProtocol.action_len(132)   # deconstruct
+    assert_equal 23, FactorioProtocol.action_len(132)   # deconstruct
     assert_equal 16, FactorioProtocol.action_len(69)    # build (table value; hack adjusts to 9/10/11/21 by variant)
     assert_nil FactorioProtocol.action_len(107)         # write_to_console (variable, no table length)
   end

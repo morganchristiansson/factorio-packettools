@@ -18,8 +18,10 @@ class TestPcapWriter < Minitest::Test
         PcapReader.new(path).each_packet { |*args| rows << args }
         assert_equal 1, rows.size
         assert_equal 123.456, rows[0][1]
-        assert_equal '10.0.0.1', rows[0][2]
-        assert_equal '10.0.0.2', rows[0][3]
+        assert_equal PcapFormat.ip_bytes('10.0.0.1'), rows[0][2]
+        assert_equal PcapFormat.ip_bytes('10.0.0.2'), rows[0][3]
+        assert_equal '10.0.0.1', PcapFormat.ip_string(rows[0][2])
+        assert_equal '10.0.0.2', PcapFormat.ip_string(rows[0][3])
         assert_equal 34_197, rows[0][4]
         assert_equal 34_198, rows[0][5]
         assert_equal "\x10hello".b, rows[0][6]

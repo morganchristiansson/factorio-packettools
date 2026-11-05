@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'zlib'
+require 'ipaddr'
 require 'stringio'
 require 'tempfile'
 require 'fileutils'
@@ -17,6 +18,17 @@ module PcapFormat
     276 => 20,  # DLT_LINUX_SLL2
   }.freeze
 
+  # IPs are identity only (direction filters and src→name maps), so keep the
+  # four wire bytes — no formatting on the hot path. Convert with
+  # IPAddr.ntop only when an address is printed (connection lines, capture names).
+  def self.ip_bytes(ip)
+    ip.bytesize == 4 ? ip : ip.split('.').map(&:to_i).pack('C4')
+  end
+
+  def self.ip_string(ip)
+    ip.bytesize == 4 ? IPAddr.ntop(ip) : ip
+  end
+
   # => [src_ip, dst_ip, sport, dport, udp_data] or nil.
   #
   # Reads the IP header straight out of `frame` instead of copying it into
@@ -32,8 +44,8 @@ module PcapFormat
     return nil unless udp_at < frame.bytesize
     src = dst = nil
     if ips
-      src = "#{frame.getbyte(ip + 12)}.#{frame.getbyte(ip + 13)}.#{frame.getbyte(ip + 14)}.#{frame.getbyte(ip + 15)}"
-      dst = "#{frame.getbyte(ip + 16)}.#{frame.getbyte(ip + 17)}.#{frame.getbyte(ip + 18)}.#{frame.getbyte(ip + 19)}"
+      src = frame.byteslice(ip + 12, 4)
+      dst = frame.byteslice(ip + 16, 4)
     end
     [src, dst,
      frame.unpack1('n', offset: ip + ihl), frame.unpack1('n', offset: ip + ihl + 2),

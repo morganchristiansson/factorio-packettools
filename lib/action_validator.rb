@@ -298,8 +298,25 @@ class ActionValidator
     attempt_join(tick)
     # Retry leftovers: older wire ticks deferred by the ambiguity rule
     # (or whose log line simply had not been admitted yet). They join here
-    # only when the choice is now unambiguous.
-    @wire.keys.select { |t| t < tick }.each { |t| attempt_join(t) }
+    # only when the choice is now unambiguous AND a log tick in the
+    # tolerance window exists — attempt_join cannot consume anything
+    # otherwise, and retrying every buffered tick made a replay without
+    # action-logging lines spend most of its time regrouping.
+    unless @log.empty?
+      @wire.each_key do |t|
+        next unless t < tick
+        lt = t
+        found = false
+        while lt <= t + TICK_TOLERANCE
+          if @log.key?(lt)
+            found = true
+            break
+          end
+          lt += 1
+        end
+        attempt_join(t) if found
+      end
+    end
     # Older log ticks no future wire tick will reach (a candidate offset is
     # within TICK_TOLERANCE of its wire tick) are dead — CORRELATED entries
     # were already consumed by attempt_join, so anything still here is an
@@ -315,9 +332,9 @@ class ActionValidator
   # One join attempt for one wire tick. Returns when consumed (or nothing
   # matched); leaves everything in place when deferred.
   def attempt_join(tick)
-    return unless @wire.key?(tick) # plain-hash read: no default-proc pollution
-    wseqs = @wire[tick]
-    return if wseqs.empty?
+    return if @log.empty? # nothing to join against (also the common replay case)
+    wseqs = @wire.fetch(tick, nil) # no default-proc pollution
+    return if wseqs.nil? || wseqs.empty?
     wplayers = wseqs.group_by(&:first)
     # Score each (tick lag, player offset) combination. Per common player:
     #   sizes equal        -> all positions pair (the bulk case; the name

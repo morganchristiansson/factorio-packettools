@@ -201,6 +201,23 @@ experimental 2.1 build whose dump numbered actions differently from both
   `hit_unknown` actions from 755 to 408; the remaining tail is variable-tail
   GUI records (export_blueprint, gui_*), the unknown-name gaps, and
   content-defined actions like 266.
+- **2026-11-05 batch (the 2026-11-05 server set, `--decide` then `--check`):**
+  24 wire-settled lengths folded into `ACTIONS_21` — gui_confirmed/106=8,
+  set_signal/99=5, market_offer/108=5, gui_selection_state_changed/115=5,
+  gui_inventory_filter_changed/121=5, gui_inventory_action/122=5,
+  edit_blueprint_tool_preview/154=5, gui_elem_changed/226=8,
+  set_control_behavior_output_networks/356=2, open_equipment/78=5, plus the
+  still-unnamed gaps 14=5, 20=5, 21=5, 51=6, 160=5, 250=8 (kept as
+  `Unknown(n)` so they still count and forward, but no longer desync the
+  closure). A second pass fixed six table lengths the current stable wire
+  contradicts: open_item/74=16, inventory_split/93=17, set_inventory_bar/127=5,
+  deconstruct/132=23, swap_logistic_filter_items/103=5, and
+  gui_location_changed/119=5 (the old 25-byte form is still seen, but 5 now
+  dominates 3:1). `--check` then reports no disagreement among the measured
+  types. On the 14-file set the summary went **834 -> 670 desynced packets**;
+  replaying the 2026-11-05 `unknown.packets` corpus went **500 -> 318**. The
+  remaining unknown tail (212/255/128/56/97/…) is genuinely variable or S→C
+  segment traffic, so it stays undecoded.
 - **266 IS entity-prototype-dependent (confirmed 2026-10-27).** Running a
   throwaway local server (2.1.23 / build 87750, matches the captures) + RCON
   regenerated `external/entity_prototypes_runtime.txt` (1027 entities, the

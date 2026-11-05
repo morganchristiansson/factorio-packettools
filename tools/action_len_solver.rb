@@ -37,14 +37,18 @@ module ActionLenSolver
     parsed.empty? ? walk : walk.merge(parsed)
   end
 
-  # The corpus lens plus the table's 0-length entries, built ONCE per lens:
-  # rebuilding it per payload is a ~330-entry merge, and the walk calls it
-  # several times per packet. Keyed by IDENTITY (`equal?`) so a mutated lens
-  # is never served stale numbers; the callers here never mutate it.
+  # The corpus lens plus the table's 0-length entries, built ONCE per
+  # (lens, excluded type): rebuilding it per payload is a ~330-entry merge,
+  # and a hidden-type pass asks for a different exclusion for every type on
+  # every payload. The one-entry cache this replaced thrashed between those
+  # types. The value keeps the lens itself so an object_id reuse after GC
+  # cannot serve a stale walk.
   def base_walk(lens, exclude)
-    if @walk_lens.equal?(lens) && @walk_exclude == exclude
-      return @walk_base
-    end
+    @walk_cache ||= {}
+    key = [lens.object_id, exclude]
+    cached = @walk_cache[key]
+    return cached[1] if cached && cached[0].equal?(lens)
+
     walk = lens.dup
     walk.delete(exclude) if exclude
     FactorioProtocol.actions.each do |t, (_n, len)|
@@ -52,9 +56,8 @@ module ActionLenSolver
       next if t == exclude
       walk[t] = len
     end
-    @walk_lens = lens
-    @walk_exclude = exclude
-    @walk_base = walk
+    @walk_cache[key] = [lens, walk]
+    walk
   end
 
   # bounds / parsed_lengths both need the parse, and the walk asks for both on
@@ -85,6 +88,12 @@ module ActionLenSolver
   # byte, and packets whose last 8 bytes are not a [tick][pad] trailer (its tick
   # within a second of the closure's own).
   def bounds(data)
+    return @bounds_res if @bounds_data.equal?(data)
+    @bounds_data = data
+    @bounds_res = compute_bounds(data)
+  end
+
+  def compute_bounds(data)
     # Client→server only. A full capture holds the server's S→C broadcasts too,
     # and those have no [tick][pad] trailer — but relying on the trailer check
     # alone to reject them would be luck, not a filter.

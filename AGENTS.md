@@ -305,6 +305,15 @@ either on a client or on the game server host (server mode, with RCON).
   uncompressed server captures that is 56s of shell + 30s of decode vs 30s
   total. A file that cannot be read (a .gz still being written, a truncated
   rotation) is warned about and skipped, keeping whatever it yielded.
+- **IPs are identity, not text**: `PcapFormat.udp` returns the four wire
+  bytes (`PcapFormat.ip_bytes`), and host filters / `@ip_names` key on those.
+  Format with `IPAddr.ntop` only at print/capture-name sites. `IPAddr.ntop`
+  is 2.4x slower than four-getbyte interpolation per packet, so it is never
+  on the hot path.
+- **`ActionValidator#correlate` retries only joinable leftovers**: an older
+  wire tick is re-attempted only when `@log` has a key in its
+  `TICK_TOLERANCE` window. Retrying every buffered tick made a log-less
+  replay spend most of its time in `group_by` (543k-packet capture: 34s -> 14s).
 - **Interactive filter console**: type `/show NAME`, `/actions`,
   `/noise`, `/debug` (toggle decoded per-action lines), `/stats`,
   `/compact` (distill the session into memory, then wipe it — starts

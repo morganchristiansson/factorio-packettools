@@ -178,6 +178,9 @@ class FactorioPacketTools
     # filter; plugin commands stay in the console for now.
     @console = Console.new(self, player_db: @player_db, plugins: -> { @plugins },
                            debug: !!@options[:debug])
+    # IP identity is packed bytes (PcapFormat); this host's configured IPs
+    # are the filter key in both modes. Server mode may auto-detect later.
+    @host_ip_keys = Array(options[:host_ips]).to_h { |ip| [PcapFormat.ip_bytes(ip), true] }
     # Server mode: this host IS the game server. Classify packet direction
     # by comparing src/dst against our own IPs and analyze ONLY incoming
     # (client→server) traffic — the outgoing direction is a broadcast of
@@ -187,6 +190,7 @@ class FactorioPacketTools
       # it into :host_ips) or the auto-detected list; else all local IPv4s.
       @host_ips = (options[:host_ips] || []).dup
       @host_ips = ServerDetect.local_ipv4 if @host_ips.empty?
+      @host_ip_keys = @host_ips.to_h { |ip| [PcapFormat.ip_bytes(ip), true] }
       # src_ip -> username, learned from ConnectionRequestReplyConfirm (msg 4,
       # incoming). Bound to the real game index by the client's first C→S
       # heartbeat action below. (@ip_names, defined above for all modes.)
@@ -475,7 +479,7 @@ class FactorioPacketTools
   def capture_recordable?(src_ip, dst_ip, udp_data)
     return @capture_mode != 'save' unless @capture_mode == 'normal'
     if @options[:server]
-      return false unless @host_ips.include?(dst_ip) || @host_ips.include?(src_ip)
+      return false unless @host_ip_keys.key?(dst_ip) || @host_ip_keys.key?(src_ip)
     end
     recordable_heartbeat?(udp_data)
   end
@@ -493,6 +497,8 @@ class FactorioPacketTools
   end
 
   def process_packet(pkt_num, ts, src_ip, dst_ip, sport, dport, udp_data, raw_frame = nil)
+    src_ip = PcapFormat.ip_bytes(src_ip)
+    dst_ip = PcapFormat.ip_bytes(dst_ip)
     @stats[:packets] += 1
 
     # Server broadcasts every S→C message once per recipient. The copies are
@@ -500,7 +506,7 @@ class FactorioPacketTools
     # first and drop the rest within a short window: one capture record, one
     # analysis pass. TransferBlocks (msg 13) are per-client map-download data,
     # not broadcasts — never dedupe those.
-    if @options[:server] && @host_ips.include?(src_ip) &&
+    if @options[:server] && @host_ip_keys.key?(src_ip) &&
        ((udp_data.getbyte(0) || 0) & 0x1F) != 13 && duplicate_s2c?(udp_data, ts)
       @stats[:duplicate_s2c] += 1
       return
@@ -560,7 +566,7 @@ class FactorioPacketTools
     # duplicates. Tradeoff (documented): incoming packets have not yet been
     # validated/echoed by the server — cross-check with RCON if needed.
     if @options[:server]
-      unless @host_ips.include?(dst_ip)
+      unless @host_ip_keys.key?(dst_ip)
         @stats[:outgoing_skipped] += 1
         # S→C sync actions are not the leave signal; the server broadcasts a
         # player_leave_game (wire 248) input action inside a tick closure.
@@ -570,9 +576,9 @@ class FactorioPacketTools
         end
         return
       end
-    elsif (client_ips = @options[:host_ips].to_a).any?
+    elsif @host_ip_keys.any?
       # Client mode: only packets FROM our game (the `ip:` setting).
-      return unless client_ips.include?(src_ip)
+      return unless @host_ip_keys.key?(src_ip)
     end
 
     parsed = FactorioProtocol.parse_udp_payload(udp_data)
@@ -599,7 +605,7 @@ class FactorioPacketTools
           # heartbeat action below.
           @ip_names[src_ip] = [cc[:username], false]
           ts_str = Time.at(ts).strftime('%H:%M:%S.%L')
-          puts "#{ts_str}  #{cc[:username]} connected (from #{src_ip})"
+          puts "#{ts_str}  #{cc[:username]} connected (from #{PcapFormat.ip_string(src_ip)})"
         else
           @self_ip = src_ip
           @self_name = cc[:username]
@@ -1579,13 +1585,12 @@ class FactorioPacketTools
   # other is the server; fall back to plain "client" otherwise.
   def ensure_pcap_writer(src_ip, dst_ip)
     return unless @pending_capture
-    local = Array(@options[:host_ips])
-    server_ip = if local.include?(src_ip)
+    server_ip = if @host_ip_keys.key?(src_ip)
       dst_ip
-    elsif local.include?(dst_ip)
+    elsif @host_ip_keys.key?(dst_ip)
       src_ip
     end
-    id = server_ip ? "client-#{server_ip}" : 'client'
+    id = server_ip ? "client-#{PcapFormat.ip_string(server_ip)}" : 'client'
     path = capture_path(@pending_capture, id)
     @pcap_writer = new_pcap_writer(path)
     @pending_capture = nil
