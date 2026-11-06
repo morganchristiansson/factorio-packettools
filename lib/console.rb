@@ -103,8 +103,8 @@ class Console
           /try MODEL [MESSAGE]         one-off dry-run with a configured model — not persisted, not sent to game
           /compact                     distill session into memory, then start fresh
           /simulate NAME LANG MSG      test the translation backend with MSG in LANG
-          /locales                     list per-player language overrides
-          /locales NAME LANG[,...]     set a player's languages (- clears) e.g. /locales KrlosUltimate en,pt
+          /locales                     list per-player locale overrides
+          /locales NAME LANG           set a player's single locale (- clears) e.g. /locales KrlosUltimate en
       HELP
     when '/players'
       names = @host.online_players
@@ -179,23 +179,30 @@ class Console
       elsif parts[1].nil?
         # bare /locales: list every override
         all = @player_db.all_locale_overrides
-        puts all.empty? ? 'no locale overrides' : all.map { |n, l| "#{n}: #{l.join(',')}" }.join("\n")
+        puts all.empty? ? 'no locale overrides' : all.map { |n, l| "#{n}: #{l}" }.join("\n")
       elsif parts[2].nil?
         # /locales NAME: show the override
-        langs = @player_db.locale_overrides(parts[1])
-        puts langs.to_a.empty? ? "#{parts[1]}: no override (game locale used)" : "#{parts[1]}: #{langs.join(',')}"
+        locale = @player_db.locale_override(parts[1])
+        puts locale ? "#{parts[1]}: #{locale}" : "#{parts[1]}: no override (game locale used)"
       else
-        # /locales NAME en,pt   or   /locales NAME - (clear)
+        # /locales NAME LANG   or   /locales NAME - (clear). ONE locale per
+        # player; a comma-separated value keeps its first language (the old
+        # multi-language syntax), so an operator's muscle memory still lands
+        # on a valid single selection. With the translation plugin loaded the
+        # selection is mirrored into the game's storage.locale too.
+        translation = plugins[:translation]
         if parts[2] == '-'
-          @player_db.set_locale_overrides(parts[1], [])
+          translation ? translation.set_locale(parts[1], nil) : @player_db.set_locale_override(parts[1], nil)
           puts "/locales #{parts[1]}: cleared"
         else
-          langs = parts[2..].join(',').split(',').filter_map { |l|
-            b = l.split('-').first&.downcase&.strip
-            b unless b.empty?
-          }.uniq
-          @player_db.set_locale_overrides(parts[1], langs)
-          puts "/locales #{parts[1]}: #{langs.join(',')}"
+          locale = parts[2].split(',').first
+          selected = if translation
+                       translation.set_locale(parts[1], locale)
+                     else
+                       @player_db.set_locale_override(parts[1], locale)
+                       @player_db.locale_override(parts[1])
+                     end
+          puts "/locales #{parts[1]}: #{selected || 'cleared'}"
         end
       end
     when '/compact'

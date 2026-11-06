@@ -26,10 +26,11 @@ backend: argos
 # Equivalent env override (wins over the value above):
 #   GOOGLE_TRANSLATE_API_KEY=... sudo ruby factorio-packettools.rb
 
-# Locales to translate between. 'en' is always the pivot
-# (translation target) — English speakers get relayed to other
-# whitelisted readers. Translation occurs between all listed
-# locales when players using them are online.
+# Languages the plugin translates between. A player's ONE locale — the
+# scenario's selection (if configured below), else the game default
+# LuaPlayer.locale — must be in this list for their chat and relay to be
+# translated. Translation is direct between any two listed locales (no pivot
+# required).
 whitelist:
   - en
   - pt
@@ -37,3 +38,21 @@ whitelist:
 
 # Minimum seconds between translations of the same player (anti-spam).
 min_interval: 2
+
+# OPTIONAL — scenario-specific locale GUI integration. Omit this block when
+# the scenario keeps no per-player locale selection table and logs no locale
+# event; then players-locale.json + /locales are the only source, and nothing
+# under `storage` is read or written.
+#
+# storage_key: the table under scenario `storage` holding ONE locale per
+#   player name, e.g. `locale` for storage.locale = {["Alice"]="pl"}.
+#   Read at startup and written by /locales. The name-keyed
+#   players-locale.json is the durable copy: entries
+#   missing from the current save's table are written back, so a new save
+#   does not lose them.
+# event: the factorio-current.log event the GUI prints when a player
+#   selects/clears a locale, in the scenario's common format:
+#   `event=<event>, actor=<name>, locale=<code>` (locale=nil clears).
+# scenario_locale:
+#   storage_key: locale
+#   event: locale-selected

@@ -17,13 +17,15 @@ require 'json'
 #       the data is re-seeded from RCON anyway, so a knob buys nothing).
 #       Pass nil to PlayerDatabase.new for an in-memory DB (tests/pcap).
 #
-#   players-locale.json    {"<name>": ["en", "pt"], ...}
-#       Per-player LANGUAGE OVERRIDES, keyed by NAME (stable across
-#       sessions). A player's effective readable languages = their Factorio
-#       locale plus these. Players like KrlosUltimate (pt-BR interface, but
-#       actually English) get an entry here so the translation agent stops
-#       translating for them. Set via the /locales console command — and by
-#       the agent itself once players can self-set locales.
+#   players-locale.json    {"<name>": "pl", ...}
+#       Per-player LOCALE OVERRIDES, keyed by NAME (stable across
+#       sessions). ONE locale per player, REPLACING the game's default
+#       (LuaPlayer.locale) wherever the game does not carry it — an absent
+#       entry means "use the game default". Set by the scenario's in-game
+#       locale GUI (its `event=locale-selected` log line) and by the
+#       /locales console command; the translation agent relays chat into
+#       this locale. The game's `storage.locale` is the authoritative copy,
+#       read once at startup (see Translation#on_start).
 #
 # Locale is a property of the account, not the current game session index.
 #
@@ -37,9 +39,9 @@ require 'json'
 #               remove_other_entries_for) racing a concurrent key-add
 #               raises "can't add a new key into hash during iteration",
 #               and two concurrent saves race on the same .tmp file.
-#   @overrides  stdin thread (set_locale_overrides) today; the agent will
-#               write it too once players self-set locales — same lock.
-# Single-key READS (lookup / id_for / get_locale / locale_overrides)
+#   @overrides  stdin thread (set_locale_override) and the log-tailer
+#               thread (the locale GUI's event line) mutate it — same lock.
+# Single-key READS (lookup / id_for / get_locale / locale_override)
 # are lock-free: they're atomic under the GVL.
 class PlayerDatabase
   DEFAULT_CACHE_BASENAME = 'players-cache.json'
@@ -59,7 +61,7 @@ class PlayerDatabase
     @mutex = Mutex.new  # hash mutations + disk writes (see header)
     @players = {}  # id -> {name:, locale:, admin:, quickbar:, quickbar_page:}
     @id_by_name = {}  # name -> id
-    @overrides = {}  # name -> [lang, ...]
+    @overrides = {}  # name -> locale (single base code)
     # load runs at construction (single thread, before any capture/agent
     # threads exist) — no lock needed.
     load if @path && File.exist?(@path)
@@ -378,36 +380,55 @@ class PlayerDatabase
     @players.dig(id.to_i, :quickbar)
   end
 
-  # ── Language overrides (players-locale.json, keyed by NAME) ────────
+  # ── Locale override (players-locale.json, keyed by NAME) ───────────
 
-  # Override a player's FACTORIO locale with extra languages they read
-  # without translation (e.g. ["en"] for a pt-BR-interface player who
-  # actually writes English). Empty/nil clears the entry. Languages are
-  # normalized to short base codes ("pt-BR" -> "pt"). Persisted atomically.
-  def set_locale_overrides(name, langs)
+  # Set the player's SELECTED locale: ONE language that replaces the game's
+  # default (LuaPlayer.locale) for translation. nil/empty clears the entry
+  # (back to the game default). Normalized to a short base code ("pt-BR" ->
+  # "pt") like the rest of the codebase. Persisted atomically.
+  def set_locale_override(name, locale)
     name = clean(name)
     return if name.nil?
+    lang = normalize_lang(locale)
     @mutex.synchronize do
-      langs = normalize_langs(langs)
-      if langs.empty?
+      if lang.nil?
         next unless @overrides.key?(name)
         @overrides.delete(name)
       else
-        next if @overrides[name] == langs
-        @overrides[name] = langs
+        next if @overrides[name] == lang
+        @overrides[name] = lang
       end
       persist_overrides
     end
   end
 
-  # A player's stored language overrides (array of base codes) or nil.
-  def locale_overrides(name)
+  # The player's selected locale (base code) or nil when the game default
+  # should be used.
+  def locale_override(name)
     @overrides[clean(name)]
   end
 
-  # All overrides as {name -> [langs]} (for the /locales console list).
+  # All overrides as {name -> locale} (for the /locales console list).
   def all_locale_overrides
     @mutex.synchronize { @overrides.dup }
+  end
+
+  # Replace the WHOLE override map from the game's `storage.locale` (the
+  # authoritative copy written by the in-game locale GUI). Missing names are
+  # players back on the game default, so they are cleared. Persists only when
+  # something actually changed.
+  def replace_locale_overrides(locales)
+    normalized = {}
+    (locales || {}).each do |name, locale|
+      n = clean(name)
+      l = normalize_lang(locale)
+      normalized[n] = l if n && l
+    end
+    @mutex.synchronize do
+      next if @overrides == normalized
+      @overrides = normalized
+      persist_overrides
+    end
   end
 
   private
@@ -436,11 +457,9 @@ class PlayerDatabase
     lang.to_s.split('-').first&.downcase&.strip || ''
   end
 
-  def normalize_langs(langs)
-    Array(langs).filter_map { |l|
-      b = base_lang(l)
-      b.empty? ? nil : b
-    }.uniq
+  def normalize_lang(lang)
+    b = base_lang(lang)
+    b.empty? ? nil : b
   end
 
   def load
@@ -497,7 +516,7 @@ class PlayerDatabase
   def persist_overrides
     return unless @locales_path
     safe = {}
-    @overrides.each { |n, langs| safe[clean(n)] = langs if n && !langs.empty? }
+    @overrides.each { |n, locale| safe[clean(n)] = locale if n && locale && !locale.empty? }
     tmp = "#{@locales_path}.tmp"
     File.write(tmp, JSON.pretty_generate(safe))
     File.rename(tmp, @locales_path)
@@ -511,8 +530,10 @@ class PlayerDatabase
     @overrides = raw.each_with_object({}) { |(k, v), h|
       k = clean(k)
       next unless k
-      langs = normalize_langs(v)
-      h[k] = langs unless langs.empty?
+      # Legacy files held an ARRAY of languages; the model is one locale per
+      # player now, so keep the first.
+      lang = normalize_lang(v.is_a?(Array) ? v.first : v)
+      h[k] = lang if lang
     }
   rescue JSON::ParserError, TypeError
     @overrides = {}

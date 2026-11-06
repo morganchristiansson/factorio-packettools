@@ -168,11 +168,10 @@ class FactorioPacketTools
     # outside any mode block: the packet path emits on_player_color in
     # every mode (pcap replay included), so @plugins must always exist.
     # Every listed name is a feature: PluginSet builds it lazily on the
-    # first event/access. Hivemind's sniffer-specific bits — its live tick
-    # provider and the sniffer's own plugin list (for the tool gate) — are
-    # handed down as the feature's constructor kwargs via the args: slot.
+    # first event/access. Hivemind's live tick provider is handed down as
+    # the feature's constructor kwargs via the args: slot.
     listed = Array(options[:plugins]).map { |n| n.to_s.to_sym }
-    @plugins = Plugins::PluginSet.new(listed, self, args: {hivemind: {current_tick: -> { @game_tick }, sniffer_plugins: options[:plugins]}})
+    @plugins = Plugins::PluginSet.new(listed, self, args: {hivemind: {current_tick: -> { @game_tick }}})
     # Interactive filters + command surface. The packet host only asks the
     # filter; plugin commands stay in the console for now.
     @console = Console.new(self, player_db: @player_db, plugins: -> { @plugins },
@@ -323,8 +322,9 @@ class FactorioPacketTools
   # A new line from the server's factorio-current.log. Tailed by a single
   # host-owned thread (#start_log_watcher, NOT by the features) and fanned
   # out to every consumer over the plugin bus: action_validator (its
-  # /toggle-action-logging join) and the Hivemind agent's logwatcher
-  # (scenario `event=` lines). One reader thread on the inode, N consumers —
+  # /toggle-action-logging join), the Hivemind agent's logwatcher
+  # (scenario `event=` lines) and the translation plugin (the locale GUI's
+  # `event=locale-selected`). One reader thread on the inode, N consumers —
   # replacing the old design where each feature spawned its own LogTail. The
   # tailer thread only calls this; handlers are cheap, so it never blocks the
   # capture loop (which never reads the log).
@@ -438,16 +438,20 @@ class FactorioPacketTools
 
   # The single host-owned tailer for factorio-current.log: one LogTail thread
   # reads the file once and emits each new line to the plugin bus (:on_log_line),
-  # so action_validator and the agent's logwatcher share ONE reader instead of
-  # each tailing the inode. Path: explicit `log_path:` config, else auto-detected
+  # so action_validator, the agent's logwatcher and the translation plugin
+  # (the locale GUI's `event=locale-selected` line) share ONE reader instead
+  # of each tailing the inode. Path: explicit `log_path:` config, else
+  # auto-detected
   def log_consumers?
     @plugins.enabled?(:action_validator) ||
-      (@plugins.enabled?(:hivemind) && (@plugins[:hivemind].plugins[:logwatcher] rescue nil))
+      (@plugins.enabled?(:hivemind) && (@plugins[:hivemind].plugins[:logwatcher] rescue nil)) ||
+      (@plugins.enabled?(:translation) && (@plugins[:translation]&.enabled rescue nil))
   end
 
   # The single host-owned tailer for factorio-current.log: one LogTail thread
   # reads the file once and emits each new line to the plugin bus (:on_log_line),
-  # fanned to every consumer (action_validator, hivemind logwatcher). Runs ONLY
+  # fanned to every consumer (action_validator, hivemind logwatcher, the
+  # translation plugin's locale events). Runs ONLY
   # for live capture — -r replay is offline, so it never tails the log (offline
   # validation against the log is tools/validate_actions.rb). Resolved path
   # cached on the same ivar so a re-check reads the same file instead of
@@ -463,7 +467,7 @@ class FactorioPacketTools
       rescue StandardError => e
         warn "[log] tail thread died: #{e.class}: #{e.message}"
       end
-      puts "[log] tailing #{path} — feeding log-line consumers (action_validator, logwatcher)"
+      puts "[log] tailing #{path} — feeding log-line consumers (action_validator, logwatcher, translation locales)"
     else
       warn "[log] no factorio-current.log found (set log_path: in config.yaml) — log-line consumers idle"
     end

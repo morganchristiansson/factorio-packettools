@@ -164,26 +164,41 @@ Ctrl-C needed) to filter the console output:
 /filter                    show current filter state
 /players                   list online players
 /stats                     session summary
-/locales                   list per-player language overrides
-/locales NAME en,pt        set a player's languages (e.g. pt-BR interface
-                           but actually English: /locales somePlayer en,pt)
-/locales NAME -            clear a player's languages
+/locales                   list per-player locale overrides
+/locales NAME LANG         set a player's single locale (e.g. pt-BR
+                           interface but actually English:
+                           /locales somePlayer en)
+/locales NAME -            clear a player's locale (back to game default)
 /help                      list commands
 ```
 
-- Language overrides are persisted to `players-locale.json` (name-keyed,
-  unlike the id-keyed `players-cache.json`) and steer the translation
-  agent: a player's effective languages = Factorio locale + overrides, so
-  an `en` override stops their messages being translated and stops them
-  receiving relay lines for English/pt/ru messages they already read.
+- The locale override is ONE language per player and is persisted to
+  `players-locale.json` (name-keyed, unlike the id-keyed
+  `players-cache.json`). It REPLACES the Factorio default locale for that
+  player: their chat is treated as written in the selected language and
+  relay translations target it. An absent entry means the game's own
+  `LuaPlayer.locale` is used.
+- Scenario locale GUI integration is OPTIONAL (`config-translation.yaml`
+  `scenario_locale:`), because the storage table and log event belong to the
+  scenario, not the game:
+  - `storage_key` (e.g. `locale` for the scenario's `storage.locale`) is
+    read at startup and written by `/locales`.
+  - `event` (e.g. `locale-selected`) enables the live
+    `event=<event>, actor=<name>, locale=<code>` log line (`locale=nil`
+    clears back to the default).
+  Omit either key to disable that half; omit the block entirely for a
+  scenario with no locale GUI, and nothing under `storage` is touched.
+- `players-locale.json` is the durable, name-keyed copy (same cross-save
+  lifetime as `players-backup.json`). At startup the scenario table wins
+  for the players it names, and names it lacks are written back into it —
+  so a fresh save starts with an empty table and does not lose selections.
+  A scenario query that returns no table (`null`) leaves the file untouched.
   The translation agent itself is the `translation` plugin (config.yaml
   `plugins:`; see docs/ai-agent.md). Its config (config-translation.yaml) is
   required while it is on — `backend`, `whitelist`, `min_interval` all have
   no code defaults, and a backend that can't run (no argos binary or packs, a
   Google key missing) is a startup error reported as
   `[translate] Translation agent disabled: …`, never a silent no-op. The
-  Hivemind agent can set the same overrides itself with `set_player_languages`
-  — a Hivemind tool only offered while the translation plugin is loaded.
 
 - Chat (`write_to_console`) is **always printed and exempt from all
   filters** — including the agent's decoded chat feed.

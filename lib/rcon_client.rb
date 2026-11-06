@@ -131,6 +131,49 @@ class RconClient
     self.class.parse_player_attrs(json_query(PLAYER_ATTRS_FILENAME, PLAYER_ATTRS_WRITE_LUA, PLAYER_ATTRS_PRINT_LUA))
   end
 
+  # Per-player locale selection from a scenario table (default
+  # `storage.locale`), keyed by player NAME, ONE locale per player
+  # (nil/absent = use the game default). The scenario's locale GUI writes
+  # this table; the table key is configurable because not every scenario has
+  # one (config-translation.yaml `scenario_locale.storage_key`). `null`
+  # (JSON nil) means the scenario keeps no such table — the caller keeps its
+  # cached overrides instead of clearing them.
+  LOCALES_FILENAME = 'factorio-packettools-locales.json'
+  LOCALES_READ_LUA =
+    'local s=storage and storage[%s] if type(s)=="table" then ' \
+    'local t={} for n,v in pairs(s) do if type(v)=="string" and v~="" then t[n]=v end end '
+  LOCALES_WRITE_LUA = LOCALES_READ_LUA +
+                      "helpers.write_file(#{LOCALES_FILENAME.inspect}, helpers.table_to_json(t), false, 0) " \
+                      'else helpers.write_file(' + LOCALES_FILENAME.inspect + ', "null", false, 0) end'
+  LOCALES_PRINT_LUA = LOCALES_READ_LUA +
+                      'rcon.print(helpers.table_to_json(t)) else rcon.print("null") end'
+
+  # {name => locale} or nil when the query failed / the scenario keeps no
+  # selection table. `key` is the table name under `storage`.
+  def player_locales(key = 'locale')
+    parsed = self.class.parse_json(json_query(LOCALES_FILENAME,
+                                              format(LOCALES_WRITE_LUA, locales_key_lua(key)),
+                                              format(LOCALES_PRINT_LUA, locales_key_lua(key))))
+    return nil unless parsed.is_a?(Hash)
+    parsed.each_with_object({}) do |(name, locale), out|
+      text = locale.to_s.strip
+      out[name.to_s] = text unless name.to_s.empty? || text.empty?
+    end
+  end
+
+  # Write one player's selection into the scenario table (default
+  # storage.locale), so an operator / Hivemind selection survives the
+  # startup sync. nil/empty clears the key (game default).
+  def set_player_locale(name, locale, key = 'locale')
+    player = name.to_s.strip
+    return false if player.empty?
+    value = locale.to_s.strip
+    assigned = value.empty? ? 'nil' : "\"#{lua_quote(value)}\""
+    table = "storage[#{locales_key_lua(key)}]"
+    execute(%(do #{table} = #{table} or {} #{table}["#{lua_quote(player)}"] = #{assigned} end))
+    true
+  end
+
   # The SAME dump with every player's whole quickbar attached, read in ONE
   # command. This is the player_backup feature's startup snapshot: its
   # join-time query only ever sees whoever joins AFTER we start, so without
@@ -337,6 +380,13 @@ class RconClient
   # Reconnects once on failure, same as #execute.
   def command(cmd)
     run_command(cmd)
+  end
+
+  # A Lua string literal naming a storage table key ("locale" ->
+  # "\"locale\""), quoted like every other value so a config key cannot
+  # break out of the string.
+  def locales_key_lua(key)
+    "\"#{lua_quote(key.to_s)}\""
   end
 
   # Lua double-quoted string escaping shared by #say, #set_player_tag, and Translation:

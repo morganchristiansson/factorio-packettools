@@ -411,7 +411,7 @@ class TestServerMode < Minitest::Test
     # verified live). A non-zero index writes to that player's CLIENT and via
     # /sc runtime is skipped entirely. Guard: every write_file call's LAST
     # argument must be 0 (or absent).
-    %w[PLAYER_ATTRS_WRITE_LUA DUMP_PROTOTYPES_LUA].each do |const_name|
+    %w[PLAYER_ATTRS_WRITE_LUA DUMP_PROTOTYPES_LUA LOCALES_WRITE_LUA].each do |const_name|
       lua = RconClient.const_get(const_name).to_s
       # Match each helpers.write_file call, allowing one nested paren level
       # (e.g. helpers.table_to_json(t), table.concat(o,"\n")).
@@ -507,6 +507,49 @@ class TestServerMode < Minitest::Test
     sr3.send(:load_roster)              # one query
     sr3.send(:load_player_attrs)        # reuses the dump, no second query
     assert_equal 1, queries, 'load_player_attrs reuses the roster dump (no second query)'
+  end
+
+  # storage.locale is the scenario's authoritative single-locale selection
+  # (written by the in-game GUI): a name => locale map. JSON null means the
+  # scenario keeps no such table — the caller keeps its cache.
+  def test_player_locales_reads_storage_locale
+    rcon = RconClient.allocate
+    rcon.instance_variable_set(:@script_output_dir, nil)
+
+    rcon.stubs(:execute).returns('{"Alice":"pl","Bob":"pt-BR"}')
+    assert_equal({ 'Alice' => 'pl', 'Bob' => 'pt-BR' }, rcon.player_locales)
+
+    rcon.stubs(:execute).returns('{}')
+    assert_equal({}, rcon.player_locales, 'a present but empty selection table is authoritative')
+
+    rcon.stubs(:execute).returns('null')
+    assert_nil rcon.player_locales, 'no storage.locale table means "keep the cache"'
+
+    commands = []
+    rcon.stubs(:execute).with { |cmd| commands << cmd; true }.returns('{"Alice":"pl"}')
+    assert_equal({ 'Alice' => 'pl' }, rcon.player_locales('ui/lang'))
+    assert_includes commands.last, 'storage["ui/lang"]'
+  end
+
+  # An operator / Hivemind selection is mirrored into the scenario table so
+  # the startup sync (and the in-game GUI) see it. nil clears the key. The
+  # table key is configurable (default "locale").
+  def test_set_player_locale_writes_storage
+    rcon = RconClient.allocate
+    commands = []
+    rcon.stubs(:execute).with { |cmd| commands << cmd; true }.returns('')
+
+    assert rcon.set_player_locale('ali"ce', 'pl')
+    assert_includes commands.last, 'storage["locale"] = storage["locale"] or {}'
+    assert_includes commands.last, 'storage["locale"]["ali\\"ce"] = "pl"'
+
+    rcon.set_player_locale('Alice', nil)
+    assert_includes commands.last, 'storage["locale"]["Alice"] = nil'
+
+    rcon.set_player_locale('Alice', 'de', 'ui/lang')
+    assert_includes commands.last, 'storage["ui/lang"]["Alice"] = "de"'
+
+    refute rcon.set_player_locale('', 'pl'), 'no name means no command'
   end
 
   # ── Test 7: capture filters (keepalives, directions, full-capture) ────
@@ -1038,11 +1081,12 @@ class TestServerMode < Minitest::Test
     end
 
     # Concurrent writers: the capture thread (add), the join-enrichment
-    # thread (set_locale_by_id / replace_quickbar) and the console thread
-    # (set_locale_overrides) all mutate the hashes — the mutex must serialize
-    # mutations + disk writes (an @players.each racing a key-add raises
-    # "can't add a new key into hash during iteration"; two saves race on the
-    # same .tmp file). Ten rounds of interleaved writers, then verify state.
+    # thread (set_locale_by_id / replace_quickbar) and the console/log
+    # threads (set_locale_override) all mutate the hashes — the mutex must
+    # serialize mutations + disk writes (an @players.each racing a key-add
+    # raises "can't add a new key into hash during iteration"; two saves race
+    # on the same .tmp file). Ten rounds of interleaved writers, then verify
+    # state.
     Dir.mktmpdir do |dir|
       path = File.join(dir, 'players-cache.json')
       cdb = PlayerDatabase.new(path)
@@ -1050,7 +1094,7 @@ class TestServerMode < Minitest::Test
       threads = [
         Thread.new { 100.times { |i| cdb[100 + i] = {name: "capture#{i}"} } },
         Thread.new { 100.times { |i| cdb.set_locale_by_id(1, "pt-BR") } },
-        Thread.new { 100.times { |i| cdb.set_locale_overrides("bob#{i}", ['en', 'pt']) } },
+        Thread.new { 100.times { |i| cdb.set_locale_override("bob#{i}", i.even? ? 'en' : 'pt') } },
       ]
       threads.each(&:value)
       reloaded = PlayerDatabase.new(path)

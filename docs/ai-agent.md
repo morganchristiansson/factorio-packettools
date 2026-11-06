@@ -422,16 +422,6 @@ registration made once on a chat lasts for every ask (see
 - **`CancelFollowUp`** (`cancel_followup(name:)`) — cancels a pending
   follow-up by its NAME (like `clearTimeout`); a name that already fired or
   was cancelled errors. Same plugin as above.
-- **`SetPlayerLanguages`** (`set_player_languages(player:, languages:)`) —
-  sets a player's language overrides (`players-locale.json`, the same data
-  `/locales` writes and the translation agent relays chat for). A player's
-  Factorio interface locale is often not the language they read chat in, and
-  the model can now ask for the override itself instead of an operator
-  running `/locales`. Empty value clears it; unknown names error. It is a
-  Hivemind tool, but gated on the **translation** plugin (`config.yaml
-  `plugins:`): without translation there is nothing for the override to
-  steer, so the model is never offered it.
-
 Future candidates (same pattern):
 
 - `item_lookup` / `entity_lookup` — map wire prototype IDs to names via
@@ -452,8 +442,9 @@ In server mode the SNIFFER (host) tails the running server's
 `FactorioPacketTools#start_log_watcher` (path auto-detected from
 `/proc/<pid>/cwd` of the factorio process, fallback `~/factorio`, or
 `log_path:` in config.yaml) and emits each new line on the plugin bus as
-`:on_log_line` — reaching `action_validator` directly and the agent's
-`logwatcher` sub-feature via `Hivemind#on_log_line`. There is one
+`:on_log_line` — reaching `action_validator` directly, the agent's
+`logwatcher` sub-feature via `Hivemind#on_log_line`, and the translation
+plugin's locale GUI events. There is one
 reader thread on the inode regardless of how many consumers subscribe.
 Lines carrying a key in the scenario common format `event=<name>, k=v, ...` (player-died,
 map-reset, research-finished, evo-stage, apex-spitter, artillery-target,

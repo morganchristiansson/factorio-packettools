@@ -12,8 +12,7 @@ end
 require_relative 'memory_store'
 require_relative 'factorio_protocol/disconnect_reason'
 # RubyLLM tool classes (HivemindReply, RconQuery, SetPlayerTag,
-# ScheduleFollowUp, CancelFollowUp, SetPlayerLanguages) live in
-# hivemind_tools.rb.
+# ScheduleFollowUp, CancelFollowUp) live in hivemind_tools.rb.
 require_relative 'hivemind_tools'
 require_relative 'hivemind_prompts'
 require_relative 'agent_events'
@@ -226,11 +225,10 @@ class Hivemind
     false
   end
 
-  # sniffer_plugins: the SNIFFER's list (config.yaml `plugins:`) — the agent
-  # consults it for the features it hooks (translation gates the
-  # set_player_languages tool). Its OWN list is config-hivemind.yaml.
+  # Its OWN feature list is config-hivemind.yaml; the sniffer's features are
+  # not consulted here.
   def initialize(owner = nil, rcon: nil, attrs: nil, current_tick: nil, player_db: nil,
-                 sniffer_plugins: nil, memory_dir: nil, config_file: CONFIG_FILE)
+                 memory_dir: nil, config_file: CONFIG_FILE)
     # A plugin FEATURE (built by PluginSet as Hivemind.new(owner)): the
     # owner is the sniffer, which provides rcon/attrs/player_db and publishes
     # replies through publish_chat. The kwargs stay for the tests that build
@@ -240,7 +238,6 @@ class Hivemind
     @rcon = rcon || owner&.rcon
     raise 'Hivemind needs RCON (server mode) — game.print replies and join queries require it' unless @rcon
 
-    @sniffer_plugins = Array(sniffer_plugins).map { |n| n.to_s.to_sym }
     @attrs = attrs || owner&.attrs
     @current_tick = current_tick || -> { 0 }
     @player_db = player_db || owner&.player_db
@@ -602,10 +599,6 @@ class Hivemind
     plugins[:tags]&.register(chat, @rcon)
     chat.with_tool(ScheduleFollowUp.new(agent: self)) if defined?(ScheduleFollowUp) && plugin?(:followups)
     chat.with_tool(CancelFollowUp.new(agent: self)) if defined?(CancelFollowUp) && plugin?(:followups)
-    # The language tool edits the per-player language overrides the
-    # TRANSLATION plugin relays chat for, so it is only useful (and only
-    # offered) while that plugin is loaded.
-    chat.with_tool(SetPlayerLanguages.new(player_db: @player_db)) if Plugins.enabled?(@sniffer_plugins, :translation)
   end
 
   def ask_llm(player, message)

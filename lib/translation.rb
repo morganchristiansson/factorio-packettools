@@ -27,12 +27,16 @@ class Translation
   # Backend types
   # Available backends: :mock, :argos, :google, :hybrid
 
-  attr_reader :rcon, :enabled, :player_db, :backend, :translation_service, :whitelist
+  # locale_storage_key / locale_event: the OPTIONAL scenario integration
+  # (config-translation.yaml `scenario_locale:`). Both nil = the scenario has
+  # no locale GUI; overrides live only in players-locale.json and /locales.
+  attr_reader :rcon, :enabled, :player_db, :backend, :translation_service, :whitelist,
+              :locale_storage_key, :locale_event
 
   # roster: a callable returning the CURRENT connected players as
   # [{index:, name:}] (the sniffer's live roster). Used by the relay to
   # decide per-player who needs a translated line and address them by game
-  # index — Lua can't see the language overrides, so the decision is made
+  # index — Lua can't see the locale overrides, so the decision is made
   # here and Lua just prints to the computed indexes.
   # google_api_key/argos_path/backend/config_file are injection points for
   # tests (and the key for ops); everything else comes from the config file.
@@ -62,6 +66,16 @@ class Translation
     @whitelist = trans_config.fetch('whitelist').map { |l| l.to_s.downcase }.to_set
     # Minimum interval between translations for the same player (anti-spam)
     @min_interval = trans_config.fetch('min_interval').to_f
+    # Scenario locale integration is OPTIONAL and scenario-specific: the
+    # table under `storage` and the log event name are not the same in every
+    # scenario. Omitted keys disable that half (storage sync or live events);
+    # with both absent, players-locale.json / /locales are the only truth.
+    scenario = trans_config['scenario_locale'] || {}
+    @locale_storage_key = scenario['storage_key'].to_s.strip
+    @locale_storage_key = nil if @locale_storage_key.empty?
+    @locale_event = scenario['event'].to_s.strip
+    @locale_event = nil if @locale_event.empty?
+    @locale_event_regex = /\Aevent=#{Regexp.escape(@locale_event)}\b,\s*actor=(.+?),\s*locale=([^,]*)/i if @locale_event
     @roster = roster || -> { owner&.attrs&.roster_pairs || [] }
 
     # A backend we cannot actually run is a startup error, not a silent
@@ -111,13 +125,14 @@ class Translation
     player = @player_db.lookup(player_id)
     return [true, nil] if player.nil? || player.empty? || player.start_with?('Player_')
 
-    # The player's languages: Factorio locale (base) + /locales overrides.
-    # The speaker's MESSAGE language: their base Factorio locale.
-    langs = languages(player)
-    return [true, nil] if langs.empty?
-    locale = @player_db.get_locale(player_id)
-    msg_lang = base(locale)
-    return [true, nil] unless whitelisted?(msg_lang)
+    # The player's effective locale: their GUI-selected override (one
+    # locale, set by the in-game GUI or /locales) or the game default
+    # (LuaPlayer.locale, cached in players-cache.json). The override also
+    # defines the language of the MESSAGE they write.
+    locale = effective_locale(player, player_id)
+    return [true, nil] if locale.nil?
+    return [true, nil] unless whitelisted?(locale)
+    msg_lang = locale
 
     # Rate limit per player (anti-spam: each message costs one argos run per
     # target locale).
@@ -129,11 +144,11 @@ class Translation
     announce_translation(player, msg_lang) unless @announced_players.include?(player)
 
     # Relay IN GAME to everyone who can't read the original: decided per
-    # player in Ruby (locale + overrides), one Lua pass over
-    # game.connected_players (the live roster) printing each computed
-    # index's text. Each reader gets their language via direct translation.
-    # Only the translations actually sent are echoed to the console — the
-    # original chat is already printed by the sniffer.
+    # player in Ruby (their one selected locale, else the game default), one
+    # Lua pass over game.connected_players (the live roster) printing each
+    # computed index's text. Each reader gets their language via direct
+    # translation. Only the translations actually sent are echoed to the
+    # console — the original chat is already printed by the sniffer.
     relayed = relay_to_others(player, msg_lang, message)
     unless relayed.empty?
       ts = Time.now.strftime('%H:%M:%S')
@@ -152,8 +167,81 @@ class Translation
     @translation_service.translate(message, source_lang: msg_lang, target_lang: 'en')
   end
 
+  # Apply an operator/model locale selection for this run AND, when the
+  # scenario integration is configured, write it into the scenario table the
+  # GUI reads. Returns the normalized locale, or nil when cleared.
+  def set_locale(name, locale)
+    @player_db.set_locale_override(name, locale)
+    stored = @player_db.locale_override(name)
+    if @locale_storage_key && @rcon.respond_to?(:set_player_locale)
+      @rcon.set_player_locale(name, stored, @locale_storage_key)
+    end
+    stored
+  rescue StandardError => e
+    warn "[translation] locale write failed: #{e.class}: #{e.message}"
+    @player_db.locale_override(name)
+  end
+
+  # Startup (host :on_start): when the scenario has a locale table, merge it
+  # over the name-keyed players-locale.json cache. `players-locale.json` is
+  # the durable copy (same cross-save lifetime as players-backup.json), so
+  # selections the current save's table does not have are written back — a
+  # new save starts with an empty table and must not drop them. A nil query
+  # (no such table / failure) keeps the cache untouched.
+  def on_start
+    sync_locales_from_game
+  end
+
+  # One line from the host's factorio-current.log tailer (:on_log_line). The
+  # scenario's locale GUI emits `<event>, actor=<name>, locale=<code>`
+  # (locale=nil means "game default"), so the selection is applied directly
+  # from the event — no RCON round trip. Only configured event names match;
+  # the line may carry Factorio's timestamp/script decoration.
+  def on_log_line(line)
+    return unless @enabled && @locale_event_regex
+    actor, locale = parse_locale_event(line)
+    return if actor.nil?
+    @player_db.set_locale_override(actor, locale)
+  end
+
   # Enable/disable translation at runtime (no background threads to manage)
   private
+
+  # -> [actor, locale-or-nil] for the configured locale event, [nil, nil]
+  # otherwise. A nil/empty/"nil" locale clears the override (game default).
+  def parse_locale_event(line)
+    text = line.to_s.sub(/\A\s*[\d.]+\s+(?:Script\s+\S+:\s*)?/, '')
+    match = @locale_event_regex.match(text.strip)
+    return [nil, nil] unless match
+    actor = match[1].strip
+    return [nil, nil] if actor.empty?
+    locale = match[2].strip
+    locale = nil if locale.empty? || locale.casecmp?('nil')
+    [actor, locale]
+  end
+
+  # Read the scenario table (one locale per player name) and merge it over
+  # the cached overrides. Moves the cache's own entries back into the
+  # scenario table, so a fresh save (empty table) gets them back. nil means
+  # the query itself failed / the scenario has no table — keep the cache.
+  def sync_locales_from_game
+    return unless @enabled && @locale_storage_key && @rcon.respond_to?(:player_locales)
+    locales = @rcon.player_locales(@locale_storage_key)
+    return if locales.nil?
+    local = @player_db.all_locale_overrides
+    @player_db.replace_locale_overrides(local.merge(locales))
+    # ponytail: a reset-to-default made while the sniffer was down looks the
+    # same as a fresh save's missing key, so it gets restored. Live resets
+    # (the configured event) and the whole-table case are exact; add
+    # player_backup-style save detection here only if that distinction matters.
+    missing = local.reject { |name, _| locales.key?(name) }
+    unless missing.empty?
+      missing.each { |name, locale| @rcon.set_player_locale(name, locale, @locale_storage_key) }
+      puts "[translate] restored #{missing.size} locale(s) into storage.#{@locale_storage_key}"
+    end
+  rescue StandardError => e
+    warn "[translation] locale sync failed: #{e.class}: #{e.message}"
+  end
 
   # Create translation service based on backend
   # Only ONE backend is ever active per agent — load just that file (the
@@ -179,15 +267,15 @@ class Translation
     end
   end
 
-  # A player's effective languages: [Factorio locale base] + any /locales
-  # overrides. The locale (their interface language) always comes first so
-  # target selection prefers it for relay translations.
-  def languages(name)
-    id = @player_db.id_for(name)
-    locale = id && @player_db.get_locale(id)
-    langs = [base(locale)]
-    langs += @player_db.locale_overrides(name) || []
-    langs.compact.uniq
+  # A player's effective locale: the GUI/console override when present,
+  # otherwise the game default (LuaPlayer.locale cached in players-cache).
+  # ONE locale per player — the override REPLACES the game locale rather
+  # than adding languages to it.
+  def effective_locale(name, id = nil)
+    override = @player_db.locale_override(name)
+    return override if override
+    id ||= @player_db.id_for(name)
+    base(id && @player_db.get_locale(id))
   end
 
   def base(locale)
@@ -203,9 +291,9 @@ class Translation
   end
 
   # Relay the message to every connected player who can't read the
-  # original. The READER decision (per player: locale + overrides) happens
-  # in Ruby; Lua only prints the precomputed text for each player's game
-  # index, still guarded by game.connected_players (offline players are
+  # original. The READER decision (per player: override or game locale)
+  # happens in Ruby; Lua only prints the precomputed text for each player's
+  # game index, still guarded by game.connected_players (offline players are
   # never in the roster and the Lua loop skips drift). One batched Lua:
   #   t = {[2]="[pt>ru] ivan: hi",[5]="[en>pt] bob: ola"}
   #   for _, p in pairs(game.connected_players) do
@@ -222,14 +310,12 @@ class Translation
       name = p[:name]
       index = p[:index]
       next unless name && index
-      reader_langs = languages(name)
-      next if reader_langs.empty?
-      # They already read the original in one of their languages.
-      next if reader_langs.include?(msg_lang)
-      # Pick the first whitelisted language they read (locale first,
-      # then overrides).
-      target = (reader_langs & @whitelist.to_a).first
-      next unless target
+      target = effective_locale(name, index)
+      next if target.nil?
+      # They already read the original.
+      next if target == msg_lang
+      # A locale we do not translate (not whitelisted) cannot be a target.
+      next unless whitelisted?(target)
       text = texts[target] ||= localize(message, target, msg_lang)
       # A whitelisted locale that returned the original text unchanged
       # (missing pack or backend failure) gets skipped — the target

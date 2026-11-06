@@ -37,7 +37,7 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
 
 
 # ── npm global packages ─────────────────────────────────────────────────────
-RUN npm install -g @earendil-works/pi-coding-agent@1.4.0 @opencode/cli@
+RUN npm install -g @earendil-works/pi-coding-agent@1.5.0 @opencode/cli@
 
 # ── Ruby gems ──────────────────────────────────────────────
 # Only bundler here (the bootstrap tool itself); ALL project deps come from

@@ -8,11 +8,12 @@
 # translated output instead of relying on a hand-written pass/fail runner.
 # Argos is only installed on the target server, so the CLI test uses a fake
 # `argos-translate` executable.
-# Run: ruby -Ilib test/translation_agent_test.rb
+# Run: ruby -Ilib test/translation_test.rb
 
 require 'minitest/autorun'
 require 'mocha/minitest'
 require 'tmpdir'
+require 'fileutils'
 require_relative '../factorio-packettools'
 require_relative '../lib/translation'
 require_relative '../lib/translation_argos'
@@ -40,19 +41,32 @@ class TestTranslation < Minitest::Test
 
   def teardown
     @agents.each(&:close_events)
+    FileUtils.remove_entry(@scenario_dir) if @scenario_dir
   end
 
-  def make_agent(backend: :mock, rcon: nil, player_db: PlayerDatabase.new(nil), roster: nil, **kwargs)
+  def make_agent(backend: :mock, rcon: nil, player_db: PlayerDatabase.new(nil), roster: nil,
+                 config_file: TRANSLATION_TEST_CONFIG, **kwargs)
     agent = Translation.new(
       rcon: rcon,
       player_db: player_db,
       backend: backend,
       roster: roster,
-      config_file: TRANSLATION_TEST_CONFIG,
+      config_file: config_file,
       **kwargs
     )
     @agents << agent
     agent
+  end
+
+  # A copy of the example config with the optional scenario locale block on:
+  # the default example leaves it off, so most tests exercise the no-scenario
+  # path and only the integration tests opt in.
+  def scenario_config
+    @scenario_dir ||= Dir.mktmpdir('translation-test')
+    path = File.join(@scenario_dir, 'config-translation.yaml')
+    File.write(path, File.read(TRANSLATION_TEST_CONFIG) +
+                     "\nscenario_locale:\n  storage_key: locale\n  event: locale-selected\n")
+    path
   end
 
   # The unknown-packets writer is injected as a null double: the default is
@@ -93,16 +107,17 @@ class TestTranslation < Minitest::Test
     refute_includes simulate_error, 'NoMethodError'
 
     locales_output, = capture_io do
-      sniffer.handle_command('/locales somePlayer en,pt')
+      sniffer.handle_command('/locales somePlayer en')
       sniffer.handle_command('/locales somePlayer')
       sniffer.handle_command('/locales')
+      sniffer.handle_command('/locales somePlayer en,pt') # old syntax: first wins
     end
-    assert_equal ['en', 'pt'], player_db.locale_overrides('somePlayer')
-    assert_includes locales_output, 'somePlayer: en,pt'
+    assert_equal 'en', player_db.locale_override('somePlayer')
+    assert_includes locales_output, 'somePlayer: en'
     capture_io do
       sniffer.handle_command('/locales somePlayer -')
     end
-    assert_nil player_db.locale_overrides('somePlayer')
+    assert_nil player_db.locale_override('somePlayer')
   end
 
   def test_google_api_key_from_yaml_with_env_override
@@ -292,6 +307,36 @@ class TestTranslation < Minitest::Test
     refute_includes fourth, 'pt-BR'
   end
 
+  # ONE locale per player, and the override REPLACES the game default: it
+  # decides both the language a speaker writes and the language a reader
+  # receives. A reader whose override is English is not sent the pt relay
+  # even though their Factorio interface locale is pt-BR.
+  def test_locale_override_replaces_game_locale_for_speaker_and_reader
+    roster = -> {
+      [{ index: 1, name: 'ivan' }, { index: 2, name: 'bob' },
+       { index: 3, name: 'pedro' }, { index: 4, name: 'alice' },
+       { index: 5, name: 'olga' }]
+    }
+    rcon, commands = command_recorder
+    player_db = PlayerDatabase.new(nil)
+    player_db[1] = {name: 'ivan', locale: 'ru'}
+    player_db[2] = {name: 'bob', locale: 'en'}
+    player_db[3] = {name: 'pedro', locale: 'pt'}
+    player_db[4] = {name: 'alice', locale: 'pt-BR'}
+    player_db[5] = {name: 'olga', locale: 'ru'}
+    player_db.set_locale_override('ivan', 'en')
+    player_db.set_locale_override('alice', 'en')
+    agent = make_agent(rcon: rcon, player_db: player_db, roster: roster)
+
+    capture_io { agent.handle_chat(1, 'hello all') }
+    lua = commands.first
+    assert_includes lua, '[3]="[en>pt] ivan:'
+    assert_includes lua, '[5]="[en>ru] ivan:'
+    refute_includes lua, '[2]=', 'bob already reads English'
+    refute_includes lua, '[4]=', 'alice selected English over her pt-BR default'
+    refute_includes lua, 'ru>en', 'the speaker override is the message language'
+  end
+
   def test_relay_skips_unchanged_whitelisted_and_unsupported_targets
     missing_pack = Class.new(MockTranslationService) do
       def translate(text, source_lang:, target_lang:)
@@ -348,18 +393,142 @@ class TestTranslation < Minitest::Test
       cache = File.join(dir, 'players-cache.json')
       db = PlayerDatabase.new(cache)
       db[7] = {name: 'somePlayer', locale: 'pt-BR'}
-      db.set_locale_overrides('somePlayer', ['en', 'pt'])
+      db.set_locale_override('somePlayer', 'en')
 
-      assert_equal ['en', 'pt'], db.locale_overrides('somePlayer')
+      assert_equal 'en', db.locale_override('somePlayer')
       reloaded = PlayerDatabase.new(cache)
-      assert_equal ['en', 'pt'], reloaded.locale_overrides('somePlayer')
+      assert_equal 'en', reloaded.locale_override('somePlayer')
       assert File.exist?(File.join(dir, 'players-locale.json'))
+      assert_equal({ 'somePlayer' => 'en' }, JSON.parse(File.read(File.join(dir, 'players-locale.json'))))
       assert_equal 'somePlayer', reloaded.lookup(7)
       assert_equal 'pt-BR', reloaded.get_locale(7)
 
-      reloaded.set_locale_overrides('somePlayer', [])
+      reloaded.set_locale_override('somePlayer', nil)
       cleared = PlayerDatabase.new(cache)
-      assert_nil cleared.locale_overrides('somePlayer')
+      assert_nil cleared.locale_override('somePlayer')
     end
+  end
+
+  # The game's storage.locale is the authoritative single-locale copy.
+  # Startup replaces the cached map (a name the game no longer has went back
+  # to its default), and a legacy array file keeps its first language.
+  def test_replace_locale_overrides_and_legacy_array_migration
+    Dir.mktmpdir do |dir|
+      cache = File.join(dir, 'players-cache.json')
+      File.write(File.join(dir, 'players-locale.json'),
+                 JSON.generate('Old' => ['en', 'pt'], 'Gone' => 'ru'))
+      db = PlayerDatabase.new(cache)
+      assert_equal 'en', db.locale_override('Old')
+      assert_equal 'ru', db.locale_override('Gone')
+
+      db.replace_locale_overrides('Alice' => 'pl', 'Bob' => 'pt-BR')
+      assert_equal({ 'Alice' => 'pl', 'Bob' => 'pt' }, db.all_locale_overrides)
+      assert_nil db.locale_override('Old'), 'a name absent from storage went back to default'
+
+      db.replace_locale_overrides(nil)
+      assert_empty db.all_locale_overrides
+    end
+  end
+
+  # The locale GUI's event is the live update path: one line changes (or
+  # clears, locale=nil) exactly one player's override.
+  def test_on_log_line_applies_locale_selected
+    rcon, = command_recorder
+    player_db = PlayerDatabase.new(nil)
+    agent = make_agent(rcon: rcon, player_db: player_db, config_file: scenario_config)
+
+    agent.on_log_line('event=locale-selected, actor=Alice, locale=pl')
+    assert_equal 'pl', player_db.locale_override('Alice')
+
+    # Factorio decorates script log lines with a timestamp and source.
+    agent.on_log_line('123.456 Script @__level__/locale.lua:42: event=locale-selected, actor=Alice, locale=de')
+    assert_equal 'de', player_db.locale_override('Alice')
+
+    agent.on_log_line('event=locale-selected, actor=Alice, locale=nil')
+    assert_nil player_db.locale_override('Alice')
+
+    agent.on_log_line('event=locale-selected, actor=Bob, locale=')
+    assert_nil player_db.locale_override('Bob')
+
+    agent.on_log_line('event=player-died, actor=Alice, locale=pl')
+    assert_nil player_db.locale_override('Alice')
+  end
+
+  # An operator / Hivemind selection writes BOTH the cache and the game's
+  # storage.locale, so it survives the startup sync.
+  def test_set_locale_mirrors_into_game_storage
+    rcon, = command_recorder
+    writes = []
+    rcon.define_singleton_method(:set_player_locale) { |name, locale, key| writes << [name, locale, key] }
+    player_db = PlayerDatabase.new(nil)
+    agent = make_agent(rcon: rcon, player_db: player_db, config_file: scenario_config)
+
+    assert_equal 'pl', agent.set_locale('Alice', 'pl-PL')
+    assert_equal 'pl', player_db.locale_override('Alice')
+    assert_equal [['Alice', 'pl', 'locale']], writes
+
+    assert_nil agent.set_locale('Alice', nil)
+    assert_equal [['Alice', 'pl', 'locale'], ['Alice', nil, 'locale']], writes
+  end
+
+  # players-locale.json is the durable, name-keyed copy. On startup the
+  # current save's table wins for names it has, and names it lacks are
+  # written back — so a fresh save (empty table) does not lose selections.
+  def test_on_start_merges_and_restores_locales
+    rcon, = command_recorder
+    writes = []
+    rcon.define_singleton_method(:player_locales) { |key| (@seen_key = key) && { 'Alice' => 'pl', 'Bob' => 'pt-BR' } }
+    rcon.define_singleton_method(:set_player_locale) { |name, locale, key| writes << [name, locale, key] }
+    player_db = PlayerDatabase.new(nil)
+    player_db.set_locale_override('Stale', 'ru')
+    agent = make_agent(rcon: rcon, player_db: player_db, config_file: scenario_config)
+
+    agent.on_start
+    assert_equal 'locale', rcon.instance_variable_get(:@seen_key)
+    assert_equal({ 'Stale' => 'ru', 'Alice' => 'pl', 'Bob' => 'pt' }, player_db.all_locale_overrides)
+    assert_equal [['Stale', 'ru', 'locale']], writes
+
+    # A failed query (nil) keeps the cache instead of wiping it.
+    rcon.define_singleton_method(:player_locales) { |_key| nil }
+    agent.on_start
+    assert_equal({ 'Stale' => 'ru', 'Alice' => 'pl', 'Bob' => 'pt' }, player_db.all_locale_overrides)
+  end
+
+  # Without the scenario block nothing under `storage` is touched and log
+  # lines are ignored: players-locale.json + /locales are the whole source.
+  def test_scenario_locale_integration_is_optional
+    rcon, commands = command_recorder
+    player_db = PlayerDatabase.new(nil)
+    agent = make_agent(rcon: rcon, player_db: player_db)
+
+    assert_nil agent.locale_storage_key
+    assert_nil agent.locale_event
+    agent.on_start
+    agent.on_log_line('event=locale-selected, actor=Alice, locale=pl')
+    assert_nil player_db.locale_override('Alice')
+    assert_equal 'pl', agent.set_locale('Alice', 'pl')
+    assert_equal 'pl', player_db.locale_override('Alice')
+    assert_empty commands
+  end
+
+  # Both names are configurable: the scenario may call its table/event
+  # anything.
+  def test_scenario_locale_names_are_configurable
+    rcon, _commands = command_recorder
+    writes = []
+    rcon.define_singleton_method(:set_player_locale) { |name, locale, key| writes << [name, locale, key] }
+    player_db = PlayerDatabase.new(nil)
+    @scenario_dir ||= Dir.mktmpdir('translation-test')
+    path = File.join(@scenario_dir, 'config-translation.yaml')
+    File.write(path, File.read(TRANSLATION_TEST_CONFIG) +
+                     "\nscenario_locale:\n  storage_key: ui/lang\n  event: lang-picked\n")
+    agent = make_agent(rcon: rcon, player_db: player_db, config_file: path)
+
+    agent.on_log_line('event=locale-selected, actor=Alice, locale=pl')
+    assert_nil player_db.locale_override('Alice')
+    agent.on_log_line('event=lang-picked, actor=Alice, locale=pl')
+    assert_equal 'pl', player_db.locale_override('Alice')
+    agent.set_locale('Alice', 'de')
+    assert_equal [['Alice', 'de', 'ui/lang']], writes
   end
 end

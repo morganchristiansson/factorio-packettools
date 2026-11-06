@@ -140,6 +140,23 @@ once, keyed `{"<flat index>": <item id>}`; the Lua builds the name→id map from
 `prototypes.item` so the ids are wire ids). One command per join covers both:
 a full 100-cell bar is ~1.2KB, so `rcon.print` still fits under the cap.
 
+## `storage.locale` — the scenario's per-player locale
+
+A scenario's in-game locale GUI can store ONE locale per player name in a
+table under `storage` (the common default is `storage.locale`:
+`{[player_name] = "pl"}`; an absent key means the game default
+`LuaPlayer.locale`). This is scenario code, so both names are optional in
+`config-translation.yaml` (`scenario_locale.storage_key` /
+`scenario_locale.event`): omit them and the translation plugin never touches
+`storage`. `RconClient#player_locales(key = "locale")` reads the whole table
+at once — `helpers.table_to_json` over a name→string copy — because a single
+player is just that table indexed by name; `#set_player_locale(name, locale,
+key = "locale")` writes one entry (nil clears it). The same GUI logs
+`event=<event>, actor=<name>, locale=<code>` (`locale=nil` = default), which
+the translation plugin applies live when `event` is configured. No such
+table returns JSON `null` (not `{}`), so the caller keeps its cached
+overrides instead of wiping them.
+
 ### The whole roster, bars included: `RconClient#roster_backup`
 
 One query over `game.players` (every player the save knows, offline included)
